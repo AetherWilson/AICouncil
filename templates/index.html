@@ -1,0 +1,3200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Council - Multi-AI Chat Interface</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <!-- Markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Syntax highlighting for code blocks -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1e1e1e;
+            color: #e0e0e0;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: auto 1fr 350px;
+            grid-template-rows: auto 1fr;
+            height: 100vh;
+            gap: 10px;
+            padding: 10px;
+            transition: grid-template-columns 0.3s ease;
+        }
+
+        .container.sidebar-collapsed {
+            grid-template-columns: 50px 1fr 350px;
+        }
+
+        .header {
+            grid-column: 2 / 4;
+            background: #252526;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+
+        .chat-history-sidebar {
+            grid-row: 1 / -1;
+            background: #252526;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 280px;
+            max-width: 280px;
+            transition: all 0.3s ease;
+        }
+
+        .chat-history-sidebar.collapsed {
+            min-width: 50px;
+            max-width: 50px;
+            padding: 15px 10px;
+        }
+
+        .chat-history-sidebar.collapsed .history-content {
+            display: none;
+        }
+
+        .sidebar-toggle {
+            background: #4ec9b0;
+            border: none;
+            border-radius: 5px;
+            color: #1e1e1e;
+            padding: 8px;
+            cursor: pointer;
+            font-size: 18px;
+            transition: all 0.2s;
+            margin-bottom: 15px;
+            width: 100%;
+        }
+
+        .sidebar-toggle:hover {
+            background: #5fd9c0;
+        }
+
+        .history-content {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .history-header h3 {
+            color: #4ec9b0;
+            font-size: 16px;
+            margin: 0;
+        }
+
+        .new-chat-btn {
+            background: #4ec9b0;
+            border: none;
+            border-radius: 5px;
+            color: #1e1e1e;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        .new-chat-btn:hover {
+            background: #5fd9c0;
+        }
+
+        .current-session {
+            background: #2d2d30;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            border-left: 3px solid #4ec9b0;
+        }
+
+        .current-session-title {
+            font-size: 12px;
+            color: #858585;
+            margin-bottom: 5px;
+        }
+
+        .current-session-name {
+            color: #e0e0e0;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .save-session-btn {
+            background: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 3px;
+            color: #4ec9b0;
+            padding: 4px 8px;
+            cursor: pointer;
+            font-size: 11px;
+            margin-top: 5px;
+            transition: all 0.2s;
+        }
+
+        .save-session-btn:hover {
+            background: #4a4a4a;
+            border-color: #4ec9b0;
+        }
+
+        .history-list {
+            flex: 1;
+            overflow-y: auto;
+            margin-top: 10px;
+        }
+
+        .history-section-title {
+            color: #858585;
+            font-size: 12px;
+            font-weight: 600;
+            margin: 10px 0 8px 0;
+            text-transform: uppercase;
+        }
+
+        .history-item {
+            background: #2d2d30;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+            position: relative;
+        }
+
+        .history-item:hover {
+            background: #333333;
+            border-color: #4ec9b0;
+        }
+
+        .history-item.active {
+            background: #2a4a44;
+            border-color: #4ec9b0;
+        }
+
+        .history-item.temporary {
+            border-left: 3px solid #f0ad4e;
+            opacity: 0.85;
+        }
+
+        .history-item.temporary:hover {
+            opacity: 1;
+        }
+
+        .history-item-title {
+            color: #e0e0e0;
+            font-weight: 500;
+            font-size: 13px;
+            margin-bottom: 5px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .history-item-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+            color: #858585;
+        }
+
+        .history-item-delete {
+            background: none;
+            border: none;
+            color: #d9534f;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            opacity: 0;
+            transition: all 0.2s;
+        }
+
+        .history-item:hover .history-item-delete {
+            opacity: 1;
+        }
+
+        .history-item-delete:hover {
+            background: #d9534f;
+            color: white;
+        }
+
+        .header h1 {
+            color: #4ec9b0;
+            font-size: 24px;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-top: 10px;
+        }
+
+        .tab {
+            padding: 8px 20px;
+            background: #1e1e1e;
+            border: none;
+            border-radius: 5px 5px 0 0;
+            color: #858585;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .tab:hover {
+            background: #2d2d30;
+            color: #e0e0e0;
+        }
+
+        .tab.active {
+            background: #252526;
+            color: #4ec9b0;
+            border-bottom: 2px solid #4ec9b0;
+        }
+
+        .tab-content {
+            display: none;
+            height: 100%;
+            flex-direction: column;
+        }
+
+        .tab-content.active {
+            display: flex;
+        }
+
+        .pdf-section {
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .pdf-upload-area {
+            border: 2px dashed #4ec9b0;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 20px;
+            background: #2d2d30;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .pdf-upload-area:hover {
+            background: #333333;
+            border-color: #5fd9c0;
+        }
+
+        .pdf-upload-area.dragover {
+            background: #3a4a47;
+            border-color: #5fd9c0;
+        }
+
+        .pdf-list {
+            margin-top: 20px;
+        }
+
+        .pdf-item {
+            background: #2d2d30;
+            padding: 12px 15px;
+            margin-bottom: 10px;
+            border-radius: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .pdf-item-info {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .pdf-name {
+            font-weight: bold;
+            color: #e0e0e0;
+        }
+
+        .pdf-pages {
+            font-size: 12px;
+            color: #858585;
+        }
+
+        .remove-pdf {
+            background: #d9534f;
+            border: none;
+            border-radius: 3px;
+            color: white;
+            padding: 5px 12px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .remove-pdf:hover {
+            background: #c9302c;
+        }
+
+        .main-content {
+            grid-column: 2;
+            grid-row: 2;
+            display: flex;
+            flex-direction: column;
+            background: #252526;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            min-height: 0;
+            height: 100%;
+        }
+
+        .sidebar {
+            grid-column: 3;
+            grid-row: 2;
+            display: flex;
+            min-height: 0;
+            height: 100%;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .ai-status {
+            background: #252526;
+            border-radius: 8px;
+            padding: 15px;
+            flex: 1;
+            overflow-y: auto;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            transition: flex 0.3s ease-out, min-height 0.3s ease-out;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .ai-status.collapsed {
+            flex: 0;
+            min-height: 56px;
+            overflow: hidden;
+        }
+
+        .ai-status h2 {
+            color: #4ec9b0;
+            font-size: 18px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #3c3c3c;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .panel-toggle {
+            color: #858585;
+            font-size: 14px;
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+
+        .panel-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .panel-content {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .ai-status.collapsed .panel-content {
+            display: none;
+        }
+
+        .active-ai-list {
+            font-size: 12px;
+            color: #e0e0e0;
+            line-height: 1.6;
+        }
+
+        .active-ai-item {
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            background: #2d2d30;
+            border-radius: 5px;
+            margin-bottom: 6px;
+            cursor: grab;
+            transition: transform 0.3s ease, background 0.2s, border-color 0.2s, opacity 0.2s;
+            border: 2px solid transparent;
+            user-select: none;
+        }
+
+        .ai-item-content {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1;
+        }
+
+        .ai-status-light {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            transition: all 0.3s ease;
+        }
+
+        .ai-status-light.waiting {
+            background: #ffd700;
+            box-shadow: 0 0 4px #ffd700;
+        }
+
+        .ai-status-light.running {
+            background: #ffd700;
+            box-shadow: 0 0 8px #ffd700, 0 0 12px #ffd700;
+            animation: glow-yellow 1.5s infinite;
+        }
+
+        .ai-status-light.done {
+            background: #00ff00;
+            box-shadow: 0 0 6px #00ff00;
+        }
+
+        .ai-status-light.error {
+            background: #ff0000;
+            box-shadow: 0 0 8px #ff0000, 0 0 12px #ff0000;
+            animation: pulse-red 0.5s infinite;
+        }
+
+        .remove-ai-btn {
+            background: none;
+            border: none;
+            color: #d9534f;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 0;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 3px;
+            transition: all 0.2s;
+            flex-shrink: 0;
+        }
+
+        .remove-ai-btn:hover {
+            background: #d9534f;
+            color: white;
+        }
+
+        .ai-status-indicator {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        @keyframes glow-yellow {
+            0%, 100% { 
+                box-shadow: 0 0 8px #ffd700, 0 0 12px #ffd700;
+                opacity: 1;
+            }
+            50% { 
+                box-shadow: 0 0 15px #ffd700, 0 0 20px #ffd700;
+                opacity: 0.8;
+            }
+        }
+
+        @keyframes pulse-red {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .active-ai-item:hover {
+            background: #333333;
+            border-color: #4ec9b0;
+        }
+
+        .active-ai-item {
+            transition: transform 0.2s ease;
+        }
+
+        .active-ai-item.dragging {
+            opacity: 0.4;
+            cursor: grabbing;
+            transform: scale(1.02);
+            z-index: 10;
+            position: relative;
+        }
+
+        .active-ai-item.drag-shift-down {
+            transform: translateY(var(--drag-item-height, 42px));
+        }
+
+        .active-ai-item.drag-shift-up {
+            transform: translateY(calc(-1 * var(--drag-item-height, 42px)));
+        }
+
+        .price-filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #2d2d30;
+            border-radius: 5px;
+        }
+
+        .price-filter-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .price-filter-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .price-filter-item label {
+            color: #e0e0e0;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .bot-item {
+            background: #2d2d30;
+            padding: 10px;
+            margin-bottom: 8px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 2px solid transparent;
+        }
+
+        .bot-item:hover {
+            background: #333333;
+        }
+
+        .bot-item.active {
+            border-color: #4ec9b0;
+            background: #2a4a44;
+        }
+
+        .bot-item label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .bot-item input[type="checkbox"] {
+            margin-right: 10px;
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .bot-name {
+            font-weight: bold;
+            color: #e0e0e0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .price-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
+        .price-indicator.mini {
+            background-color: #00ff00;
+        }
+
+        .price-indicator.cheap {
+            background-color: #ffff00;
+        }
+
+        .price-indicator.expensive {
+            background-color: #ff0000;
+        }
+
+        .price-indicator.max {
+            background-color: #9400d3;
+        }
+
+        .provider-group {
+            margin-bottom: 12px;
+        }
+
+        .provider-header {
+            background: #1e1e1e;
+            padding: 10px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.2s;
+            user-select: none;
+        }
+
+        .provider-header:hover {
+            background: #2a2a2a;
+        }
+
+        .provider-name {
+            font-weight: bold;
+            color: #4ec9b0;
+            font-size: 14px;
+        }
+
+        .provider-toggle {
+            color: #858585;
+            font-size: 12px;
+            transition: transform 0.2s;
+        }
+
+        .provider-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .provider-bots {
+            margin-top: 8px;
+            padding-left: 8px;
+            max-height: 1000px;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out, opacity 0.3s ease-out;
+            opacity: 1;
+        }
+
+        .provider-bots.collapsed {
+            max-height: 0;
+            opacity: 0;
+            margin-top: 0;
+        }
+
+        .console-section {
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .console-section h2 {
+            color: #4ec9b0;
+            font-size: 18px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #3c3c3c;
+        }
+
+        .console-content {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            color: #cccccc;
+            background: #1e1e1e;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-y: auto;
+            max-height: calc(100vh - 200px);
+        }
+
+        .log-entry {
+            padding: 4px 0;
+            color: #858585;
+        }
+
+        .conversation-window {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 20px;
+            background: #1e1e1e;
+            min-height: 0;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 12px 15px;
+            border-radius: 8px;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+
+        .message.user {
+            background: #0e639c;
+            margin-left: auto;
+            text-align: right;
+        }
+
+        .message.ai {
+            background: #2d2d30;
+            border-left: 3px solid #4ec9b0;
+            position: relative;
+        }
+
+        .stream-cursor {
+            display: inline-block;
+            width: 2px;
+            height: 1em;
+            background: #4ec9b0;
+            margin-left: 2px;
+            vertical-align: text-bottom;
+            animation: blink 0.7s step-start infinite;
+        }
+
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+
+        .message.ai.streaming .message-content {
+            white-space: pre-wrap;
+            font-family: inherit;
+        }
+
+        /* ── Thinking block ────────────────────────────────────── */
+        .thinking-block {
+            margin-bottom: 8px;
+            border: 1px solid #3a3a3d;
+            border-radius: 4px;
+            overflow: hidden;
+            font-size: 0.85em;
+        }
+
+        .thinking-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 10px;
+            background: #1e1e1e;
+            cursor: pointer;
+            user-select: none;
+            color: #858585;
+            font-size: 0.9em;
+        }
+
+        .thinking-header:hover {
+            background: #252526;
+            color: #aaa;
+        }
+
+        .thinking-toggle {
+            font-size: 10px;
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+
+        .thinking-toggle.open {
+            transform: rotate(90deg);
+        }
+
+        .thinking-content {
+            display: none;
+            padding: 8px 12px;
+            background: #181818;
+            color: #858585;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: monospace;
+            line-height: 1.5;
+        }
+
+        .thinking-content.visible {
+            display: block;
+        }
+
+        .message-wrapper {
+            position: relative;
+        }
+
+        .message.ai:hover .message-content, .message.user:hover .message-content {
+            padding-bottom: 15px;
+        }
+
+        .menu-btn {
+            position: absolute;
+            bottom: 2px;
+            right: 8px;
+            padding: 4px 8px;
+            background: transparent;
+            border: none;
+            border-radius: 3px;
+            color: #4ec9b0;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            width: 28px;
+            height: 28px;
+        }
+
+        .menu-btn:hover {
+            background: #4ec9b0;
+            color: #1e1e1e;
+        }
+
+        .message-menu {
+            position: absolute;
+            bottom: 35px;
+            right: 8px;
+            background: #2d2d30;
+            border: 1px solid #4ec9b0;
+            border-radius: 5px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            min-width: 150px;
+            z-index: 100;
+            display: none;
+            overflow: hidden;
+        }
+
+        .message-menu.active {
+            display: block;
+        }
+
+        .message.user .menu-btn {
+            left: 8px;
+            right: auto;
+        }
+
+        .message.user .message-menu {
+            left: 8px;
+            right: auto;
+        }
+
+        .menu-item {
+            padding: 10px 15px;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #e0e0e0;
+            border: none;
+            background: transparent;
+            width: 100%;
+            text-align: left;
+            font-size: 13px;
+        }
+
+        .menu-item:hover {
+            background: #3c3c3c;
+        }
+
+        .menu-item svg {
+            width: 16px;
+            height: 16px;
+            fill: currentColor;
+        }
+
+        .download-btn:hover {
+            background: #3da891;
+        }
+
+        .download-btn svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        .message-header {
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 12px;
+            opacity: 0.8;
+        }
+
+        .message-content {
+            line-height: 1.5;
+            padding-bottom: 5px;
+            transition: padding-bottom 0.2s;
+        }
+
+        .message.ai .message-content.expanded {
+            padding-bottom: 35px;
+        }
+
+        .input-area {
+            padding: 15px;
+            background: #252526;
+            border-top: 1px solid #3c3c3c;
+        }
+
+        .input-container {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        #clearButton {
+            padding: 12px 20px;
+            background: #d9534f;
+            border: none;
+            border-radius: 5px;
+            color: #fff;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+
+        #clearButton:hover {
+            background: #c9302c;
+        }
+
+        #messageInput {
+            flex: 1;
+            padding: 12px 15px;
+            background: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 5px;
+            color: #e0e0e0;
+            font-size: 14px;
+            outline: none;
+            resize: none;
+            min-height: 45px;
+            /* allow very large expansion; let the browser handle scrolling when max reached */
+            max-height: 60vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow-y: auto;
+        }
+
+        #messageInput:focus {
+            border-color: #4ec9b0;
+        }
+
+        #sendButton {
+            padding: 12px 30px;
+            background: #4ec9b0;
+            border: none;
+            border-radius: 5px;
+            color: #1e1e1e;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        #sendButton:hover {
+            background: #5fd9c0;
+        }
+
+        #sendButton:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+
+        #sendButton.stop-btn {
+            background: #d9534f;
+            color: #fff;
+        }
+
+        #sendButton.stop-btn:hover {
+            background: #c9302c;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1e1e1e;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #4ec9b0;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #5fd9c0;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #4ec9b0;
+            margin-left: 10px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .web-search-container {
+            margin-bottom: 15px;
+            padding: 12px 15px;
+            border-radius: 8px;
+            background: #2a4a44;
+            border-left: 3px solid #4ec9b0;
+            max-width: 80%;
+        }
+
+        .web-search-header {
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 14px;
+            color: #4ec9b0;
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .web-search-toggle {
+            font-size: 12px;
+            transition: transform 0.2s;
+        }
+
+        .web-search-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .web-search-content {
+            margin-top: 10px;
+            max-height: 400px;
+            overflow-y: auto;
+            transition: max-height 0.3s ease-out;
+            line-height: 1.5;
+            color: #e0e0e0;
+        }
+
+        .web-search-content.collapsed {
+            max-height: 0;
+            overflow: hidden;
+            margin-top: 0;
+        }
+
+        .individual-search-container {
+            margin-bottom: 8px;
+            padding: 10px 14px;
+            border-radius: 8px;
+            background: #2d3a4a;
+            border-left: 3px solid #569cd6;
+            max-width: 80%;
+            font-size: 13px;
+        }
+
+        .individual-search-header {
+            font-weight: bold;
+            font-size: 13px;
+            color: #569cd6;
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .individual-search-toggle {
+            font-size: 12px;
+            transition: transform 0.2s;
+        }
+
+        .individual-search-toggle.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .individual-search-content {
+            margin-top: 8px;
+            max-height: 400px;
+            overflow-y: auto;
+            transition: max-height 0.3s ease-out;
+            line-height: 1.5;
+            color: #c0d0e0;
+        }
+
+        .individual-search-content.collapsed {
+            max-height: 0;
+            overflow: hidden;
+            margin-top: 0;
+        }
+
+        .individual-search-query {
+            font-size: 12px;
+            color: #858585;
+            margin-top: 4px;
+        }
+
+        /* Markdown styling */
+        .message-content {
+            line-height: 1.6;
+        }
+
+        .message-content h1,
+        .message-content h2,
+        .message-content h3,
+        .message-content h4,
+        .message-content h5,
+        .message-content h6 {
+            margin-top: 1em;
+            margin-bottom: 0.5em;
+            color: #4ec9b0;
+            font-weight: 600;
+        }
+
+        .message-content h1 { font-size: 1.8em; }
+        .message-content h2 { font-size: 1.5em; }
+        .message-content h3 { font-size: 1.3em; }
+        .message-content h4 { font-size: 1.1em; }
+
+        .message-content ul,
+        .message-content ol {
+            margin: 0.5em 0;
+            padding-left: 2em;
+        }
+
+        .message-content li {
+            margin: 0.25em 0;
+        }
+
+        .message-content blockquote {
+            border-left: 3px solid #4ec9b0;
+            padding-left: 1em;
+            margin: 1em 0;
+            color: #b0b0b0;
+            font-style: italic;
+        }
+
+        .message-content table {
+            border-collapse: collapse;
+            margin: 1em 0;
+            width: 100%;
+        }
+
+        .message-content table th,
+        .message-content table td {
+            border: 1px solid #555;
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        .message-content table th {
+            background: #3c3c3c;
+            color: #4ec9b0;
+            font-weight: 600;
+        }
+
+        .message-content table tr:nth-child(even) {
+            background: #2a2a2a;
+        }
+
+        .message-content a {
+            color: #4ec9b0;
+            text-decoration: none;
+        }
+
+        .message-content a:hover {
+            text-decoration: underline;
+        }
+
+        .message-content hr {
+            border: none;
+            border-top: 1px solid #555;
+            margin: 1.5em 0;
+        }
+
+        /* Inline code */
+        .message-content code {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+
+        /* Code blocks */
+        .message-content pre {
+            background: #1e1e1e;
+            border: 1px solid #3c3c3c;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 1em 0;
+            overflow-x: auto;
+            position: relative;
+        }
+
+        .message-content pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            display: block;
+            line-height: 1.5;
+            color: #d4d4d4;
+        }
+
+        /* Code block with language tag */
+        .message-content pre[class*="language-"]::before {
+            content: attr(data-language);
+            position: absolute;
+            top: 8px;
+            right: 12px;
+            font-size: 0.75em;
+            color: #858585;
+            text-transform: uppercase;
+            font-family: 'Segoe UI', sans-serif;
+        }
+
+        /* Syntax highlighting adjustments */
+        .message-content .hljs {
+            background: transparent;
+            padding: 0;
+        }
+
+        /* Strong/bold text */
+        .message-content strong {
+            color: #ffffff;
+            font-weight: 600;
+        }
+
+        /* Emphasis/italic */
+        .message-content em {
+            color: #d4d4d4;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container sidebar-collapsed">
+        <!-- Chat History Sidebar -->
+        <div class="chat-history-sidebar collapsed">
+            <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle Chat History">☰</button>
+            <div class="history-content">
+                <div class="history-header">
+                    <h3>💬 Chat History</h3>
+                    <button class="new-chat-btn" onclick="startNewChat()">+ New</button>
+                </div>
+                <div class="current-session">
+                    <div class="current-session-title">Current Session</div>
+                    <div class="current-session-name" id="currentSessionName">
+                        <span>Unsaved Chat</span>
+                    </div>
+                    <button class="save-session-btn" onclick="saveCurrentSession()">💾 Save Chat</button>
+                </div>
+                <div class="history-list" id="historyList">
+                    <div class="history-section-title">Saved Chats</div>
+                    <div id="savedChats">
+                        <!-- Saved chats will be loaded here -->
+                    </div>
+                    <div class="history-section-title" style="margin-top: 15px;">Temporary (Auto-saved)</div>
+                    <div id="tempChats">
+                        <!-- Temporary chats will be loaded here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="header">
+            <h1>🤖 AI Council - Multi-AI Chat Interface <span class="status-indicator"></span></h1>
+            <div class="tabs">
+                <button class="tab active" data-tab="chat">💬 Chat</button>
+                <button class="tab" data-tab="pdf">📄 Sources</button>
+                <button class="tab" data-tab="console">📋 Console Log</button>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="tab-content active" id="chatTab">
+                <div class="conversation-window" id="conversationWindow">
+                    <div class="message ai">
+                        <div class="message-header">System</div>
+                        <div class="message-content">Welcome to AI Council! Select one or more AIs from the status panel and start chatting.</div>
+                    </div>
+                </div>
+                <div class="input-area">
+                    <div class="input-container">
+                        <button id="clearButton" title="Clear History">❌</button>
+                        <textarea id="messageInput" placeholder="Type your message here... (Shift+Enter for new line)" autocomplete="off" rows="1"></textarea>
+                        <button id="sendButton">Send</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="pdfTab">
+                <div class="pdf-section">
+                    <h2 style="color: #4ec9b0; margin-bottom: 20px;">📄 Upload Documents & Images</h2>
+                    <div style="padding: 10px; background: #2d2d30; border-radius: 5px; margin-bottom: 15px;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
+                            <input type="checkbox" id="webSearchToggle" style="width: 18px; height: 18px; cursor: pointer;">
+                            <span style="color: #e0e0e0; font-size: 14px;">🌐 Enable Web Search</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid #3c3c3c;">
+                            <input type="checkbox" id="individualWebSearchToggle" style="width: 18px; height: 18px; cursor: pointer;">
+                            <span style="color: #c0d0e0; font-size: 13px;">🔍 Enable web search individually <span style="color: #858585; font-size: 12px;">(each AI picks its own query)</span></span>
+                        </label>
+                    </div>
+                    <div class="pdf-upload-area" id="pdfUploadArea">
+                        <input type="file" id="pdfFileInput" accept=".pdf,.jpg,.jpeg,.png" multiple style="display: none;">
+                        <p style="font-size: 18px; margin-bottom: 10px;">📁 Click or Drag & Drop Files Here</p>
+                        <p style="color: #858585; font-size: 14px;">Supports PDF, JPG, PNG - Files will be processed and made available to all AI models</p>
+                        <p style="color: #4ec9b0; font-size: 13px; margin-top: 10px;">💡 Tip: Press Ctrl+V to paste images from clipboard</p>
+                    </div>
+                    <div class="pdf-list" id="pdfList">
+                        <h3 style="color: #4ec9b0; margin-bottom: 15px;">Uploaded Documents</h3>
+                        <div id="pdfItems"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="consoleTab">
+                <div class="console-section">
+                    <h2>📋 Console Log</h2>
+                    <div class="console-content" id="consoleContent"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="sidebar">
+            <div class="ai-status" id="aiSelectPanel">
+                <h2 onclick="togglePanel('aiSelectPanel')">
+                    AI Select
+                    <span class="panel-toggle">▼</span>
+                </h2>
+                <div class="panel-content">
+                    <div class="price-filters">
+                        <div class="price-filter-item">
+                            <input type="checkbox" id="miniFilter">
+                            <label for="miniFilter">Mini</label>
+                        </div>
+                        <div class="price-filter-item">
+                            <input type="checkbox" id="cheapFilter">
+                            <label for="cheapFilter">Cheap</label>
+                        </div>
+                        <div class="price-filter-item">
+                            <input type="checkbox" id="expensiveFilter">
+                            <label for="expensiveFilter">Expensive</label>
+                        </div>
+                        <div class="price-filter-item">
+                            <input type="checkbox" id="maxFilter">
+                            <label for="maxFilter">Max</label>
+                        </div>
+                    </div>
+                    <div class="price-filters" style="margin-top: 10px;">
+                        <div class="price-filter-item">
+                            <input type="checkbox" id="imageFilter">
+                            <label for="imageFilter">Image In</label>
+                        </div>
+                    </div>
+                    <div id="botList"></div>
+                </div>
+            </div>
+            <div class="ai-status" id="aiStatusPanel">
+                <h2 onclick="togglePanel('aiStatusPanel')">
+                    AI Active Status
+                    <span class="panel-toggle">▼</span>
+                </h2>
+                <div class="panel-content">
+                    <div class="active-ai-list" id="activeAiList">
+                        <div style="color: #858585; font-style: italic;">No AI selected</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let selectedBots = [];
+        let allBots = [];
+        let uploadedPDFs = [];
+        let webSearchEnabled = false;
+        let individualWebSearchEnabled = false;
+        let isAIProcessing = false;
+
+        // Web search toggle
+        document.getElementById('webSearchToggle').addEventListener('change', function(e) {
+            webSearchEnabled = e.target.checked;
+            const status = webSearchEnabled ? 'enabled' : 'disabled';
+            addConsoleLog(`Web search ${status}`);
+        });
+
+        // Individual web search toggle
+        document.getElementById('individualWebSearchToggle').addEventListener('change', function(e) {
+            individualWebSearchEnabled = e.target.checked;
+            const status = individualWebSearchEnabled ? 'enabled' : 'disabled';
+            addConsoleLog(`Individual web search ${status}`);
+        });
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', function() {
+                const tabName = this.dataset.tab;
+                
+                // Remove active class from all tabs and contents
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                
+                // Add active class to clicked tab and corresponding content
+                this.classList.add('active');
+                document.getElementById(tabName + 'Tab').classList.add('active');
+            });
+        });
+
+        // PDF Upload functionality
+        const pdfUploadArea = document.getElementById('pdfUploadArea');
+        const pdfFileInput = document.getElementById('pdfFileInput');
+        const pdfItems = document.getElementById('pdfItems');
+
+        pdfUploadArea.addEventListener('click', () => pdfFileInput.click());
+
+        pdfFileInput.addEventListener('change', handlePDFUpload);
+
+        // Drag and drop
+        pdfUploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            pdfUploadArea.classList.add('dragover');
+        });
+
+        pdfUploadArea.addEventListener('dragleave', () => {
+            pdfUploadArea.classList.remove('dragover');
+        });
+
+        pdfUploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            pdfUploadArea.classList.remove('dragover');
+            const files = Array.from(e.dataTransfer.files).filter(f => 
+                f.type === 'application/pdf' || 
+                f.type === 'image/jpeg' || 
+                f.type === 'image/png' ||
+                f.type === 'image/jpg'
+            );
+            if (files.length > 0) {
+                handlePDFFiles(files);
+            }
+        });
+
+        // Paste image support
+        document.addEventListener('paste', (e) => {
+            // Only handle paste when PDF tab is active
+            const pdfTab = document.getElementById('pdfTab');
+            if (!pdfTab.classList.contains('active')) return;
+
+            const items = e.clipboardData.items;
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image') !== -1) {
+                    e.preventDefault();
+                    const blob = items[i].getAsFile();
+                    const timestamp = new Date().getTime();
+                    const file = new File([blob], `pasted-image-${timestamp}.png`, { type: blob.type });
+                    handlePDFFiles([file]);
+                    addConsoleLog('Image pasted from clipboard');
+                    break;
+                }
+            }
+        });
+
+        function handlePDFUpload(e) {
+            const files = Array.from(e.target.files);
+            handlePDFFiles(files);
+        }
+
+        function handlePDFFiles(files) {
+            files.forEach(file => {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                fetch('/api/upload_document', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        uploadedPDFs.push(data.document);
+                        displayPDFs();
+                        const docType = data.document.type === 'pdf' ? 'PDF' : 'Image';
+                        const info = data.document.type === 'pdf' ? `${data.document.pages} pages` : `${data.document.width}x${data.document.height}px`;
+                        addConsoleLog(`${docType} uploaded: ${data.document.filename} (${info})`);
+                    } else {
+                        addConsoleLog(`Error uploading document: ${data.error}`);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    addConsoleLog('Error uploading document');
+                });
+            });
+        }
+
+        function displayPDFs() {
+            pdfItems.innerHTML = '';
+            if (uploadedPDFs.length === 0) {
+                pdfItems.innerHTML = '<p style="color: #858585; text-align: center; padding: 20px;">No documents uploaded yet</p>';
+                return;
+            }
+
+            uploadedPDFs.forEach((doc, index) => {
+                const pdfItem = document.createElement('div');
+                pdfItem.className = 'pdf-item';
+                const icon = doc.type === 'pdf' ? '📄' : '🖼️';
+                const info = doc.type === 'pdf' ? 
+                    `${doc.pages} pages • ${(doc.size / 1024).toFixed(1)} KB` :
+                    `${doc.width}x${doc.height}px • ${(doc.size / 1024).toFixed(1)} KB`;
+                pdfItem.innerHTML = `
+                    <div class="pdf-item-info">
+                        <div class="pdf-name">${icon} ${doc.filename}</div>
+                        <div class="pdf-pages">${info}</div>
+                    </div>
+                    <button class="remove-pdf" onclick="removePDF(${index})">Remove</button>
+                `;
+                pdfItems.appendChild(pdfItem);
+            });
+        }
+
+        function removePDF(index) {
+            const doc = uploadedPDFs[index];
+            fetch('/api/remove_document', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({filename: doc.filename})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    uploadedPDFs.splice(index, 1);
+                    displayPDFs();
+                    const docType = doc.type === 'pdf' ? 'PDF' : 'Image';
+                    addConsoleLog(`${docType} removed: ${doc.filename}`);
+                }
+            });
+        }
+
+        // Load bots on page load
+        async function loadBots() {
+            try {
+                const response = await fetch('/api/bots');
+                const bots = await response.json();
+                displayBots(bots);
+            } catch (error) {
+                console.error('Error loading bots:', error);
+                addConsoleLog('Error loading bot configurations');
+            }
+        }
+
+        function displayBots(bots) {
+            // Filter out disabled bots
+            const enabledBots = bots.filter(bot => bot.enabled !== false);
+            allBots = enabledBots;
+            const botList = document.getElementById('botList');
+            botList.innerHTML = '';
+
+            // Group bots by provider
+            const botsByProvider = {};
+            enabledBots.forEach(bot => {
+                const provider = bot.provider || 'Other';
+                if (!botsByProvider[provider]) {
+                    botsByProvider[provider] = [];
+                }
+                botsByProvider[provider].push(bot);
+            });
+
+            // Create collapsible sections for each provider
+            Object.keys(botsByProvider).sort().forEach(provider => {
+                const providerGroup = document.createElement('div');
+                providerGroup.className = 'provider-group';
+                
+                const providerHeader = document.createElement('div');
+                providerHeader.className = 'provider-header';
+                providerHeader.innerHTML = `
+                    <span class="provider-name">${provider}</span>
+                    <span class="provider-toggle collapsed">▼</span>
+                `;
+                
+                const providerBots = document.createElement('div');
+                providerBots.className = 'provider-bots collapsed';
+                
+                botsByProvider[provider].forEach(bot => {
+                    const botItem = document.createElement('div');
+                    botItem.className = 'bot-item';
+                    const priceIndicator = bot.price ? `<span class="price-indicator ${bot.price.toLowerCase()}"></span>` : '';
+                    botItem.innerHTML = `
+                        <label>
+                            <input type="checkbox" class="bot-checkbox" data-bot-id="${bot.id}" data-bot-name="${bot.name}">
+                            <div>
+                                <div class="bot-name">${priceIndicator}${bot.name}</div>
+                            </div>
+                        </label>
+                    `;
+
+                    const checkbox = botItem.querySelector('.bot-checkbox');
+                    checkbox.addEventListener('change', function() {
+                        if (this.checked) {
+                            selectedBots.push(bot.id);
+                            botItem.classList.add('active');
+                            addConsoleLog(`${bot.name} enabled`);
+                        } else {
+                            selectedBots = selectedBots.filter(id => id !== bot.id);
+                            botItem.classList.remove('active');
+                            addConsoleLog(`${bot.name} disabled`);
+                        }
+                        updateActiveAIStatus();
+                    });
+
+                    providerBots.appendChild(botItem);
+                });
+                
+                // Toggle collapse on header click
+                providerHeader.addEventListener('click', function() {
+                    const toggle = this.querySelector('.provider-toggle');
+                    toggle.classList.toggle('collapsed');
+                    providerBots.classList.toggle('collapsed');
+                });
+                
+                providerGroup.appendChild(providerHeader);
+                providerGroup.appendChild(providerBots);
+                botList.appendChild(providerGroup);
+            });
+        }
+
+        function setupDragAndDrop() {
+            const container = document.getElementById('activeAiList');
+            const draggables = document.querySelectorAll('.active-ai-item');
+            let draggedElement = null;
+            let draggedIndex = -1;
+            let currentInsertIndex = -1;
+
+            // Measure item height for shift offset
+            if (draggables.length > 0) {
+                const h = draggables[0].offsetHeight + 8; // 8px margin-bottom
+                container.style.setProperty('--drag-item-height', h + 'px');
+            }
+
+            function clearShifts() {
+                draggables.forEach(d => {
+                    d.classList.remove('drag-shift-down', 'drag-shift-up');
+                });
+            }
+
+            function applyShifts(insertIdx) {
+                if (insertIdx === currentInsertIndex) return;
+                currentInsertIndex = insertIdx;
+                clearShifts();
+
+                draggables.forEach(item => {
+                    if (item === draggedElement) return;
+                    const idx = parseInt(item.getAttribute('data-index'));
+                    if (draggedIndex < insertIdx) {
+                        // Dragging down: items between old and new pos shift up
+                        if (idx > draggedIndex && idx < insertIdx) {
+                            item.classList.add('drag-shift-up');
+                        }
+                    } else {
+                        // Dragging up: items between new and old pos shift down
+                        if (idx >= insertIdx && idx < draggedIndex) {
+                            item.classList.add('drag-shift-down');
+                        }
+                    }
+                });
+            }
+
+            draggables.forEach(item => {
+                item.addEventListener('dragstart', function(e) {
+                    draggedElement = this;
+                    draggedIndex = parseInt(this.getAttribute('data-index'));
+                    currentInsertIndex = draggedIndex;
+                    this.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', this.getAttribute('data-bot-id'));
+                    // Use requestAnimationFrame so the drag image captures before opacity change
+                    requestAnimationFrame(() => {
+                        this.style.opacity = '0.4';
+                    });
+                });
+
+                item.addEventListener('dragend', function(e) {
+                    this.classList.remove('dragging');
+                    this.style.opacity = '';
+                    clearShifts();
+
+                    // Perform the reorder
+                    if (draggedElement && currentInsertIndex !== -1 && currentInsertIndex !== draggedIndex) {
+                        const draggedBotId = draggedElement.getAttribute('data-bot-id');
+                        const item = selectedBots.splice(draggedIndex, 1)[0];
+                        const insertAt = currentInsertIndex > draggedIndex ? currentInsertIndex - 1 : currentInsertIndex;
+                        selectedBots.splice(insertAt, 0, item);
+                        addConsoleLog(`Reordered: ${allBots.find(b => b.id === draggedBotId)?.name || draggedBotId} moved`);
+                    }
+
+                    draggedElement = null;
+                    draggedIndex = -1;
+                    currentInsertIndex = -1;
+                    updateActiveAIStatus();
+                });
+
+                item.addEventListener('dragover', function(e) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+
+                    if (!draggedElement || this === draggedElement) return;
+
+                    const rect = this.getBoundingClientRect();
+                    const midpoint = rect.top + rect.height / 2;
+                    const thisIdx = parseInt(this.getAttribute('data-index'));
+
+                    let insertIdx;
+                    if (e.clientY < midpoint) {
+                        insertIdx = thisIdx;
+                    } else {
+                        insertIdx = thisIdx + 1;
+                    }
+
+                    applyShifts(insertIdx);
+                });
+            });
+
+            // Also handle dragover on the container for edge cases
+            container.addEventListener('dragover', function(e) {
+                e.preventDefault();
+            });
+        }
+
+        function updateActiveAIStatus() {
+            const activeAiList = document.getElementById('activeAiList');
+            if (selectedBots.length === 0) {
+                activeAiList.innerHTML = '<div style="color: #858585; font-style: italic;">No AI selected</div>';
+            } else {
+                const activeBotsInfo = selectedBots.map((botId, index) => {
+                    const bot = allBots.find(b => b.id === botId);
+                    if (bot) {
+                        const priceIndicator = bot.price ? `<span class="price-indicator ${bot.price.toLowerCase()}"></span>` : '';
+                        return `<div class="active-ai-item" draggable="true" data-bot-id="${bot.id}" data-index="${index}">
+                            <div class="ai-item-content">${priceIndicator} ✓ ${bot.name}</div>
+                            <div class="ai-status-indicator">
+                                <button class="remove-ai-btn" data-bot-id="${bot.id}" style="${isAIProcessing ? 'display: none;' : ''}" onclick="removeAIFromSelection('${bot.id}', event)">✕</button>
+                                <span class="ai-status-light" data-bot-id="${bot.id}" style="${isAIProcessing ? '' : 'display: none;'}"></span>
+                            </div>
+                        </div>`;
+                    }
+                    return `<div class="active-ai-item" draggable="true" data-bot-id="${botId}" data-index="${index}">
+                        <div class="ai-item-content">✓ ${botId}</div>
+                        <div class="ai-status-indicator">
+                            <button class="remove-ai-btn" data-bot-id="${botId}" style="${isAIProcessing ? 'display: none;' : ''}" onclick="removeAIFromSelection('${botId}', event)">✕</button>
+                            <span class="ai-status-light" data-bot-id="${botId}" style="${isAIProcessing ? '' : 'display: none;'}"></span>
+                        </div>
+                    </div>`;
+                });
+                activeAiList.innerHTML = activeBotsInfo.join('');
+                
+                // Add drag and drop event listeners
+                setupDragAndDrop();
+            }
+        }
+
+        function updateAIStatus(botId, status) {
+            const statusLight = document.querySelector(`.ai-status-light[data-bot-id="${botId}"]`);
+            if (statusLight) {
+                statusLight.className = 'ai-status-light ' + status;
+            }
+        }
+
+        function setAllAIStatus(status) {
+            selectedBots.forEach(botId => {
+                updateAIStatus(botId, status);
+            });
+        }
+
+        function deleteMessage(menuItem) {
+            if (confirm('Are you sure you want to delete this message?')) {
+                const messageDiv = menuItem.closest('.message');
+                const menu = messageDiv.querySelector('.message-menu');
+                
+                // Close the menu
+                if (menu) menu.classList.remove('active');
+                
+                // Remove the message from the DOM
+                messageDiv.remove();
+                
+                // Sync with backend history
+                const messages = getCurrentMessages();
+                socket.emit('load_chat_history', { messages: messages });
+                
+                addConsoleLog('Message deleted from chat');
+                
+                // Trigger auto-save to update temp chat if needed
+                autoSaveTempChat();
+
+                // If this is a saved chat, update it on disk
+                if (currentSessionId && !currentSessionId.startsWith('temp_')) {
+                    const sessionData = {
+                        id: currentSessionId,
+                        name: currentSessionName,
+                        messages: messages,
+                        timestamp: new Date().toISOString(),
+                        selectedBots: selectedBots
+                    };
+
+                    fetch('/api/save_chat', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(sessionData)
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            addConsoleLog('Saved chat updated on disk');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error updating saved chat after deletion:', error);
+                    });
+                }
+            }
+        }
+
+        function addConsoleLog(message) {
+            const consoleContent = document.getElementById('consoleContent');
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.textContent = message;
+            consoleContent.appendChild(logEntry);
+            consoleContent.scrollTop = consoleContent.scrollHeight;
+        }
+
+        function formatMessage(content) {
+            // Protect LaTeX blocks from markdown parsing
+            const latexBlocks = [];
+            let counter = 0;
+            
+            // Extract and protect display math blocks ($$...$$, \[...\])
+            content = content.replace(/\$\$[\s\S]*?\$\$/g, (match) => {
+                const placeholder = `LTXBLK${counter++}LTXBLK`;
+                latexBlocks.push(match);
+                return placeholder;
+            });
+            content = content.replace(/\\\[[\s\S]*?\\\]/g, (match) => {
+                const placeholder = `LTXBLK${counter++}LTXBLK`;
+                latexBlocks.push(match);
+                return placeholder;
+            });
+            
+            // Extract and protect inline math ($...$, \(...\))
+            content = content.replace(/\$[^\$\n]+?\$/g, (match) => {
+                const placeholder = `LTXBLK${counter++}LTXBLK`;
+                latexBlocks.push(match);
+                return placeholder;
+            });
+            content = content.replace(/\\\([^\)]+?\\\)/g, (match) => {
+                const placeholder = `LTXBLK${counter++}LTXBLK`;
+                latexBlocks.push(match);
+                return placeholder;
+            });
+            
+            // Configure marked.js options
+            marked.setOptions({
+                breaks: true,
+                gfm: true,
+                headerIds: false,
+                mangle: false,
+                highlight: function(code, lang) {
+                    if (lang && hljs.getLanguage(lang)) {
+                        try {
+                            return hljs.highlight(code, { language: lang }).value;
+                        } catch (err) {}
+                    }
+                    return hljs.highlightAuto(code).value;
+                }
+            });
+            
+            // Parse markdown
+            let html = marked.parse(content);
+            
+            // Add language attribute to code blocks for display
+            html = html.replace(/<pre><code class="language-(\w+)">/g, (match, lang) => {
+                return `<pre data-language="${lang}"><code class="language-${lang}">`;
+            });
+            
+            // Restore LaTeX blocks
+            for (let i = 0; i < latexBlocks.length; i++) {
+                html = html.replace(`LTXBLK${i}LTXBLK`, latexBlocks[i]);
+            }
+            
+            return html;
+        }
+
+        function renderLatex(element) {
+            // Wait for KaTeX to load
+            if (typeof renderMathInElement !== 'undefined') {
+                renderMathInElement(element, {
+                    delimiters: [
+                        {left: '$$', right: '$$', display: true},
+                        {left: '\\[', right: '\\]', display: true},
+                        {left: '$', right: '$', display: false},
+                        {left: '\\(', right: '\\)', display: false}
+                    ],
+                    throwOnError: false
+                });
+            }
+        }
+
+        function toggleMessageMenu(button) {
+            event.stopPropagation();
+            
+            const messageDiv = button.closest('.message');
+            const menu = messageDiv.querySelector('.message-menu');
+            
+            // Close all other menus
+            document.querySelectorAll('.message-menu.active').forEach(m => {
+                if (m !== menu) m.classList.remove('active');
+            });
+            
+            // Toggle this menu
+            menu.classList.toggle('active');
+        }
+
+        // Close menus when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.message-menu') && !e.target.closest('.menu-btn')) {
+                document.querySelectorAll('.message-menu.active').forEach(m => {
+                    m.classList.remove('active');
+                });
+            }
+        });
+
+        function copyMessageContent(menuItem) {
+            // Prevent event bubbling
+            event.stopPropagation();
+            
+            const messageDiv = menuItem.closest('.message');
+            const menu = messageDiv.querySelector('.message-menu');
+            
+            // Get the raw content from data attribute
+            let contentToCopy = messageDiv.getAttribute('data-raw-content');
+            
+            // If raw content doesn't exist (old saved chats), extract from message-content
+            if (!contentToCopy) {
+                const messageContent = messageDiv.querySelector('.message-content');
+                if (messageContent) {
+                    // Try to get plain text content
+                    contentToCopy = messageContent.innerText || messageContent.textContent;
+                    console.log('Using extracted text content (no raw_content found)');
+                }
+            }
+            
+            console.log('Copy button clicked. Content length:', contentToCopy ? contentToCopy.length : 0);
+            
+            if (contentToCopy && contentToCopy.trim()) {
+                // Try modern clipboard API first
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(contentToCopy).then(() => {
+                        addConsoleLog('Message copied to clipboard');
+                        menu.classList.remove('active');
+                    }).catch(err => {
+                        console.error('Clipboard API failed: ', err);
+                        // Fallback to older method
+                        copyToClipboardFallback(contentToCopy, menu);
+                    });
+                } else {
+                    // Use fallback method
+                    copyToClipboardFallback(contentToCopy, menu);
+                }
+            } else {
+                console.error('No content found to copy');
+                addConsoleLog('No content to copy');
+                menu.classList.remove('active');
+            }
+        }
+
+        function copyToClipboardFallback(text, menu) {
+            // Create a temporary textarea element
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-9999px';
+            textarea.style.left = '-9999px';
+            document.body.appendChild(textarea);
+            
+            try {
+                textarea.select();
+                textarea.setSelectionRange(0, textarea.value.length);
+                const successful = document.execCommand('copy');
+                
+                if (successful) {
+                    addConsoleLog('Message copied to clipboard');
+                } else {
+                    addConsoleLog('Failed to copy message');
+                }
+            } catch (err) {
+                console.error('Fallback copy failed: ', err);
+                addConsoleLog('Failed to copy message');
+            } finally {
+                document.body.removeChild(textarea);
+                if (menu) menu.classList.remove('active');
+            }
+        }
+
+        function downloadMessageAsPNG(menuItem) {
+            // Prevent event bubbling
+            event.stopPropagation();
+            
+            const messageDiv = menuItem.closest('.message');
+            const menu = messageDiv.querySelector('.message-menu');
+            
+            // Close the menu
+            menu.classList.remove('active');
+            
+            // Temporarily hide the menu button and menu
+            const menuBtn = messageDiv.querySelector('.menu-btn');
+            menuBtn.style.display = 'none';
+            menu.style.display = 'none';
+            
+            // Get the sender name for the filename
+            const senderHeader = messageDiv.querySelector('.message-header');
+            const senderName = senderHeader ? senderHeader.textContent.trim().replace(/[^a-zA-Z0-9]/g, '_') : 'message';
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+            
+            // Use html2canvas to convert the message to canvas
+            html2canvas(messageDiv, {
+                backgroundColor: '#2d2d30',
+                scale: 2, // Higher quality
+                logging: false,
+                useCORS: true
+            }).then(canvas => {
+                // Convert canvas to blob
+                canvas.toBlob(blob => {
+                    // Create download link
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.download = `${senderName}_${timestamp}.png`;
+                    link.href = url;
+                    link.click();
+                    
+                    // Cleanup
+                    URL.revokeObjectURL(url);
+                    
+                    // Show menu button again
+                    menuBtn.style.display = 'flex';
+                    menu.style.display = 'none';
+                }, 'image/png');
+            }).catch(error => {
+                console.error('Error generating image:', error);
+                menuBtn.style.display = 'flex';
+                menu.style.display = 'none';
+            });
+        }
+
+        function addMessage(type, content, sender = null) {
+            const conversationWindow = document.getElementById('conversationWindow');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+
+            // Format the content
+            const formattedContent = formatMessage(content);
+
+            // Store raw content as data attribute for copying
+            if (type === 'ai') {
+                messageDiv.setAttribute('data-raw-content', content);
+            }
+
+            if (sender) {
+                const menuUI = `
+                    <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
+                        ⋮
+                    </button>
+                    <div class="message-menu">
+                        <button class="menu-item" onclick="copyMessageContent(this)">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                            </svg>
+                            Copy
+                        </button>
+                        <button class="menu-item" onclick="downloadMessageAsPNG(this)">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                            </svg>
+                            Download as PNG
+                        </button>
+                        <button class="menu-item" onclick="deleteMessage(this)">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                            </svg>
+                            Delete
+                        </button>
+                    </div>
+                `;
+                
+                messageDiv.innerHTML = `
+                    <div class="message-wrapper">
+                        <div class="message-header">${sender}</div>
+                        <div class="message-content">${formattedContent}</div>
+                        ${menuUI}
+                    </div>
+                `;
+            } else {
+                messageDiv.innerHTML = `<div class="message-content">${formattedContent}</div>`;
+            }
+
+            conversationWindow.appendChild(messageDiv);
+            
+            // Render LaTeX in the new message
+            setTimeout(() => renderLatex(messageDiv), 10);
+            
+            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+            
+            // Trigger auto-save for temporary chat
+            autoSaveTempChat();
+        }
+
+        function sendMessage() {
+            const sendBtn = document.getElementById('sendButton');
+            
+            // If AI is processing, act as stop button
+            if (isAIProcessing) {
+                stopAI();
+                return;
+            }
+
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            if (selectedBots.length === 0) {
+                addConsoleLog('Error: No AI selected. Please select at least one AI.');
+                return;
+            }
+
+            // Display user message
+            addMessage('user', message, 'You');
+            
+            // Set all AIs to waiting (yellow) status
+            setAllAIStatus('waiting');
+            
+            // Switch to stop button
+            setProcessingState(true);
+            
+            // Send to server with web search state
+            socket.emit('send_message', {
+                message: message,
+                selected_bots: selectedBots,
+                web_search: webSearchEnabled,
+                individual_web_search: individualWebSearchEnabled
+            });
+
+            // Clear input
+            input.value = '';
+        }
+
+        function setProcessingState(processing) {
+            isAIProcessing = processing;
+            const sendBtn = document.getElementById('sendButton');
+            if (processing) {
+                sendBtn.textContent = '⏹ Stop';
+                sendBtn.classList.add('stop-btn');
+                // Hide remove buttons and show status lights
+                document.querySelectorAll('.remove-ai-btn').forEach(btn => btn.style.display = 'none');
+                document.querySelectorAll('.ai-status-light').forEach(light => light.style.display = 'flex');
+            } else {
+                sendBtn.textContent = 'Send';
+                sendBtn.classList.remove('stop-btn');
+                // Show remove buttons and hide status lights
+                document.querySelectorAll('.remove-ai-btn').forEach(btn => btn.style.display = 'flex');
+                document.querySelectorAll('.ai-status-light').forEach(light => light.style.display = 'none');
+            }
+        }
+
+        function removeAIFromSelection(botId, event) {
+            event.stopPropagation();
+            
+            // Remove the bot from selectedBots array
+            const index = selectedBots.indexOf(botId);
+            if (index > -1) {
+                selectedBots.splice(index, 1);
+                
+                // Uncheck the bot in the bot list
+                const checkbox = document.querySelector(`input[data-bot-id="${botId}"]`);
+                if (checkbox) {
+                    checkbox.checked = false;
+                    // Also remove active class from the bot item
+                    const botItem = checkbox.closest('.bot-item');
+                    if (botItem) {
+                        botItem.classList.remove('active');
+                    }
+                }
+                
+                // Update the active AI list
+                updateActiveAIStatus();
+                
+                const bot = allBots.find(b => b.id === botId);
+                const botName = bot ? bot.name : botId;
+                addConsoleLog(`Removed ${botName} from selected AIs`);
+            }
+        }
+
+        function stopAI() {
+            socket.emit('stop_generation');
+            addConsoleLog('Stopping AI generation...');
+            setProcessingState(false);
+        }
+
+        function clearHistory(skipConfirm = false) {
+            if (skipConfirm || confirm('Are you sure you want to clear the conversation history and uploaded documents?')) {
+                // Clear conversation window
+                const conversationWindow = document.getElementById('conversationWindow');
+                conversationWindow.innerHTML = `
+                    <div class="message ai">
+                        <div class="message-header">System</div>
+                        <div class="message-content">Conversation history cleared. Start a new conversation!</div>
+                    </div>
+                `;
+                
+                // Clear console log
+                const consoleContent = document.getElementById('consoleContent');
+                consoleContent.innerHTML = '';
+                
+                // Clear uploaded documents
+                const documentsToRemove = [...uploadedPDFs]; // Create a copy
+                documentsToRemove.forEach((doc, index) => {
+                    fetch('/api/remove_document', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({filename: doc.filename})
+                    });
+                });
+                uploadedPDFs = [];
+                displayPDFs();
+                
+                // Notify server to clear history
+                socket.emit('clear_history');
+                
+                addConsoleLog('Conversation history and documents cleared');
+            }
+        }
+
+        // Socket event listeners
+        socket.on('console_log', function(data) {
+            addConsoleLog(data.message);
+        });
+
+        socket.on('ai_status', function(data) {
+            // Update AI status light
+            // status can be: 'waiting', 'running', 'done', 'error'
+            updateAIStatus(data.bot_id, data.status);
+        });
+
+        // Track active streaming message bubbles: bot_id -> { div, rawText, thinkingText }
+        const streamingMessages = {};
+
+        socket.on('ai_response_start', function(data) {
+            const conversationWindow = document.getElementById('conversationWindow');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message ai streaming';
+            messageDiv.innerHTML = `
+                <div class="message-wrapper">
+                    <div class="message-header">${data.bot_name}</div>
+                    <div class="thinking-block" style="display:none">
+                        <div class="thinking-header" onclick="toggleThinking(this)">
+                            <span class="thinking-toggle">▶</span>
+                            <span>Thinking…</span>
+                        </div>
+                        <div class="thinking-content"></div>
+                    </div>
+                    <div class="message-content"><span class="stream-text"></span><span class="stream-cursor"></span></div>
+                </div>
+            `;
+            conversationWindow.appendChild(messageDiv);
+            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+            streamingMessages[data.bot_id] = { div: messageDiv, rawText: '', thinkingText: '' };
+        });
+
+        socket.on('ai_thinking_chunk', function(data) {
+            const entry = streamingMessages[data.bot_id];
+            if (!entry) return;
+            entry.thinkingText += data.chunk;
+            const block = entry.div.querySelector('.thinking-block');
+            const content = entry.div.querySelector('.thinking-content');
+            if (block) block.style.display = '';
+            if (content) content.textContent = entry.thinkingText;
+            const conversationWindow = document.getElementById('conversationWindow');
+            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+        });
+
+        socket.on('ai_response_chunk', function(data) {
+            const entry = streamingMessages[data.bot_id];
+            if (!entry) return;
+            entry.rawText += data.chunk;
+            const streamSpan = entry.div.querySelector('.stream-text');
+            if (streamSpan) streamSpan.textContent = entry.rawText;
+            const conversationWindow = document.getElementById('conversationWindow');
+            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+        });
+
+        socket.on('ai_response_end', function(data) {
+            const entry = streamingMessages[data.bot_id];
+            if (!entry) return;
+            const messageDiv = entry.div;
+            const hasThinking = data.thinking && data.thinking.trim().length > 0;
+            const formattedContent = formatMessage(data.message);
+            const thinkingBlock = hasThinking ? `
+                <div class="thinking-block">
+                    <div class="thinking-header" onclick="toggleThinking(this)">
+                        <span class="thinking-toggle">▶</span>
+                        <span>Thinking (${data.thinking.length.toLocaleString()} chars)</span>
+                    </div>
+                    <div class="thinking-content">${escapeHtml(data.thinking)}</div>
+                </div>` : '';
+            const menuUI = `
+                <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
+                    ⋮
+                </button>
+                <div class="message-menu">
+                    <button class="menu-item" onclick="copyMessageContent(this)">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                        </svg>
+                        Copy
+                    </button>
+                    <button class="menu-item" onclick="downloadMessageAsPNG(this)">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                        </svg>
+                        Download as PNG
+                    </button>
+                    <button class="menu-item" onclick="deleteMessage(this)">
+                        <svg viewBox="0 0 24 24">
+                            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                        </svg>
+                        Delete
+                    </button>
+                </div>
+            `;
+            messageDiv.setAttribute('data-raw-content', data.message);
+            messageDiv.classList.remove('streaming');
+            messageDiv.innerHTML = `
+                <div class="message-wrapper">
+                    <div class="message-header">${data.bot_name}</div>
+                    ${thinkingBlock}
+                    <div class="message-content">${formattedContent}</div>
+                    ${menuUI}
+                </div>
+            `;
+            setTimeout(() => renderLatex(messageDiv), 10);
+            const conversationWindow = document.getElementById('conversationWindow');
+            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+            updateAIStatus(data.bot_id, data.stopped ? 'stopped' : 'done');
+            delete streamingMessages[data.bot_id];
+            autoSaveTempChat();
+        });
+
+        function toggleThinking(header) {
+            const toggle = header.querySelector('.thinking-toggle');
+            const content = header.nextElementSibling;
+            toggle.classList.toggle('open');
+            content.classList.toggle('visible');
+        }
+
+        function escapeHtml(text) {
+            return text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        socket.on('all_done', function() {
+            setProcessingState(false);
+        });
+
+        socket.on('web_search_results', function(data) {
+            addWebSearchResults(data.results, data.timestamp);
+        });
+
+        socket.on('individual_search_start', function(data) {
+            addConsoleLog(`[${data.timestamp}] ${data.bot_name}: performing individual web search...`);
+        });
+
+        socket.on('individual_search_results', function(data) {
+            addIndividualSearchResults(data.bot_id, data.bot_name, data.query, data.results, data.timestamp);
+        });
+
+        function addWebSearchResults(results, timestamp) {
+            const conversationWindow = document.getElementById('conversationWindow');
+            const searchDiv = document.createElement('div');
+            searchDiv.className = 'web-search-container';
+
+            const formattedResults = formatMessage(results);
+
+            searchDiv.innerHTML = `
+                <div class="web-search-header" onclick="toggleWebSearch(this)">
+                    <span>🌐 Web Search Results [${timestamp}]</span>
+                    <span class="web-search-toggle collapsed">▼</span>
+                </div>
+                <div class="web-search-content collapsed">
+                    ${formattedResults}
+                </div>
+            `;
+
+            conversationWindow.appendChild(searchDiv);
+            
+            // Render LaTeX in the web search results
+            setTimeout(() => renderLatex(searchDiv), 10);
+            
+            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+        }
+
+        function toggleWebSearch(header) {
+            const toggle = header.querySelector('.web-search-toggle');
+            const content = header.nextElementSibling;
+            toggle.classList.toggle('collapsed');
+            content.classList.toggle('collapsed');
+        }
+
+        function addIndividualSearchResults(botId, botName, query, results, timestamp) {
+            const conversationWindow = document.getElementById('conversationWindow');
+            const searchDiv = document.createElement('div');
+            searchDiv.className = 'individual-search-container';
+            searchDiv.setAttribute('data-bot-id', botId);
+
+            const formattedResults = formatMessage(results);
+
+            searchDiv.innerHTML = `
+                <div class="individual-search-header" onclick="toggleIndividualSearch(this)">
+                    <span>🔍 <strong>${botName}</strong> searched [${timestamp}]</span>
+                    <span class="individual-search-toggle collapsed">▼</span>
+                </div>
+                <div class="individual-search-query">Query: <em>${escapeHtml(query)}</em></div>
+                <div class="individual-search-content collapsed">
+                    ${formattedResults}
+                </div>
+            `;
+
+            conversationWindow.appendChild(searchDiv);
+            setTimeout(() => renderLatex(searchDiv), 10);
+            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+        }
+
+        function toggleIndividualSearch(header) {
+            const toggle = header.querySelector('.individual-search-toggle');
+            // The content is the sibling after the query div
+            const queryDiv = header.nextElementSibling;
+            const content = queryDiv.nextElementSibling;
+            toggle.classList.toggle('collapsed');
+            content.classList.toggle('collapsed');
+        }
+
+        // Price filter handlers
+        function applyFilters() {
+            // Get active filters
+            const miniChecked = document.getElementById('miniFilter').checked;
+            const cheapChecked = document.getElementById('cheapFilter').checked;
+            const expensiveChecked = document.getElementById('expensiveFilter').checked;
+            const maxChecked = document.getElementById('maxFilter').checked;
+            const imageChecked = document.getElementById('imageFilter').checked;
+            
+            const anyPriceFilter = miniChecked || cheapChecked || expensiveChecked || maxChecked;
+            
+            // Clear all selections first
+            selectedBots = [];
+            document.querySelectorAll('.bot-checkbox').forEach(checkbox => {
+                checkbox.checked = false;
+                checkbox.closest('.bot-item').classList.remove('active');
+            });
+            
+            // If no filters are checked, just return (all deselected)
+            if (!anyPriceFilter && !imageChecked) {
+                updateActiveAIStatus();
+                return;
+            }
+            
+            // Get all bots that match the criteria
+            let botsToSelect = allBots.filter(bot => {
+                let matchesPrice = false;
+                let matchesImage = true;
+                
+                // Check price filter
+                if (anyPriceFilter) {
+                    const botPrice = bot.price ? bot.price.toLowerCase() : '';
+                    const botProvider = bot.provider ? bot.provider.toLowerCase() : '';
+                    
+                    // Exclude Miscellaneous if any price filter is checked
+                    if (botProvider === 'miscellaneous') {
+                        matchesPrice = false;
+                    } else {
+                        matchesPrice = (miniChecked && botPrice === 'mini') ||
+                                      (cheapChecked && botPrice === 'cheap') ||
+                                      (expensiveChecked && botPrice === 'expensive') ||
+                                      (maxChecked && botPrice === 'max');
+                    }
+                } else {
+                    matchesPrice = true; // If no price filter, match all
+                }
+                
+                // Check image filter
+                if (imageChecked) {
+                    matchesImage = bot.support_images === true;
+                }
+                
+                // Return true if both conditions are met
+                return matchesPrice && matchesImage;
+            });
+            
+            // Select matching bots
+            botsToSelect.forEach(bot => {
+                const checkbox = document.querySelector(`.bot-checkbox[data-bot-id="${bot.id}"]`);
+                if (checkbox) {
+                    checkbox.checked = true;
+                    const botItem = checkbox.closest('.bot-item');
+                    selectedBots.push(bot.id);
+                    botItem.classList.add('active');
+                    addConsoleLog(`${bot.name} enabled`);
+                }
+            });
+            
+            updateActiveAIStatus();
+        }
+        
+        function handleFilterChange() {
+            applyFilters();
+        }
+
+        // Event listeners
+        document.getElementById('miniFilter').addEventListener('change', handleFilterChange);
+        document.getElementById('cheapFilter').addEventListener('change', handleFilterChange);
+        document.getElementById('expensiveFilter').addEventListener('change', handleFilterChange);
+        document.getElementById('maxFilter').addEventListener('change', handleFilterChange);
+        document.getElementById('imageFilter').addEventListener('change', handleFilterChange);
+        
+        document.getElementById('sendButton').addEventListener('click', sendMessage);
+        document.getElementById('clearButton').addEventListener('click', clearHistory);
+        
+        const messageInput = document.getElementById('messageInput');
+        
+        // Auto-resize textarea (grows with content up to CSS max-height)
+        function autoResize() {
+            this.style.height = 'auto';
+            this.style.height = this.scrollHeight + 'px';
+        }
+        
+        messageInput.addEventListener('input', autoResize);
+        
+        messageInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+                // Reset height after sending
+                this.style.height = '45px';
+            }
+        });
+
+        // Chat History Management
+        let currentSessionId = null;
+        let currentSessionName = 'Unsaved Chat';
+
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.chat-history-sidebar');
+            const container = document.querySelector('.container');
+            sidebar.classList.toggle('collapsed');
+            container.classList.toggle('sidebar-collapsed');
+            
+            if (!sidebar.classList.contains('collapsed')) {
+                loadSavedChats();
+            }
+        }
+
+        function startNewChat() {
+            currentSessionId = null;
+            tempChatId = null;
+            currentSessionName = 'Unsaved Chat';
+            document.getElementById('currentSessionName').innerHTML = '<span>Unsaved Chat</span>';
+            clearHistory(true); // Skip confirmation
+            // Remove active class from all history items
+            document.querySelectorAll('.history-item').forEach(item => {
+                item.classList.remove('active');
+            });
+        }
+
+        function saveCurrentSession() {
+            const name = prompt('Enter a name for this chat session:', currentSessionName === 'Unsaved Chat' ? '' : currentSessionName);
+            if (name && name.trim()) {
+                const messages = getCurrentMessages();
+
+                const sessionData = {
+                    id: currentSessionId || Date.now().toString(),
+                    name: name.trim(),
+                    messages: messages,
+                    timestamp: new Date().toISOString(),
+                    selectedBots: selectedBots
+                };
+
+                fetch('/api/save_chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(sessionData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // If we were working on a temporary chat, delete it
+                        if (tempChatId) {
+                            fetch('/api/delete_temp_chat', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({id: tempChatId})
+                            })
+                            .then(() => {
+                                loadTempChats();
+                            })
+                            .catch(error => {
+                                console.error('Error deleting temp chat:', error);
+                            });
+                            tempChatId = null;
+                        }
+                        
+                        currentSessionId = sessionData.id;
+                        currentSessionName = name.trim();
+                        document.getElementById('currentSessionName').innerHTML = `<span>${currentSessionName}</span>`;
+                        addConsoleLog(`Chat saved: ${currentSessionName}`);
+                        loadSavedChats();
+                    } else {
+                        alert('Error saving chat: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error saving chat');
+                });
+            }
+        }
+
+        function loadSavedChats() {
+            fetch('/api/list_chats')
+                .then(response => response.json())
+                .then(data => {
+                    const savedChatsDiv = document.getElementById('savedChats');
+                    if (data.chats && data.chats.length > 0) {
+                        savedChatsDiv.innerHTML = data.chats.map(chat => {
+                            const date = new Date(chat.timestamp);
+                            const timeStr = date.toLocaleString('en-US', { 
+                                month: 'short', 
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                            });
+                            const isActive = chat.id === currentSessionId ? 'active' : '';
+                            
+                            return `
+                                <div class="history-item ${isActive}" onclick="loadChat('${chat.id}')">
+                                    <div class="history-item-title">${chat.name}</div>
+                                    <div class="history-item-meta">
+                                        <span>${timeStr}</span>
+                                        <button class="history-item-delete" onclick="deleteChat(event, '${chat.id}')">❌</button>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    } else {
+                        savedChatsDiv.innerHTML = '<div style="color: #858585; font-size: 12px; padding: 10px; text-align: center;">No saved chats</div>';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading chats:', error);
+                });
+        }
+
+        function loadChat(chatId) {
+            fetch(`/api/load_chat/${chatId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.chat) {
+                        // Clear current conversation
+                        const conversationWindow = document.getElementById('conversationWindow');
+                        conversationWindow.innerHTML = '';
+                        
+                        // Load messages
+                        data.chat.messages.forEach(msg => {
+                            const messageDiv = document.createElement('div');
+                            messageDiv.className = `message ${msg.type}`;
+                            
+                            // Store raw content as data attribute for copying
+                            if (msg.type === 'ai' && msg.raw_content) {
+                                messageDiv.setAttribute('data-raw-content', msg.raw_content);
+                            }
+                            
+                            if (msg.sender) {
+                                const menuUI = `
+                                    <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
+                                        ⋮
+                                    </button>
+                                    <div class="message-menu">
+                                        <button class="menu-item" onclick="copyMessageContent(this)">
+                                            <svg viewBox="0 0 24 24">
+                                                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                                            </svg>
+                                            Copy
+                                        </button>
+                                        <button class="menu-item" onclick="downloadMessageAsPNG(this)">
+                                            <svg viewBox="0 0 24 24">
+                                                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                                            </svg>
+                                            Download as PNG
+                                        </button>
+                                        <button class="menu-item" onclick="deleteMessage(this)">
+                                            <svg viewBox="0 0 24 24">
+                                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                                            </svg>
+                                            Delete
+                                        </button>
+                                    </div>
+                                `;
+                                
+                                messageDiv.innerHTML = `
+                                    <div class="message-wrapper">
+                                        <div class="message-header">${msg.sender}</div>
+                                        <div class="message-content">${msg.content}</div>
+                                        ${menuUI}
+                                    </div>
+                                `;
+                            } else {
+                                messageDiv.innerHTML = `<div class="message-content">${msg.content}</div>`;
+                            }
+                            
+                            conversationWindow.appendChild(messageDiv);
+                            
+                            // Render LaTeX in loaded messages
+                            setTimeout(() => renderLatex(messageDiv), 10);
+                        });
+                        
+                        // Restore selected bots if available
+                        if (data.chat.selectedBots && data.chat.selectedBots.length > 0) {
+                            // Clear current selections
+                            document.querySelectorAll('.bot-checkbox').forEach(checkbox => {
+                                checkbox.checked = false;
+                                checkbox.closest('.bot-item').classList.remove('active');
+                            });
+                            selectedBots = [];
+                            
+                            // Select the saved bots
+                            data.chat.selectedBots.forEach(botId => {
+                                const checkbox = document.querySelector(`.bot-checkbox[data-bot-id="${botId}"]`);
+                                if (checkbox) {
+                                    checkbox.checked = true;
+                                    checkbox.closest('.bot-item').classList.add('active');
+                                    selectedBots.push(botId);
+                                }
+                            });
+                            updateActiveAIStatus();
+                        }
+                        
+                        // Update current session info
+                        currentSessionId = data.chat.id;
+                        currentSessionName = data.chat.name;
+                        document.getElementById('currentSessionName').innerHTML = `<span>${currentSessionName}</span>`;
+                        
+                        // Update active state in history list
+                        document.querySelectorAll('.history-item').forEach(item => {
+                            if (item.getAttribute('onclick').includes(chatId)) {
+                                item.classList.add('active');
+                            } else {
+                                item.classList.remove('active');
+                            }
+                        });
+                        
+                        // Sync chat history to backend
+                        const formattedMessages = data.chat.messages.map(msg => {
+                            if (msg.type === 'ai' && msg.sender) {
+                                // Parse bot name and ID from sender like "Bot Name (bot-id)"
+                                const match = msg.sender.match(/(.+?)\s*\((.+?)\)/);
+                                const botName = match ? match[1].trim() : msg.sender;
+                                const botId = match ? match[2].trim() : 'unknown';
+                                return {
+                                    type: 'ai',
+                                    botName: botName,
+                                    botId: botId,
+                                    content: msg.content
+                                };
+                            } else {
+                                return {
+                                    type: 'user',
+                                    content: msg.content
+                                };
+                            }
+                        });
+                        socket.emit('load_chat_history', {messages: formattedMessages});
+                        
+                        conversationWindow.scrollTop = conversationWindow.scrollHeight;
+                        addConsoleLog(`Loaded chat: ${currentSessionName}`);
+                    } else {
+                        alert('Error loading chat: ' + (data.error || 'Unknown error'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error loading chat');
+                });
+        }
+
+        function deleteChat(event, chatId) {
+            event.stopPropagation();
+            
+            if (confirm('Are you sure you want to delete this chat?')) {
+                fetch('/api/delete_chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({id: chatId})
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        if (currentSessionId === chatId) {
+                            currentSessionId = null;
+                            currentSessionName = 'Unsaved Chat';
+                            document.getElementById('currentSessionName').innerHTML = '<span>Unsaved Chat</span>';
+                        }
+                        loadSavedChats();
+                        addConsoleLog('Chat deleted');
+                    } else {
+                        alert('Error deleting chat: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error deleting chat');
+                });
+            }
+        }
+
+        // Temporary chat functions
+        let tempChatId = null;
+        let autoSaveTimeout = null;
+
+        function getCurrentMessages() {
+            const conversationWindow = document.getElementById('conversationWindow');
+            const messages = [];
+            
+            // Extract all messages from the conversation window
+            conversationWindow.querySelectorAll('.message').forEach(msg => {
+                const header = msg.querySelector('.message-header');
+                const content = msg.querySelector('.message-content');
+                
+                if (content) {
+                    const messageData = {
+                        type: msg.classList.contains('user') ? 'user' : 'ai',
+                        sender: header ? header.textContent : null,
+                        content: content.innerHTML
+                    };
+                    
+                    // Add raw content if available (for AI messages)
+                    const rawContent = msg.getAttribute('data-raw-content');
+                    if (rawContent) {
+                        messageData.raw_content = rawContent;
+                    }
+                    
+                    // Try to extract bot name and id for AI messages if available in sender
+                    if (messageData.type === 'ai' && messageData.sender) {
+                        const botMatch = messageData.sender.match(/^(.*?)\s*\((.*?)\)$/);
+                        if (botMatch) {
+                            messageData.botName = botMatch[1];
+                            messageData.botId = botMatch[2];
+                        }
+                    }
+                    
+                    messages.push(messageData);
+                }
+            });
+            return messages;
+        }
+
+        function autoSaveTempChat() {
+            // Clear any pending auto-save
+            if (autoSaveTimeout) {
+                clearTimeout(autoSaveTimeout);
+            }
+
+            // Don't auto-save if this is already a saved chat
+            if (currentSessionId && !currentSessionId.startsWith('temp_')) {
+                return;
+            }
+
+            // Auto-save after 2 seconds of inactivity
+            autoSaveTimeout = setTimeout(() => {
+                const messages = getCurrentMessages();
+
+                // Only save if there are messages
+                if (messages.length > 1) { // More than just the welcome message
+                    const sessionData = {
+                        id: tempChatId || ('temp_' + Date.now().toString()),
+                        messages: messages,
+                        selectedBots: selectedBots
+                    };
+
+                    fetch('/api/save_temp_chat', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(sessionData)
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            if (!tempChatId) {
+                                tempChatId = data.id;
+                            }
+                            loadTempChats();
+                            addConsoleLog('Auto-saved temporary chat');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error auto-saving temp chat:', error);
+                    });
+                }
+            }, 2000);
+        }
+
+        function loadTempChats() {
+            fetch('/api/list_temp_chats')
+                .then(response => response.json())
+                .then(data => {
+                    const tempChatsDiv = document.getElementById('tempChats');
+                    if (data.chats && data.chats.length > 0) {
+                        tempChatsDiv.innerHTML = data.chats.map(chat => {
+                            const date = new Date(chat.timestamp);
+                            const timeStr = date.toLocaleString('en-US', { 
+                                hour: '2-digit',
+                                minute: '2-digit'
+                            });
+                            const isActive = chat.id === tempChatId ? 'active' : '';
+                            
+                            return `
+                                <div class="history-item temporary ${isActive}" onclick="loadTempChat('${chat.id}')">
+                                    <div class="history-item-title">💾 ${timeStr}</div>
+                                    <div class="history-item-meta">
+                                        <span>${chat.messageCount} msgs</span>
+                                        <button class="history-item-delete" onclick="deleteTempChat(event, '${chat.id}')">❌</button>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    } else {
+                        tempChatsDiv.innerHTML = '<div style="color: #858585; font-size: 12px; padding: 10px; text-align: center;">No temporary chats</div>';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading temp chats:', error);
+                });
+        }
+
+        function loadTempChat(chatId) {
+            fetch(`/api/load_temp_chat/${chatId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.chat) {
+                        // Clear current conversation
+                        const conversationWindow = document.getElementById('conversationWindow');
+                        conversationWindow.innerHTML = '';
+                        
+                        // Load messages
+                        data.chat.messages.forEach(msg => {
+                            const messageDiv = document.createElement('div');
+                            messageDiv.className = `message ${msg.type}`;
+                            
+                            // Store raw content as data attribute for copying
+                            if (msg.type === 'ai' && msg.raw_content) {
+                                messageDiv.setAttribute('data-raw-content', msg.raw_content);
+                            }
+                            
+                            if (msg.sender) {
+                                const menuUI = `
+                                    <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
+                                        ⋮
+                                    </button>
+                                    <div class="message-menu">
+                                        <button class="menu-item" onclick="copyMessageContent(this)">
+                                            <svg viewBox="0 0 24 24">
+                                                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                                            </svg>
+                                            Copy
+                                        </button>
+                                        <button class="menu-item" onclick="downloadMessageAsPNG(this)">
+                                            <svg viewBox="0 0 24 24">
+                                                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                                            </svg>
+                                            Download as PNG
+                                        </button>
+                                        <button class="menu-item" onclick="deleteMessage(this)">
+                                            <svg viewBox="0 0 24 24">
+                                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                                            </svg>
+                                            Delete
+                                        </button>
+                                    </div>
+                                `;
+                                
+                                messageDiv.innerHTML = `
+                                    <div class="message-wrapper">
+                                        <div class="message-header">${msg.sender}</div>
+                                        <div class="message-content">${msg.content}</div>
+                                        ${menuUI}
+                                    </div>
+                                `;
+                            } else {
+                                messageDiv.innerHTML = `<div class="message-content">${msg.content}</div>`;
+                            }
+                            
+                            conversationWindow.appendChild(messageDiv);
+                            
+                            // Render LaTeX in loaded messages
+                            setTimeout(() => renderLatex(messageDiv), 10);
+                        });
+                        
+                        // Restore selected bots if available
+                        if (data.chat.selectedBots && data.chat.selectedBots.length > 0) {
+                            // Clear current selections
+                            document.querySelectorAll('.bot-checkbox').forEach(checkbox => {
+                                checkbox.checked = false;
+                                checkbox.closest('.bot-item').classList.remove('active');
+                            });
+                            selectedBots = [];
+                            
+                            // Select the saved bots
+                            data.chat.selectedBots.forEach(botId => {
+                                const checkbox = document.querySelector(`.bot-checkbox[data-bot-id="${botId}"]`);
+                                if (checkbox) {
+                                    checkbox.checked = true;
+                                    checkbox.closest('.bot-item').classList.add('active');
+                                    selectedBots.push(botId);
+                                }
+                            });
+                            updateActiveAIStatus();
+                        }
+                        
+                        // Update temp chat tracking
+                        tempChatId = data.chat.id;
+                        currentSessionId = null;
+                        currentSessionName = 'Temporary Chat';
+                        document.getElementById('currentSessionName').innerHTML = `<span>Temporary Chat</span>`;
+                        
+                        // Update active state in history list
+                        document.querySelectorAll('.history-item').forEach(item => {
+                            item.classList.remove('active');
+                        });
+                        document.querySelectorAll('.history-item').forEach(item => {
+                            if (item.getAttribute('onclick') && item.getAttribute('onclick').includes(chatId)) {
+                                item.classList.add('active');
+                            }
+                        });
+                        
+                        // Sync chat history to backend
+                        const formattedMessages = data.chat.messages.map(msg => {
+                            if (msg.type === 'ai' && msg.sender) {
+                                // Parse bot name and ID from sender like "Bot Name (bot-id)"
+                                const match = msg.sender.match(/(.+?)\s*\((.+?)\)/);
+                                const botName = match ? match[1].trim() : msg.sender;
+                                const botId = match ? match[2].trim() : 'unknown';
+                                return {
+                                    type: 'ai',
+                                    botName: botName,
+                                    botId: botId,
+                                    content: msg.content
+                                };
+                            } else {
+                                return {
+                                    type: 'user',
+                                    content: msg.content
+                                };
+                            }
+                        });
+                        socket.emit('load_chat_history', {messages: formattedMessages});
+                        
+                        conversationWindow.scrollTop = conversationWindow.scrollHeight;
+                        addConsoleLog(`Loaded temporary chat`);
+                    } else {
+                        alert('Error loading temporary chat: ' + (data.error || 'Unknown error'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error loading temporary chat');
+                });
+        }
+
+        function deleteTempChat(event, chatId) {
+            event.stopPropagation();
+            
+            if (confirm('Are you sure you want to delete this temporary chat?')) {
+                fetch('/api/delete_temp_chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({id: chatId})
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        if (tempChatId === chatId) {
+                            tempChatId = null;
+                            currentSessionName = 'Unsaved Chat';
+                            document.getElementById('currentSessionName').innerHTML = '<span>Unsaved Chat</span>';
+                        }
+                        loadTempChats();
+                        addConsoleLog('Temporary chat deleted');
+                    } else {
+                        alert('Error deleting temporary chat: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Error deleting temporary chat');
+                });
+            }
+        }
+
+        // Panel toggle functionality
+        function togglePanel(panelId) {
+            const panel = document.getElementById(panelId);
+            const toggle = panel.querySelector('.panel-toggle');
+            
+            panel.classList.toggle('collapsed');
+            toggle.classList.toggle('collapsed');
+        }
+
+        // Initialize
+        loadBots();
+        loadSavedChats();
+        loadTempChats();
+        loadTempChats();
+    </script>
+</body>
+</html>

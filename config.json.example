@@ -1,0 +1,21 @@
+{
+  "web_search_bot": "gpt-4o",
+  "bots": [
+    {
+      "id": "gpt-4o",
+      "name": "GPT-4o",
+      "enabled": true,
+      "price": "cheap",
+      "provider": "OpenAI",
+      "support_images": true
+    },
+    {
+      "id": "claude-3-5-sonnet",
+      "name": "Claude 3.5 Sonnet",
+      "enabled": true,
+      "price": "expensive",
+      "provider": "Anthropic",
+      "support_images": true
+    }
+  ]
+}

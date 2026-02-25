@@ -1,0 +1,36 @@
+# User data and chat history
+chat_history/
+!chat_history/.gitkeep
+temp_chat_history/
+!temp_chat_history/.gitkeep
+gpt_responses/
+!gpt_responses/.gitkeep
+uploads/
+!uploads/.gitkeep
+
+# Python environment and cache
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local configuration and secrets
+.env
+config.json
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+*.sql
+
+# Editor directories
+.vscode/
+.idea/
