@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
 import json
 import time
@@ -10,11 +10,9 @@ from werkzeug.utils import secure_filename
 import PyPDF2
 from PIL import Image
 import easyocr
-from ddgs import DDGS
 import base64
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-here'
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['CHAT_HISTORY_FOLDER'] = 'chat_history'
 app.config['TEMP_CHAT_HISTORY_FOLDER'] = 'temp_chat_history'
@@ -190,6 +188,7 @@ def save_chat():
             'name': chat_name,
             'messages': messages,
             'selectedBots': selected_bots,
+            'systemPrompt': data.get('systemPrompt', ''),
             'timestamp': data.get('timestamp', datetime.now().isoformat())
         }
         
@@ -278,6 +277,7 @@ def save_temp_chat():
             'name': 'Temporary Chat',
             'messages': messages,
             'selectedBots': selected_bots,
+            'systemPrompt': data.get('systemPrompt', ''),
             'timestamp': datetime.now().isoformat(),
             'isTemporary': True
         }
@@ -447,7 +447,7 @@ def encode_image_to_base64(filepath):
     except Exception as e:
         return None
 
-def simulate_ai_response(bot_name, bot_id, user_message, selected_bots, session_id, chat_history, current_round_responses, web_search_results=None, support_images=False, individual_web_search=False):
+def simulate_ai_response(bot_name, bot_id, user_message, selected_bots, session_id, chat_history, current_round_responses, web_search_results=None, support_images=False, individual_web_search=False, user_system_prompt=''):
     """Process AI response using GPT_handle"""
     try:
         # Build enhanced chat history including current round responses
@@ -463,6 +463,10 @@ def simulate_ai_response(bot_name, bot_id, user_message, selected_bots, session_
         
         # Use GPT_handle to get actual AI response with enhanced chat history
         system_prompt = f"You are {bot_name} (model: {bot_id}), an AI assistant participating in a council discussion with other AI models. You can see responses from other AI assistants and should engage with their ideas, build upon them, agree, disagree, or add new perspectives. Be aware that you are communicating with different AI models, not the same assistant. Please format your response with string such as \n. Do NOT prefix your response with your name or model ID - the system will add that automatically."
+
+        # Prepend user-defined system prompt if provided
+        if user_system_prompt:
+            system_prompt = user_system_prompt + "\n\n" + system_prompt
         
         # Add web search results if available
         if web_search_results:
@@ -669,6 +673,7 @@ def handle_message(data):
     selected_bot_ids = data.get('selected_bots', [])
     web_search_enabled = data.get('web_search', False)
     individual_web_search = data.get('individual_web_search', False)
+    user_system_prompt = data.get('system_prompt', '')
     session_id = request.sid  # Get unique session ID
     
     # Reset stop flag for this session
@@ -763,7 +768,8 @@ def handle_message(data):
                 current_round_responses,
                 web_search_results,
                 support_images,
-                individual_web_search
+                individual_web_search,
+                user_system_prompt
             )
             
             # Add this response to current round responses for next agent to see

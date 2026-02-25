@@ -957,6 +957,54 @@
             padding-bottom: 35px;
         }
 
+        .md-content-wrapper {
+            position: relative;
+        }
+
+        .md-copy-btn {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            background: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #858585;
+            width: 26px;
+            height: 26px;
+            padding: 4px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s, background 0.2s, color 0.2s, border-color 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 5;
+        }
+
+        .message:hover .md-copy-btn,
+        .md-copy-btn:focus {
+            opacity: 1;
+        }
+
+        .md-copy-btn:hover {
+            background: #4ec9b0;
+            color: #1e1e1e;
+            border-color: #4ec9b0;
+        }
+
+        .md-copy-btn.copied {
+            opacity: 1;
+            color: #4ec9b0;
+            border-color: #4ec9b0;
+        }
+
+        .md-copy-btn svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+            pointer-events: none;
+        }
+
         .input-area {
             padding: 15px;
             background: #252526;
@@ -1033,6 +1081,37 @@
 
         #sendButton.stop-btn:hover {
             background: #c9302c;
+        }
+
+        #systemPromptPanel {
+            flex: 0 0 auto !important;
+            overflow: hidden;
+            max-height: 500px;
+            transition: max-height 0.3s ease-out !important;
+        }
+
+        #systemPromptPanel.collapsed {
+            max-height: 56px;
+        }
+
+        .system-prompt-input {
+            width: 100%;
+            padding: 8px 12px;
+            background: #2d2d30;
+            border: 1px solid #4ec9b0;
+            border-radius: 5px;
+            color: #e0e0e0;
+            font-size: 13px;
+            outline: none;
+            resize: vertical;
+            min-height: 80px;
+            max-height: 300px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            box-sizing: border-box;
+        }
+
+        .system-prompt-input:focus {
+            border-color: #5fd9c0;
         }
 
         ::-webkit-scrollbar {
@@ -1300,6 +1379,7 @@
             color: #d4d4d4;
             font-style: italic;
         }
+
     </style>
 </head>
 <body>
@@ -1392,6 +1472,15 @@
         </div>
 
         <div class="sidebar">
+            <div class="ai-status collapsed" id="systemPromptPanel">
+                <h2 onclick="togglePanel('systemPromptPanel')">
+                    ⚙️ System Prompt
+                    <span class="panel-toggle collapsed">▼</span>
+                </h2>
+                <div class="panel-content">
+                    <textarea id="systemPromptInput" class="system-prompt-input" placeholder="Enter a custom system prompt to prepend to all AI instructions… (optional)"></textarea>
+                </div>
+            </div>
             <div class="ai-status" id="aiSelectPanel">
                 <h2 onclick="togglePanel('aiSelectPanel')">
                     AI Select
@@ -1898,6 +1987,28 @@
         }
 
         function formatMessage(content) {
+            // Protect fenced code blocks so raw HTML inside them isn't re-wrapped
+            const fencedBlocks = [];
+            let fcIdx = 0;
+            content = content.replace(/```[\s\S]*?```/g, (match) => {
+                const ph = `FENCEDBLK${fcIdx++}FENCEDBLK`;
+                fencedBlocks.push(match);
+                return ph;
+            });
+
+            // Detect raw HTML output (<!DOCTYPE html>...) outside code fences and wrap safely
+            content = content.replace(/(<!DOCTYPE\s+html[\s\S]*?<\/html>)/gi, (match) => {
+                return '```html\n' + match + '\n```';
+            });
+            content = content.replace(/(<html[\s\S]*?<\/html>)/gi, (match) => {
+                return '```html\n' + match + '\n```';
+            });
+
+            // Restore fenced code blocks
+            for (let i = 0; i < fencedBlocks.length; i++) {
+                content = content.replace(`FENCEDBLK${i}FENCEDBLK`, fencedBlocks[i]);
+            }
+
             // Protect LaTeX blocks from markdown parsing
             const latexBlocks = [];
             let counter = 0;
@@ -1949,7 +2060,7 @@
             html = html.replace(/<pre><code class="language-(\w+)">/g, (match, lang) => {
                 return `<pre data-language="${lang}"><code class="language-${lang}">`;
             });
-            
+
             // Restore LaTeX blocks
             for (let i = 0; i < latexBlocks.length; i++) {
                 html = html.replace(`LTXBLK${i}LTXBLK`, latexBlocks[i]);
@@ -2162,7 +2273,13 @@
                 messageDiv.innerHTML = `
                     <div class="message-wrapper">
                         <div class="message-header">${sender}</div>
-                        <div class="message-content">${formattedContent}</div>
+                        ${type === 'ai' ? `
+                        <div class="md-content-wrapper">
+                            <button class="md-copy-btn" onclick="copyMarkdownContent(this)" title="Copy">
+                                <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                            </button>
+                            <div class="message-content">${formattedContent}</div>
+                        </div>` : `<div class="message-content">${formattedContent}</div>`}
                         ${menuUI}
                     </div>
                 `;
@@ -2210,11 +2327,14 @@
             setProcessingState(true);
             
             // Send to server with web search state
+            const systemPromptInput = document.getElementById('systemPromptInput');
+            const userSystemPrompt = systemPromptInput ? systemPromptInput.value.trim() : '';
             socket.emit('send_message', {
                 message: message,
                 selected_bots: selectedBots,
                 web_search: webSearchEnabled,
-                individual_web_search: individualWebSearchEnabled
+                individual_web_search: individualWebSearchEnabled,
+                system_prompt: userSystemPrompt
             });
 
             // Clear input
@@ -2410,7 +2530,12 @@
                 <div class="message-wrapper">
                     <div class="message-header">${data.bot_name}</div>
                     ${thinkingBlock}
-                    <div class="message-content">${formattedContent}</div>
+                    <div class="md-content-wrapper">
+                        <button class="md-copy-btn" onclick="copyMarkdownContent(this)" title="Copy">
+                            <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                        </button>
+                        <div class="message-content">${formattedContent}</div>
+                    </div>
                     ${menuUI}
                 </div>
             `;
@@ -2434,6 +2559,28 @@
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;');
+        }
+
+        function copyMarkdownContent(btn) {
+            const messageDiv = btn.closest('.message');
+            const rawContent = messageDiv ? messageDiv.getAttribute('data-raw-content') : null;
+            if (rawContent && rawContent.trim()) {
+                const doTheCopy = (text) => {
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(text).then(() => {
+                            btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.2l-3.5-3.5-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>';
+                            btn.classList.add('copied');
+                            setTimeout(() => {
+                                btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+                                btn.classList.remove('copied');
+                            }, 1500);
+                        }).catch(() => copyToClipboardFallback(text));
+                    } else {
+                        copyToClipboardFallback(text);
+                    }
+                };
+                doTheCopy(rawContent);
+            }
         }
 
         socket.on('all_done', function() {
@@ -2658,7 +2805,8 @@
                     name: name.trim(),
                     messages: messages,
                     timestamp: new Date().toISOString(),
-                    selectedBots: selectedBots
+                    selectedBots: selectedBots,
+                    systemPrompt: (document.getElementById('systemPromptInput') || {}).value || ''
                 };
 
                 fetch('/api/save_chat', {
@@ -2785,7 +2933,13 @@
                                 messageDiv.innerHTML = `
                                     <div class="message-wrapper">
                                         <div class="message-header">${msg.sender}</div>
-                                        <div class="message-content">${msg.content}</div>
+                                        ${msg.type === 'ai' ? `
+                                        <div class="md-content-wrapper">
+                                            <button class="md-copy-btn" onclick="copyMarkdownContent(this)" title="Copy">
+                                                <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                                            </button>
+                                            <div class="message-content">${msg.content}</div>
+                                        </div>` : `<div class="message-content">${msg.content}</div>`}
                                         ${menuUI}
                                     </div>
                                 `;
@@ -2820,6 +2974,12 @@
                             updateActiveAIStatus();
                         }
                         
+                        // Restore system prompt if available
+                        const sysPromptEl = document.getElementById('systemPromptInput');
+                        if (sysPromptEl && data.chat.systemPrompt !== undefined) {
+                            sysPromptEl.value = data.chat.systemPrompt;
+                        }
+
                         // Update current session info
                         currentSessionId = data.chat.id;
                         currentSessionName = data.chat.name;
@@ -2959,7 +3119,8 @@
                     const sessionData = {
                         id: tempChatId || ('temp_' + Date.now().toString()),
                         messages: messages,
-                        selectedBots: selectedBots
+                        selectedBots: selectedBots,
+                        systemPrompt: (document.getElementById('systemPromptInput') || {}).value || ''
                     };
 
                     fetch('/api/save_temp_chat', {
@@ -3066,7 +3227,13 @@
                                 messageDiv.innerHTML = `
                                     <div class="message-wrapper">
                                         <div class="message-header">${msg.sender}</div>
-                                        <div class="message-content">${msg.content}</div>
+                                        ${msg.type === 'ai' ? `
+                                        <div class="md-content-wrapper">
+                                            <button class="md-copy-btn" onclick="copyMarkdownContent(this)" title="Copy">
+                                                <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                                            </button>
+                                            <div class="message-content">${msg.content}</div>
+                                        </div>` : `<div class="message-content">${msg.content}</div>`}
                                         ${menuUI}
                                     </div>
                                 `;
@@ -3106,6 +3273,12 @@
                         currentSessionId = null;
                         currentSessionName = 'Temporary Chat';
                         document.getElementById('currentSessionName').innerHTML = `<span>Temporary Chat</span>`;
+
+                        // Restore system prompt if available
+                        const sysPromptElTemp = document.getElementById('systemPromptInput');
+                        if (sysPromptElTemp && data.chat.systemPrompt !== undefined) {
+                            sysPromptElTemp.value = data.chat.systemPrompt;
+                        }
                         
                         // Update active state in history list
                         document.querySelectorAll('.history-item').forEach(item => {
