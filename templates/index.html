@@ -961,17 +961,17 @@
             position: relative;
         }
 
-        .md-copy-btn {
+        .code-copy-btn {
             position: absolute;
-            top: 4px;
-            right: 4px;
+            top: 8px;
+            right: 8px;
             background: #3c3c3c;
             border: 1px solid #555;
             border-radius: 4px;
             color: #858585;
-            width: 26px;
-            height: 26px;
-            padding: 4px;
+            width: 28px;
+            height: 28px;
+            padding: 5px;
             cursor: pointer;
             opacity: 0;
             transition: opacity 0.2s, background 0.2s, color 0.2s, border-color 0.2s;
@@ -981,26 +981,26 @@
             z-index: 5;
         }
 
-        .message:hover .md-copy-btn,
-        .md-copy-btn:focus {
+        pre:hover .code-copy-btn,
+        .code-copy-btn:focus {
             opacity: 1;
         }
 
-        .md-copy-btn:hover {
+        .code-copy-btn:hover {
             background: #4ec9b0;
             color: #1e1e1e;
             border-color: #4ec9b0;
         }
 
-        .md-copy-btn.copied {
+        .code-copy-btn.copied {
             opacity: 1;
             color: #4ec9b0;
             border-color: #4ec9b0;
         }
 
-        .md-copy-btn svg {
-            width: 14px;
-            height: 14px;
+        .code-copy-btn svg {
+            width: 16px;
+            height: 16px;
             fill: currentColor;
             pointer-events: none;
         }
@@ -2273,13 +2273,7 @@
                 messageDiv.innerHTML = `
                     <div class="message-wrapper">
                         <div class="message-header">${sender}</div>
-                        ${type === 'ai' ? `
-                        <div class="md-content-wrapper">
-                            <button class="md-copy-btn" onclick="copyMarkdownContent(this)" title="Copy">
-                                <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                            </button>
-                            <div class="message-content">${formattedContent}</div>
-                        </div>` : `<div class="message-content">${formattedContent}</div>`}
+                        <div class="message-content">${formattedContent}</div>
                         ${menuUI}
                     </div>
                 `;
@@ -2290,7 +2284,10 @@
             conversationWindow.appendChild(messageDiv);
             
             // Render LaTeX in the new message
-            setTimeout(() => renderLatex(messageDiv), 10);
+            setTimeout(() => {
+                renderLatex(messageDiv);
+                addCopyButtonsToCodeBlocks(messageDiv);
+            }, 10);
             
             conversationWindow.scrollTop = conversationWindow.scrollHeight;
             
@@ -2530,16 +2527,14 @@
                 <div class="message-wrapper">
                     <div class="message-header">${data.bot_name}</div>
                     ${thinkingBlock}
-                    <div class="md-content-wrapper">
-                        <button class="md-copy-btn" onclick="copyMarkdownContent(this)" title="Copy">
-                            <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                        </button>
-                        <div class="message-content">${formattedContent}</div>
-                    </div>
+                    <div class="message-content">${formattedContent}</div>
                     ${menuUI}
                 </div>
             `;
-            setTimeout(() => renderLatex(messageDiv), 10);
+            setTimeout(() => {
+                renderLatex(messageDiv);
+                addCopyButtonsToCodeBlocks(messageDiv);
+            }, 10);
             const conversationWindow = document.getElementById('conversationWindow');
             conversationWindow.scrollTop = conversationWindow.scrollHeight;
             updateAIStatus(data.bot_id, data.stopped ? 'stopped' : 'done');
@@ -2561,26 +2556,43 @@
                 .replace(/>/g, '&gt;');
         }
 
-        function copyMarkdownContent(btn) {
-            const messageDiv = btn.closest('.message');
-            const rawContent = messageDiv ? messageDiv.getAttribute('data-raw-content') : null;
-            if (rawContent && rawContent.trim()) {
-                const doTheCopy = (text) => {
+        function addCopyButtonsToCodeBlocks(messageDiv) {
+            // Find all code blocks within the message
+            const codeBlocks = messageDiv.querySelectorAll('pre');
+            codeBlocks.forEach(pre => {
+                // Skip if button already exists
+                if (pre.querySelector('.code-copy-btn')) return;
+                
+                // Create wrapper for positioning
+                pre.style.position = 'relative';
+                
+                // Create copy button
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'code-copy-btn';
+                copyBtn.title = 'Copy code';
+                copyBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+                
+                // Add click handler
+                copyBtn.onclick = function() {
+                    const code = pre.querySelector('code');
+                    const textToCopy = code ? code.textContent : pre.textContent;
+                    
                     if (navigator.clipboard && navigator.clipboard.writeText) {
-                        navigator.clipboard.writeText(text).then(() => {
-                            btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.2l-3.5-3.5-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>';
-                            btn.classList.add('copied');
+                        navigator.clipboard.writeText(textToCopy).then(() => {
+                            copyBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.2l-3.5-3.5-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>';
+                            copyBtn.classList.add('copied');
                             setTimeout(() => {
-                                btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
-                                btn.classList.remove('copied');
+                                copyBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+                                copyBtn.classList.remove('copied');
                             }, 1500);
-                        }).catch(() => copyToClipboardFallback(text));
-                    } else {
-                        copyToClipboardFallback(text);
+                        }).catch(err => {
+                            console.error('Copy failed:', err);
+                        });
                     }
                 };
-                doTheCopy(rawContent);
-            }
+                
+                pre.appendChild(copyBtn);
+            });
         }
 
         socket.on('all_done', function() {
@@ -2619,7 +2631,10 @@
             conversationWindow.appendChild(searchDiv);
             
             // Render LaTeX in the web search results
-            setTimeout(() => renderLatex(searchDiv), 10);
+            setTimeout(() => {
+                renderLatex(searchDiv);
+                addCopyButtonsToCodeBlocks(searchDiv);
+            }, 10);
             
             conversationWindow.scrollTop = conversationWindow.scrollHeight;
         }
@@ -2651,7 +2666,10 @@
             `;
 
             conversationWindow.appendChild(searchDiv);
-            setTimeout(() => renderLatex(searchDiv), 10);
+            setTimeout(() => {
+                renderLatex(searchDiv);
+                addCopyButtonsToCodeBlocks(searchDiv);
+            }, 10);
             conversationWindow.scrollTop = conversationWindow.scrollHeight;
         }
 
@@ -2933,13 +2951,7 @@
                                 messageDiv.innerHTML = `
                                     <div class="message-wrapper">
                                         <div class="message-header">${msg.sender}</div>
-                                        ${msg.type === 'ai' ? `
-                                        <div class="md-content-wrapper">
-                                            <button class="md-copy-btn" onclick="copyMarkdownContent(this)" title="Copy">
-                                                <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                                            </button>
-                                            <div class="message-content">${msg.content}</div>
-                                        </div>` : `<div class="message-content">${msg.content}</div>`}
+                                        <div class="message-content">${msg.content}</div>
                                         ${menuUI}
                                     </div>
                                 `;
@@ -2950,7 +2962,10 @@
                             conversationWindow.appendChild(messageDiv);
                             
                             // Render LaTeX in loaded messages
-                            setTimeout(() => renderLatex(messageDiv), 10);
+                            setTimeout(() => {
+                                renderLatex(messageDiv);
+                                addCopyButtonsToCodeBlocks(messageDiv);
+                            }, 10);
                         });
                         
                         // Restore selected bots if available
@@ -3227,13 +3242,7 @@
                                 messageDiv.innerHTML = `
                                     <div class="message-wrapper">
                                         <div class="message-header">${msg.sender}</div>
-                                        ${msg.type === 'ai' ? `
-                                        <div class="md-content-wrapper">
-                                            <button class="md-copy-btn" onclick="copyMarkdownContent(this)" title="Copy">
-                                                <svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
-                                            </button>
-                                            <div class="message-content">${msg.content}</div>
-                                        </div>` : `<div class="message-content">${msg.content}</div>`}
+                                        <div class="message-content">${msg.content}</div>
                                         ${menuUI}
                                     </div>
                                 `;
@@ -3244,7 +3253,10 @@
                             conversationWindow.appendChild(messageDiv);
                             
                             // Render LaTeX in loaded messages
-                            setTimeout(() => renderLatex(messageDiv), 10);
+                            setTimeout(() => {
+                                renderLatex(messageDiv);
+                                addCopyButtonsToCodeBlocks(messageDiv);
+                            }, 10);
                         });
                         
                         // Restore selected bots if available
