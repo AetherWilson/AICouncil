@@ -462,7 +462,7 @@ def simulate_ai_response(bot_name, bot_id, user_message, selected_bots, session_
                 })
         
         # Use GPT_handle to get actual AI response with enhanced chat history
-        system_prompt = f"You are {bot_name} (model: {bot_id}), an AI assistant participating in a council discussion with other AI models. You can see responses from other AI assistants and should engage with their ideas, build upon them, agree, disagree, or add new perspectives. Be aware that you are communicating with different AI models, not the same assistant. Please format your response with string such as \n. Do NOT prefix your response with your name or model ID - the system will add that automatically."
+        system_prompt = f"You are {bot_name} (model: {bot_id}), an AI assistant participating in a council discussion with other AI models. You can see responses from other AI assistants and should engage with their ideas, build upon them, agree, disagree, or add new perspectives. Be aware that you are communicating with different AI models, not the same assistant. Please use Markdown formatting including tables, lists, and code blocks where appropriate. Do NOT prefix your response with your name or model ID - the system will add that automatically."
 
         # Prepend user-defined system prompt if provided
         if user_system_prompt:
