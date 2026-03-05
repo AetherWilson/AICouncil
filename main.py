@@ -4,7 +4,7 @@ import json
 import time
 import threading
 from datetime import datetime
-from GPT_handle import completion_response, completion_response_stream, convert_to_traditional_chinese
+from GPT_handle import completion_response_stream, convert_to_traditional_chinese
 import os
 from werkzeug.utils import secure_filename
 import PyPDF2
@@ -33,19 +33,100 @@ os.makedirs(app.config['CHAT_HISTORY_FOLDER'], exist_ok=True)
 # Create temp chat history directory if it doesn't exist
 os.makedirs(app.config['TEMP_CHAT_HISTORY_FOLDER'], exist_ok=True)
 
-# Load bot configurations
+# Load council role configurations
 def load_config():
     try:
         with open('config.json', 'r') as f:
             return json.load(f)
     except FileNotFoundError:
-        return {'bots': [], 'web_search_bot': 'grok-3-deepsearch'}
+        return {
+            'Leader': 'gpt-4o',
+            'Researcher': 'gpt-4o',
+            'Creative_Writer': 'gpt-4o',
+            'Analyzer': 'gpt-4o',
+            'Verifier': 'gpt-4o'
+        }
 
-def load_bots():
-    return load_config().get('bots', [])
+def load_models():
+    """Load available models from model.json"""
+    try:
+        with open('model.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
 
-def get_web_search_bot():
-    return load_config().get('web_search_bot', 'grok-3-deepsearch')
+def get_model_info(model_id):
+    """Get model details by ID from model.json"""
+    models = load_models()
+    for m in models:
+        if m['id'] == model_id:
+            return m
+    return {'id': model_id, 'name': model_id, 'support_images': False}
+
+# Council role system prompts
+LEADER_DISTRIBUTE_PROMPT = """You are the Leader of an AI council. Your job is to analyze the user's request and distribute tasks to your team members.
+
+Your team:
+- Researcher: Gathers factual information, grounds responses with data, finds relevant facts and sources
+- Creative_Writer: Writes creative content, generates engaging narratives, provides creative ideas and solutions
+- Analyzer: Performs calculations, data analysis, and mathematical reasoning
+- Verifier: Reviews and fact-checks all other team members' outputs for accuracy, logical errors, and consistency
+
+Analyze the user's request and create specific tasks for each team member. If a team member is not needed for this request, set their task to "SKIP". The Verifier should almost always be assigned unless nothing needs checking.
+
+You MUST respond with ONLY a valid JSON object in this exact format (no markdown code blocks, no explanation, just raw JSON):
+{
+    "analysis": "Your brief analysis of what the user needs",
+    "researcher_task": "Specific task for the researcher, or SKIP",
+    "creative_writer_task": "Specific task for the creative writer, or SKIP",
+    "analyzer_task": "Specific task for the analyzer, or SKIP",
+    "verifier_task": "Specific task for the verifier (what to check), or SKIP"
+}"""
+
+RESEARCHER_PROMPT = """You are the Researcher in an AI council. Gather only the facts directly relevant to the task — nothing more.
+
+- Be concise: key facts, figures, and sources only
+- Cite URLs where available
+- No background padding or preamble
+
+Do NOT prefix your response with your role name."""
+
+CREATIVE_WRITER_PROMPT = """You are the Creative Writer in an AI council. Produce concise, high-quality creative content for the task.
+
+- Include only essential content — no filler or fluff
+- Match tone and style to the context
+- Use markdown formatting
+
+Do NOT prefix your response with your role name."""
+
+ANALYZER_PROMPT = """You are the Analyzer in an AI council. Perform calculations and quantitative analysis only — do NOT review other members' work.
+
+- Show working only for key steps, not every trivial detail
+- State results clearly and precisely
+- Be concise; omit narrative unless it clarifies the method
+
+Do NOT prefix your response with your role name."""
+
+VERIFIER_PROMPT = """You are the Verifier in an AI council. Your ONLY job is to report errors — do NOT comment on what is correct.
+
+Rules:
+- List ONLY problems: inaccuracies, logical errors, unsupported claims, contradictions, or flawed calculations
+- Do NOT say anything is good, accurate, or fine — silence means you found no issue with that part
+- One bullet per issue; be specific about what is wrong and why
+- If a claim requires data beyond your knowledge cutoff, state only that specific point is unverifiable — do not speculate
+- If you find zero issues overall, output a single line: "No issues found."
+
+Do NOT prefix your response with your role name."""
+
+LEADER_COMBINE_PROMPT = """You are the Leader of an AI council. Your team has completed their work and the Verifier has flagged any errors. Where a member was challenged, they have provided an updated response — always treat that updated response as their final contribution.
+
+Synthesize into a single cohesive final response:
+- Use the most current version of each contribution (updated responses take priority over originals)
+- Incorporate any Verifier corrections
+- Be well-organized and directly address the user's request
+- Use proper markdown formatting
+
+Respond directly — do NOT mention the council, team members, or that you are combining results. Do NOT prefix with your role name."""
 
 def cleanup_old_temp_chats():
     """Remove temporary chats from previous days"""
@@ -72,13 +153,27 @@ def index():
     cleanup_old_temp_chats()
     return render_template('index.html')
 
-@app.route('/api/bots', methods=['GET'])
-def get_bots():
-    """Get all available bots from config"""
-    bots = load_bots()
-    # Filter out disabled bots
-    enabled_bots = [bot for bot in bots if bot.get('enabled', True)]
-    return jsonify(enabled_bots)
+@app.route('/api/council', methods=['GET'])
+def get_council():
+    """Get council role configuration with model details"""
+    config = load_config()
+    roles = {}
+    for role_name in ['Leader', 'Researcher', 'Creative_Writer', 'Analyzer', 'Verifier']:
+        model_id = config.get(role_name, '')
+        model_info = get_model_info(model_id)
+        roles[role_name] = {
+            'model_id': model_id,
+            'model_name': model_info.get('name', model_id),
+            'support_images': model_info.get('support_images', False)
+        }
+    return jsonify(roles)
+
+@app.route('/api/models', methods=['GET'])
+def get_models():
+    """Get all available models from model.json"""
+    models = load_models()
+    enabled = [m for m in models if m.get('enabled', True)]
+    return jsonify(enabled)
 
 @app.route('/api/upload_document', methods=['POST'])
 def upload_document():
@@ -377,48 +472,6 @@ def get_ocr_reader():
         _ocr_reader = easyocr.Reader(['en'], gpu=False)  # Use CPU, English only
     return _ocr_reader
 
-def perform_web_search_once(user_message):
-    """Perform web search once using configured web search model"""
-    try:
-        # Get the configured web search bot
-        web_search_bot = get_web_search_bot()
-        
-        # Use configured model to get web search results
-        search_response = completion_response(
-            model=web_search_bot,
-            system_prompt="""**System Prompt:**
-You are a web research assistant that gathers and delivers accurate, relevant information from the web to support other AI assistants.
-**Core Instructions:**
-- Respond only with the information you find. Do not add any commentary, opinions, introductions, summaries, conclusions, or meta-statements.
-- Present the information in clear, structured markdown (headings, bullet points, tables, numbered lists).
-- Include all key facts, data, statistics, quotes, dates, names, and details from credible sources.
-- Cite sources inline where relevant (e.g., after a fact or paragraph) with the full URL, and list all sources at the end under a "Sources" heading.
-- Prioritize recent, authoritative sources (official websites, reputable news, academic/government reports).
-- If sources conflict, present both sides clearly with their respective citations.
-- If no reliable information is found, state only: "No reliable information found on [topic] from checked sources."
-Deliver only the structured factual content and citations.
-""",
-            user_prompt=user_message,
-            chat_history=None,
-            temperature=0.7
-        )
-        return search_response
-    except Exception as e:
-        return f"[Web Search Error: {str(e)}]"
-
-def get_ai_search_query(bot_id, user_message, chat_history):
-    """Ask an AI model what it wants to search for to answer the user's question"""
-    try:
-        query_response = completion_response(
-            model=bot_id,
-            system_prompt="You are deciding what to search for on the web to best answer the user's question. Respond with ONLY the search query string — no explanation, no quotes, no surrounding text. Just the bare search query.",
-            user_prompt=f"What would you search for on the web to give the best answer to this message? User message: {user_message}",
-            chat_history=chat_history[-5:] if chat_history else None,
-            temperature=0.3
-        )
-        return query_response.strip()
-    except Exception as e:
-        return user_message  # Fall back to user message as query
 def extract_image_text(filepath):
     """Extract text from image using OCR"""
     text = ""
@@ -447,121 +500,85 @@ def encode_image_to_base64(filepath):
     except Exception as e:
         return None
 
-def simulate_ai_response(bot_name, bot_id, user_message, selected_bots, session_id, chat_history, current_round_responses, web_search_results=None, support_images=False, individual_web_search=False, user_system_prompt=''):
-    """Process AI response using GPT_handle"""
-    try:
-        # Build enhanced chat history including current round responses
-        enhanced_history = chat_history.copy()
-        
-        # Add current round responses from agents that already responded
-        if current_round_responses:
-            for prev_response in current_round_responses:
-                enhanced_history.append({
-                    "role": "assistant",
-                    "content": f"[{prev_response['bot_name']} ({prev_response['bot_id']})] {prev_response['message']}"
-                })
-        
-        # Use GPT_handle to get actual AI response with enhanced chat history
-        system_prompt = f"You are {bot_name} (model: {bot_id}), an AI assistant participating in a council discussion with other AI models. You can see responses from other AI assistants and should engage with their ideas, build upon them, agree, disagree, or add new perspectives. Be aware that you are communicating with different AI models, not the same assistant. Please use Markdown formatting including tables, lists, and code blocks where appropriate. Do NOT prefix your response with your name or model ID - the system will add that automatically."
+def extract_json_from_text(text):
+    """Extract JSON object from text that might contain markdown code blocks or extra text"""
+    import re
+    # Try to find JSON in code blocks first
+    match = re.search(r'```(?:json)?\s*\n?(\{.*?\})\n?\s*```', text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    # Try to find raw JSON object
+    match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+    if match:
+        return match.group(0)
+    return text
 
-        # Prepend user-defined system prompt if provided
-        if user_system_prompt:
-            system_prompt = user_system_prompt + "\n\n" + system_prompt
-        
-        # Add web search results if available
-        if web_search_results:
-            system_prompt += f"\n\n===== WEB SEARCH RESULTS =====\n{web_search_results}\n\nUse the above web search results to provide accurate and up-to-date information in your response."
-
-        # Perform individual web search for this bot if enabled
-        if individual_web_search:
-            ts = datetime.now().strftime("%H:%M:%S")
-            socketio.emit('individual_search_start', {
-                'bot_id': bot_id,
-                'bot_name': bot_name,
-                'timestamp': ts
-            })
-            socketio.emit('console_log', {
-                'message': f"[{ts}] {bot_name}: determining individual search query..."
-            })
-            # Ask the bot what it wants to search for
-            search_query = get_ai_search_query(bot_id, user_message, enhanced_history)
-            socketio.emit('console_log', {
-                'message': f"[{ts}] {bot_name} searching for: {search_query}"
-            })
-            # Perform the search
-            individual_results = perform_web_search_once(search_query)
-            # Emit results — private to this bot, visible only to user
-            converted_individual_results = convert_to_traditional_chinese(individual_results)
-            ts = datetime.now().strftime("%H:%M:%S")
-            socketio.emit('individual_search_results', {
-                'bot_id': bot_id,
-                'bot_name': bot_name,
-                'query': search_query,
-                'results': converted_individual_results,
-                'timestamp': ts
-            })
-            socketio.emit('console_log', {
-                'message': f"[{ts}] {bot_name} individual search completed"
-            })
-            # Inject results into THIS bot's system prompt only (not shared)
-            system_prompt += f"\n\n===== YOUR INDIVIDUAL WEB SEARCH RESULTS =====\nYou chose to search for: \"{search_query}\"\n{individual_results}\n\nUse these search results — which only you have access to — to inform your response."
-
-        # Prepare image URLs for models that support images
-        image_urls = []
-        
-        # Add PDF/Image context
-        if pdf_documents:
-            if support_images:
-                # For models that support images, send images directly and PDFs as text
-                pdf_context = ""
-                for filename, doc_info in pdf_documents.items():
-                    if doc_info['type'] == 'image':
-                        # Encode and add image to image_urls list
-                        img_base64 = encode_image_to_base64(doc_info['filepath'])
-                        if img_base64:
-                            image_urls.append(img_base64)
-                    else:
-                        # Add PDF content as text
-                        if not pdf_context:
-                            pdf_context = "\n\n===== AVAILABLE DOCUMENTS =====\n"
-                        pdf_context += f"\n--- PDF Document: {filename} ---\n"
-                        pdf_context += doc_info['content'][:5000]
-                        if len(doc_info['content']) > 5000:
-                            pdf_context += "\n[... content truncated ...]" 
-                        pdf_context += "\n"
-                if pdf_context:
-                    system_prompt += pdf_context
-            else:
-                # For models that don't support images, add everything as text (OCR extracted)
-                pdf_context = "\n\n===== AVAILABLE DOCUMENTS =====\n"
-                for filename, doc_info in pdf_documents.items():
-                    doc_type = "PDF Document" if doc_info['type'] == 'pdf' else "Image"
-                    pdf_context += f"\n--- {doc_type}: {filename} ---\n"
-                    pdf_context += doc_info['content'][:5000]  # Limit to first 5000 chars per document
+def build_document_context(system_prompt, support_images):
+    """Build document context and image URLs for a council role"""
+    image_urls = []
+    if pdf_documents:
+        if support_images:
+            pdf_context = ""
+            for filename, doc_info in pdf_documents.items():
+                if doc_info['type'] == 'image':
+                    img_base64 = encode_image_to_base64(doc_info['filepath'])
+                    if img_base64:
+                        image_urls.append(img_base64)
+                else:
+                    if not pdf_context:
+                        pdf_context = "\n\n===== AVAILABLE DOCUMENTS =====\n"
+                    pdf_context += f"\n--- PDF Document: {filename} ---\n"
+                    pdf_context += doc_info['content'][:5000]
                     if len(doc_info['content']) > 5000:
                         pdf_context += "\n[... content truncated ...]"
                     pdf_context += "\n"
+            if pdf_context:
                 system_prompt += pdf_context
-        
+        else:
+            pdf_context = "\n\n===== AVAILABLE DOCUMENTS =====\n"
+            for filename, doc_info in pdf_documents.items():
+                doc_type = "PDF Document" if doc_info['type'] == 'pdf' else "Image"
+                pdf_context += f"\n--- {doc_type}: {filename} ---\n"
+                pdf_context += doc_info['content'][:5000]
+                if len(doc_info['content']) > 5000:
+                    pdf_context += "\n[... content truncated ...]"
+                pdf_context += "\n"
+            system_prompt += pdf_context
+    return system_prompt, image_urls
+
+def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, session_id, support_images=False):
+    """Run a single council role and stream its response"""
+    try:
+        # Build document context
+        system_prompt, image_urls = build_document_context(system_prompt, support_images)
+
+        # Use a unique bot_id for the streaming UI
+        bot_id = f"council-{role_name.lower()}"
         timestamp = datetime.now().strftime("%H:%M:%S")
 
-        # Emit start event so the frontend can create the message bubble
+        # Emit start event
         socketio.emit('ai_response_start', {
-            'bot_name': bot_name,
+            'bot_name': role_label,
             'bot_id': bot_id,
             'timestamp': timestamp
         })
 
-        # Stream the response chunk by chunk
+        # Emit running status
+        socketio.emit('council_status', {
+            'role': role_name,
+            'status': 'running'
+        })
+
+        # Stream the response
         full_response = ''
         full_thinking = ''
         stopped_early = False
 
         for chunk_type, chunk in completion_response_stream(
-            model=bot_id,
+            model=model_id,
             system_prompt=system_prompt,
-            user_prompt=user_message,
-            chat_history=enhanced_history,
+            user_prompt=user_prompt,
+            chat_history=chat_history,
             temperature=0.7,
             image_urls=image_urls if support_images else None
         ):
@@ -584,202 +601,341 @@ def simulate_ai_response(bot_name, bot_id, user_message, selected_bots, session_
         if stopped_early:
             timestamp = datetime.now().strftime("%H:%M:%S")
             socketio.emit('console_log', {
-                'message': f"[{timestamp}] {bot_name} response stopped by user"
+                'message': f"[{timestamp}] {role_label} stopped by user"
             })
-            # Finalize the bubble with whatever was streamed so far
             partial_converted = convert_to_traditional_chinese(full_response)
             thinking_converted = convert_to_traditional_chinese(full_thinking) if full_thinking else ''
             socketio.emit('ai_response_end', {
-                'bot_name': bot_name,
+                'bot_name': role_label,
                 'bot_id': bot_id,
                 'message': partial_converted,
                 'thinking': thinking_converted,
                 'timestamp': timestamp,
                 'stopped': True
             })
-            socketio.emit('ai_status', {
-                'bot_id': bot_id,
+            socketio.emit('council_status', {
+                'role': role_name,
                 'status': 'stopped'
             })
             return ''
 
-        # Clean up self-references if AI includes them despite instructions
+        # Clean up self-references
         import re
-        # Remove patterns like [Bot Name (model-id)] or [Bot Name] at the start
         full_response = re.sub(r'^\s*\[.*?\]\s*', '', full_response.strip())
 
-        # Convert full response to Traditional Chinese
+        # Convert to Traditional Chinese
         converted_response = convert_to_traditional_chinese(full_response)
 
-        # Store AI response in conversation history (using converted version)
+        # Store in conversation history
         if session_id not in conversation_histories:
             conversation_histories[session_id] = []
         conversation_histories[session_id].append({
             "role": "assistant",
-            "content": f"[{bot_name} ({bot_id})] {converted_response}",
-            "bot_name": bot_name,
+            "content": f"[{role_label} ({model_id})] {converted_response}",
+            "bot_name": role_label,
             "bot_id": bot_id
         })
 
-        # Log completion to console
+        # Log completion
         timestamp = datetime.now().strftime("%H:%M:%S")
-        socketio.emit('console_log', {'message': f"[{timestamp}] {bot_name} completed processing"})
+        socketio.emit('console_log', {'message': f"[{timestamp}] {role_label} completed"})
 
-        # Finalize the streaming bubble with the fully converted/formatted response
+        # Finalize streaming bubble
         thinking_converted = convert_to_traditional_chinese(full_thinking) if full_thinking else ''
         socketio.emit('ai_response_end', {
-            'bot_name': bot_name,
+            'bot_name': role_label,
             'bot_id': bot_id,
             'message': converted_response,
             'thinking': thinking_converted,
             'timestamp': timestamp
         })
 
-        # Emit 'done' status
-        socketio.emit('ai_status', {
-            'bot_id': bot_id,
+        # Status done
+        socketio.emit('council_status', {
+            'role': role_name,
             'status': 'done'
         })
 
         return converted_response
     except Exception as e:
-        # Log error to console
         timestamp = datetime.now().strftime("%H:%M:%S")
-        error_message = f"[{timestamp}] {bot_name} encountered an error: {str(e)}"
+        error_message = f"[{timestamp}] {role_label} encountered an error: {str(e)}"
         socketio.emit('console_log', {'message': error_message})
-        
-        # Emit 'error' status
-        socketio.emit('ai_status', {
-            'bot_id': bot_id,
+        socketio.emit('council_status', {
+            'role': role_name,
             'status': 'error'
         })
-        
-        # Send error response to conversation window
-        error_msg = f"[Error] {bot_name} could not process the request: {str(e)}"
+        bot_id = f"council-{role_name.lower()}"
+        error_msg = f"[Error] {role_label} could not process the request: {str(e)}"
         converted_error = convert_to_traditional_chinese(error_msg)
         socketio.emit('ai_response', {
-            'bot_name': bot_name,
+            'bot_name': role_label,
             'bot_id': bot_id,
             'message': converted_error,
             'timestamp': timestamp
         })
-        
         return error_msg
 
 @socketio.on('send_message')
 def handle_message(data):
-    """Handle user message and distribute to selected AIs"""
+    """Handle user message and run the council workflow"""
     user_message = data.get('message', '')
-    selected_bot_ids = data.get('selected_bots', [])
-    web_search_enabled = data.get('web_search', False)
-    individual_web_search = data.get('individual_web_search', False)
     user_system_prompt = data.get('system_prompt', '')
-    session_id = request.sid  # Get unique session ID
-    
-    # Reset stop flag for this session
+    session_id = request.sid
+
+    # Reset stop flag
     stop_flags[session_id] = False
-    
-    # Initialize conversation history for this session if not exists
+
+    # Initialize conversation history
     if session_id not in conversation_histories:
         conversation_histories[session_id] = []
-    
-    # Add user message to conversation history
+
     conversation_histories[session_id].append({
         "role": "user",
         "content": user_message
     })
-    
-    # Build chat history for API (exclude the current user message, it will be sent separately)
-    chat_history = []
-    for msg in conversation_histories[session_id][:-1]:  # Exclude last message (current one)
-        chat_history.append({
-            "role": msg["role"],
-            "content": msg["content"]
-        })
-    
-    # Log user message
+
+    # Build chat history (exclude current message)
+    chat_history = [
+        {"role": msg["role"], "content": msg["content"]}
+        for msg in conversation_histories[session_id][:-1]
+    ]
+
+    # Load council config
+    config = load_config()
     timestamp = datetime.now().strftime("%H:%M:%S")
-    search_status = " (with web search)" if web_search_enabled else ""
-    if individual_web_search:
-        search_status += " (individual search enabled)"
     socketio.emit('console_log', {
-        'message': f"[{timestamp}] User message received{search_status}, distributing to {len(selected_bot_ids)} AI(s)"
+        'message': f"[{timestamp}] Council workflow started"
     })
-    
-    # Perform web search once if enabled
-    web_search_results = None
-    if web_search_enabled:
+
+    # Set all roles to waiting
+    for role in ['Leader', 'Researcher', 'Creative_Writer', 'Analyzer', 'Verifier']:
+        socketio.emit('council_status', {'role': role, 'status': 'waiting'})
+
+    # ── Step 1: Leader distributes tasks ──
+    leader_model_id = config.get('Leader', '')
+    leader_info = get_model_info(leader_model_id)
+    leader_sys = LEADER_DISTRIBUTE_PROMPT
+    if user_system_prompt:
+        leader_sys = user_system_prompt + "\n\n" + leader_sys
+
+    socketio.emit('console_log', {
+        'message': f"[{timestamp}] Leader ({leader_model_id}) analyzing and distributing tasks..."
+    })
+
+    task_distribution_raw = run_council_role(
+        role_name='Leader',
+        role_label=f'Leader - Task Distribution ({leader_model_id})',
+        model_id=leader_model_id,
+        system_prompt=leader_sys,
+        user_prompt=user_message,
+        chat_history=chat_history,
+        session_id=session_id,
+        support_images=leader_info.get('support_images', False)
+    )
+
+    if stop_flags.get(session_id, False):
+        socketio.emit('all_done')
+        return
+
+    # Parse task distribution
+    try:
+        tasks = json.loads(extract_json_from_text(task_distribution_raw))
+    except (json.JSONDecodeError, Exception) as e:
         socketio.emit('console_log', {
-            'message': f"[{timestamp}] Performing web search..."
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution, using full prompt for all roles: {str(e)}"
         })
-        web_search_results = perform_web_search_once(user_message)
-        
-        # Display web search results in a collapsible format
-        converted_search_results = convert_to_traditional_chinese(web_search_results)
-        socketio.emit('web_search_results', {
-            'results': converted_search_results,
-            'timestamp': timestamp
-        })
-        
+        tasks = {
+            'researcher_task': user_message,
+            'creative_writer_task': user_message,
+            'analyzer_task': user_message
+        }
+
+    council_results = {}
+
+    # ── Step 2: Researcher ──
+    researcher_task = tasks.get('researcher_task', 'SKIP')
+    if researcher_task.upper().strip() != 'SKIP':
+        researcher_model_id = config.get('Researcher', '')
+        researcher_info = get_model_info(researcher_model_id)
+        timestamp = datetime.now().strftime("%H:%M:%S")
         socketio.emit('console_log', {
-            'message': f"[{timestamp}] Web search completed"
+            'message': f"[{timestamp}] Researcher ({researcher_model_id}) working..."
         })
-    
-    # Get bot configurations
-    bots = load_bots()
-    
-    # Create a bot lookup dictionary for faster access
-    bots_dict = {bot['id']: bot for bot in bots}
-    
-    # Process each selected bot sequentially in the order specified by selected_bot_ids
-    current_round_responses = []
-    for bot_id in selected_bot_ids:
-        # Check stop flag
+
+        researcher_sys = RESEARCHER_PROMPT + f"\n\nOriginal user request: {user_message}"
+        if user_system_prompt:
+            researcher_sys = user_system_prompt + "\n\n" + researcher_sys
+
+        researcher_response = run_council_role(
+            role_name='Researcher',
+            role_label=f'Researcher ({researcher_model_id})',
+            model_id=researcher_model_id,
+            system_prompt=researcher_sys,
+            user_prompt=researcher_task,
+            chat_history=chat_history,
+            session_id=session_id,
+            support_images=researcher_info.get('support_images', False)
+        )
+        council_results['Researcher'] = researcher_response
+
         if stop_flags.get(session_id, False):
-            socketio.emit('console_log', {
-                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Generation stopped by user"
-            })
-            break
-        
-        if bot_id in bots_dict:
-            bot = bots_dict[bot_id]
-            # Log that AI is processing
-            socketio.emit('console_log', {
-                'message': f"[{timestamp}] {bot['name']} started processing..."
-            })
-            
-            # Emit 'running' status for this AI
-            socketio.emit('ai_status', {
-                'bot_id': bot['id'],
-                'status': 'running'
-            })
-            
-            # Check if this bot supports images
-            support_images = bot.get('support_images', False)
-            
-            # Process this bot synchronously, passing previous responses in this round and web search results
-            response = simulate_ai_response(
-                bot['name'], 
-                bot['id'], 
-                user_message, 
-                selected_bot_ids, 
-                session_id, 
-                chat_history,
-                current_round_responses,
-                web_search_results,
-                support_images,
-                individual_web_search,
-                user_system_prompt
-            )
-            
-            # Add this response to current round responses for next agent to see
-            current_round_responses.append({
-                'bot_name': bot['name'],
-                'bot_id': bot['id'],
-                'message': response
-            })
-    
-    # Signal that all processing is done
+            socketio.emit('all_done')
+            return
+    else:
+        socketio.emit('council_status', {'role': 'Researcher', 'status': 'skipped'})
+        socketio.emit('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Researcher: SKIPPED"
+        })
+
+    # ── Step 3: Creative Writer ──
+    creative_task = tasks.get('creative_writer_task', 'SKIP')
+    if creative_task.upper().strip() != 'SKIP':
+        creative_model_id = config.get('Creative_Writer', '')
+        creative_info = get_model_info(creative_model_id)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        socketio.emit('console_log', {
+            'message': f"[{timestamp}] Creative Writer ({creative_model_id}) working..."
+        })
+
+        creative_sys = CREATIVE_WRITER_PROMPT + f"\n\nOriginal user request: {user_message}"
+        if 'Researcher' in council_results:
+            creative_sys += f"\n\n===== Researcher's Findings (for your context) =====\n{council_results['Researcher']}"
+        if user_system_prompt:
+            creative_sys = user_system_prompt + "\n\n" + creative_sys
+
+        creative_response = run_council_role(
+            role_name='Creative_Writer',
+            role_label=f'Creative Writer ({creative_model_id})',
+            model_id=creative_model_id,
+            system_prompt=creative_sys,
+            user_prompt=creative_task,
+            chat_history=chat_history,
+            session_id=session_id,
+            support_images=creative_info.get('support_images', False)
+        )
+        council_results['Creative_Writer'] = creative_response
+
+        if stop_flags.get(session_id, False):
+            socketio.emit('all_done')
+            return
+    else:
+        socketio.emit('council_status', {'role': 'Creative_Writer', 'status': 'skipped'})
+        socketio.emit('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Creative Writer: SKIPPED"
+        })
+
+    # ── Step 4: Analyzer ──
+    analyzer_task = tasks.get('analyzer_task', 'SKIP')
+    if analyzer_task.upper().strip() != 'SKIP':
+        analyzer_model_id = config.get('Analyzer', '')
+        analyzer_info = get_model_info(analyzer_model_id)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        socketio.emit('console_log', {
+            'message': f"[{timestamp}] Analyzer ({analyzer_model_id}) working..."
+        })
+
+        analyzer_sys = ANALYZER_PROMPT + f"\n\nOriginal user request: {user_message}"
+        if user_system_prompt:
+            analyzer_sys = user_system_prompt + "\n\n" + analyzer_sys
+
+        analyzer_response = run_council_role(
+            role_name='Analyzer',
+            role_label=f'Analyzer ({analyzer_model_id})',
+            model_id=analyzer_model_id,
+            system_prompt=analyzer_sys,
+            user_prompt=analyzer_task,
+            chat_history=chat_history,
+            session_id=session_id,
+            support_images=analyzer_info.get('support_images', False)
+        )
+        council_results['Analyzer'] = analyzer_response
+
+        if stop_flags.get(session_id, False):
+            socketio.emit('all_done')
+            return
+    else:
+        socketio.emit('council_status', {'role': 'Analyzer', 'status': 'skipped'})
+        socketio.emit('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Analyzer: SKIPPED"
+        })
+
+    # ── Step 5: Verifier ──
+    verifier_task = tasks.get('verifier_task', 'SKIP')
+    if verifier_task.upper().strip() != 'SKIP':
+        verifier_model_id = config.get('Verifier', '')
+        verifier_info = get_model_info(verifier_model_id)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        socketio.emit('console_log', {
+            'message': f"[{timestamp}] Verifier ({verifier_model_id}) reviewing team results..."
+        })
+
+        # Build a full context block of all previous results for the Verifier
+        verifier_context = ""
+        if 'Researcher' in council_results:
+            verifier_context += f"\n\n===== Researcher's Findings =====\n{council_results['Researcher']}"
+        if 'Creative_Writer' in council_results:
+            verifier_context += f"\n\n===== Creative Writer's Output =====\n{council_results['Creative_Writer']}"
+        if 'Analyzer' in council_results:
+            verifier_context += f"\n\n===== Analyzer's Calculations =====\n{council_results['Analyzer']}"
+
+        verifier_sys = VERIFIER_PROMPT + f"\n\nOriginal user request: {user_message}"
+        if verifier_context:
+            verifier_sys += f"\n\nTeam outputs to review:{verifier_context}"
+        if user_system_prompt:
+            verifier_sys = user_system_prompt + "\n\n" + verifier_sys
+
+        verifier_response = run_council_role(
+            role_name='Verifier',
+            role_label=f'Verifier ({verifier_model_id})',
+            model_id=verifier_model_id,
+            system_prompt=verifier_sys,
+            user_prompt=verifier_task,
+            chat_history=chat_history,
+            session_id=session_id,
+            support_images=verifier_info.get('support_images', False)
+        )
+        council_results['Verifier'] = verifier_response
+
+        if stop_flags.get(session_id, False):
+            socketio.emit('all_done')
+            return
+    else:
+        socketio.emit('council_status', {'role': 'Verifier', 'status': 'skipped'})
+        socketio.emit('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Verifier: SKIPPED"
+        })
+
+    # ── Step 6: Leader synthesizes all results ──
+    if council_results:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        socketio.emit('console_log', {
+            'message': f"[{timestamp}] Leader ({leader_model_id}) combining results..."
+        })
+
+        ordered_keys = ['Researcher', 'Creative_Writer', 'Analyzer', 'Verifier']
+        results_text = ""
+        for key in ordered_keys:
+            if key in council_results:
+                label = key.replace('_', ' ')
+                results_text += f"\n\n===== {label} =====\n{council_results[key]}"
+
+        combine_sys = LEADER_COMBINE_PROMPT + f"\n\nTeam outputs:{results_text}"
+        if user_system_prompt:
+            combine_sys = user_system_prompt + "\n\n" + combine_sys
+
+        run_council_role(
+            role_name='Leader',
+            role_label=f'Leader - Final Response ({leader_model_id})',
+            model_id=leader_model_id,
+            system_prompt=combine_sys,
+            user_prompt=f"Please combine the team's work and provide the final response to: {user_message}",
+            chat_history=chat_history,
+            session_id=session_id,
+            support_images=leader_info.get('support_images', False)
+        )
+
+    # Signal all done
     socketio.emit('all_done')
 
 @socketio.on('stop_generation')

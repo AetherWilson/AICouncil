@@ -439,281 +439,6 @@
             display: none;
         }
 
-        .active-ai-list {
-            font-size: 12px;
-            color: #e0e0e0;
-            line-height: 1.6;
-        }
-
-        .active-ai-item {
-            padding: 8px 12px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            background: #2d2d30;
-            border-radius: 5px;
-            margin-bottom: 6px;
-            cursor: grab;
-            transition: transform 0.3s ease, background 0.2s, border-color 0.2s, opacity 0.2s;
-            border: 2px solid transparent;
-            user-select: none;
-        }
-
-        .ai-item-content {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex: 1;
-        }
-
-        .ai-status-light {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            flex-shrink: 0;
-            transition: all 0.3s ease;
-        }
-
-        .ai-status-light.waiting {
-            background: #ffd700;
-            box-shadow: 0 0 4px #ffd700;
-        }
-
-        .ai-status-light.running {
-            background: #ffd700;
-            box-shadow: 0 0 8px #ffd700, 0 0 12px #ffd700;
-            animation: glow-yellow 1.5s infinite;
-        }
-
-        .ai-status-light.done {
-            background: #00ff00;
-            box-shadow: 0 0 6px #00ff00;
-        }
-
-        .ai-status-light.error {
-            background: #ff0000;
-            box-shadow: 0 0 8px #ff0000, 0 0 12px #ff0000;
-            animation: pulse-red 0.5s infinite;
-        }
-
-        .remove-ai-btn {
-            background: none;
-            border: none;
-            color: #d9534f;
-            cursor: pointer;
-            font-size: 16px;
-            padding: 0;
-            width: 20px;
-            height: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 3px;
-            transition: all 0.2s;
-            flex-shrink: 0;
-        }
-
-        .remove-ai-btn:hover {
-            background: #d9534f;
-            color: white;
-        }
-
-        .ai-status-indicator {
-            width: 20px;
-            height: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-shrink: 0;
-        }
-
-        @keyframes glow-yellow {
-            0%, 100% { 
-                box-shadow: 0 0 8px #ffd700, 0 0 12px #ffd700;
-                opacity: 1;
-            }
-            50% { 
-                box-shadow: 0 0 15px #ffd700, 0 0 20px #ffd700;
-                opacity: 0.8;
-            }
-        }
-
-        @keyframes pulse-red {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.6; }
-        }
-
-        .active-ai-item:hover {
-            background: #333333;
-            border-color: #4ec9b0;
-        }
-
-        .active-ai-item {
-            transition: transform 0.2s ease;
-        }
-
-        .active-ai-item.dragging {
-            opacity: 0.4;
-            cursor: grabbing;
-            transform: scale(1.02);
-            z-index: 10;
-            position: relative;
-        }
-
-        .active-ai-item.drag-shift-down {
-            transform: translateY(var(--drag-item-height, 42px));
-        }
-
-        .active-ai-item.drag-shift-up {
-            transform: translateY(calc(-1 * var(--drag-item-height, 42px)));
-        }
-
-        .price-filters {
-            display: flex;
-            gap: 15px;
-            margin-bottom: 15px;
-            padding: 10px;
-            background: #2d2d30;
-            border-radius: 5px;
-        }
-
-        .price-filter-item {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            cursor: pointer;
-            user-select: none;
-        }
-
-        .price-filter-item input[type="checkbox"] {
-            width: 16px;
-            height: 16px;
-            cursor: pointer;
-        }
-
-        .price-filter-item label {
-            color: #e0e0e0;
-            font-size: 13px;
-            cursor: pointer;
-        }
-
-        .bot-item {
-            background: #2d2d30;
-            padding: 10px;
-            margin-bottom: 8px;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: all 0.2s;
-            border: 2px solid transparent;
-        }
-
-        .bot-item:hover {
-            background: #333333;
-        }
-
-        .bot-item.active {
-            border-color: #4ec9b0;
-            background: #2a4a44;
-        }
-
-        .bot-item label {
-            display: flex;
-            align-items: center;
-            cursor: pointer;
-            user-select: none;
-        }
-
-        .bot-item input[type="checkbox"] {
-            margin-right: 10px;
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-        }
-
-        .bot-name {
-            font-weight: bold;
-            color: #e0e0e0;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .price-indicator {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            display: inline-block;
-            flex-shrink: 0;
-        }
-
-        .price-indicator.mini {
-            background-color: #00ff00;
-        }
-
-        .price-indicator.cheap {
-            background-color: #ffff00;
-        }
-
-        .price-indicator.expensive {
-            background-color: #ff0000;
-        }
-
-        .price-indicator.max {
-            background-color: #9400d3;
-        }
-
-        .provider-group {
-            margin-bottom: 12px;
-        }
-
-        .provider-header {
-            background: #1e1e1e;
-            padding: 10px 12px;
-            border-radius: 5px;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            transition: background 0.2s;
-            user-select: none;
-        }
-
-        .provider-header:hover {
-            background: #2a2a2a;
-        }
-
-        .provider-name {
-            font-weight: bold;
-            color: #4ec9b0;
-            font-size: 14px;
-        }
-
-        .provider-toggle {
-            color: #858585;
-            font-size: 12px;
-            transition: transform 0.2s;
-        }
-
-        .provider-toggle.collapsed {
-            transform: rotate(-90deg);
-        }
-
-        .provider-bots {
-            margin-top: 8px;
-            padding-left: 8px;
-            max-height: 1000px;
-            overflow: hidden;
-            transition: max-height 0.3s ease-out, opacity 0.3s ease-out;
-            opacity: 1;
-        }
-
-        .provider-bots.collapsed {
-            max-height: 0;
-            opacity: 0;
-            margin-top: 0;
-        }
-
         .console-section {
             padding: 20px;
             overflow-y: auto;
@@ -842,6 +567,137 @@
 
         .thinking-content.visible {
             display: block;
+        }
+
+        /* ── Task Distribution Card ── */
+        .task-distribution {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .task-dist-analysis {
+            background: #2a2d2e;
+            border-left: 3px solid #4ec9b0;
+            border-radius: 4px;
+            padding: 10px 14px;
+            font-size: 0.92em;
+            color: #d4d4d4;
+            line-height: 1.5;
+        }
+
+        .task-dist-analysis-label {
+            font-size: 0.73em;
+            text-transform: uppercase;
+            letter-spacing: 0.09em;
+            color: #4ec9b0;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .task-dist-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .task-dist-item {
+            background: #2a2d2e;
+            border-radius: 6px;
+            padding: 10px 12px;
+            border: 1px solid #3a3a3d;
+        }
+
+        .task-dist-item.skipped {
+            opacity: 0.4;
+            border-color: #2c2c2e;
+        }
+
+        .task-dist-item-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+        }
+
+        .task-dist-role-icon {
+            font-size: 1.05em;
+        }
+
+        .task-dist-role-name {
+            font-size: 0.78em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: #9cdcfe;
+        }
+
+        .task-dist-item.skipped .task-dist-role-name {
+            color: #555;
+        }
+
+        .task-dist-skip-badge {
+            margin-left: auto;
+            font-size: 0.68em;
+            background: #333336;
+            color: #666;
+            padding: 1px 7px;
+            border-radius: 3px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .task-dist-task-text {
+            font-size: 0.87em;
+            color: #c8c8c8;
+            line-height: 1.45;
+        }
+
+        .task-dist-item.skipped .task-dist-task-text {
+            color: #444;
+        }
+
+        /* ── Collapsible council intermediate messages ── */
+        .message.council-intermediate .message-header {
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            user-select: none;
+        }
+
+        .council-collapse-btn {
+            margin-left: auto;
+            background: none;
+            border: none;
+            color: #666;
+            cursor: pointer;
+            font-size: 9px;
+            padding: 0 2px;
+            line-height: 1;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+            display: inline-block;
+        }
+
+        .message.council-intermediate.collapsed .council-collapse-btn {
+            transform: rotate(-90deg);
+        }
+
+        .message.council-intermediate.collapsed .thinking-block,
+        .message.council-intermediate.collapsed .message-content,
+        .message.council-intermediate.collapsed .menu-btn,
+        .message.council-intermediate.collapsed .message-menu {
+            display: none !important;
+        }
+
+        .message.council-intermediate.collapsed {
+            padding: 5px 12px;
+        }
+
+        .message.council-intermediate.collapsed .message-header {
+            margin-bottom: 0;
+            color: #777;
+            font-size: 0.85em;
         }
 
         .message-wrapper {
@@ -1146,100 +1002,89 @@
             50% { opacity: 0.5; }
         }
 
-        .web-search-container {
-            margin-bottom: 15px;
-            padding: 12px 15px;
-            border-radius: 8px;
-            background: #2a4a44;
-            border-left: 3px solid #4ec9b0;
-            max-width: 80%;
+        .council-role-item {
+            padding: 10px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            background: #2d2d30;
+            border-radius: 5px;
+            margin-bottom: 6px;
+            border: 1px solid transparent;
+            transition: all 0.2s;
         }
 
-        .web-search-header {
-            font-weight: bold;
-            margin-bottom: 5px;
-            font-size: 14px;
+        .council-role-item:hover {
+            background: #333333;
+        }
+
+        .council-role-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .council-role-name {
+            font-weight: 600;
             color: #4ec9b0;
-            cursor: pointer;
-            user-select: none;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .web-search-toggle {
-            font-size: 12px;
-            transition: transform 0.2s;
-        }
-
-        .web-search-toggle.collapsed {
-            transform: rotate(-90deg);
-        }
-
-        .web-search-content {
-            margin-top: 10px;
-            max-height: 400px;
-            overflow-y: auto;
-            transition: max-height 0.3s ease-out;
-            line-height: 1.5;
-            color: #e0e0e0;
-        }
-
-        .web-search-content.collapsed {
-            max-height: 0;
-            overflow: hidden;
-            margin-top: 0;
-        }
-
-        .individual-search-container {
-            margin-bottom: 8px;
-            padding: 10px 14px;
-            border-radius: 8px;
-            background: #2d3a4a;
-            border-left: 3px solid #569cd6;
-            max-width: 80%;
             font-size: 13px;
         }
 
-        .individual-search-header {
-            font-weight: bold;
-            font-size: 13px;
-            color: #569cd6;
-            cursor: pointer;
-            user-select: none;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .individual-search-toggle {
-            font-size: 12px;
-            transition: transform 0.2s;
-        }
-
-        .individual-search-toggle.collapsed {
-            transform: rotate(-90deg);
-        }
-
-        .individual-search-content {
-            margin-top: 8px;
-            max-height: 400px;
-            overflow-y: auto;
-            transition: max-height 0.3s ease-out;
-            line-height: 1.5;
-            color: #c0d0e0;
-        }
-
-        .individual-search-content.collapsed {
-            max-height: 0;
-            overflow: hidden;
-            margin-top: 0;
-        }
-
-        .individual-search-query {
-            font-size: 12px;
+        .council-role-model {
+            font-size: 11px;
             color: #858585;
-            margin-top: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .council-role-light {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: #555;
+            transition: all 0.3s ease;
+        }
+
+        .council-role-light.waiting {
+            background: #ffd700;
+            box-shadow: 0 0 4px #ffd700;
+        }
+
+        .council-role-light.running {
+            background: #ffd700;
+            box-shadow: 0 0 8px #ffd700, 0 0 12px #ffd700;
+            animation: glow-yellow 1.5s infinite;
+        }
+
+        .council-role-light.done {
+            background: #00ff00;
+            box-shadow: 0 0 6px #00ff00;
+        }
+
+        .council-role-light.error {
+            background: #ff0000;
+            box-shadow: 0 0 8px #ff0000;
+        }
+
+        .council-role-light.skipped {
+            background: #858585;
+            box-shadow: 0 0 4px #858585;
+        }
+
+        @keyframes glow-yellow {
+            0%, 100% { 
+                box-shadow: 0 0 8px #ffd700, 0 0 12px #ffd700;
+                opacity: 1;
+            }
+            50% { 
+                box-shadow: 0 0 15px #ffd700, 0 0 20px #ffd700;
+                opacity: 0.8;
+            }
         }
 
         /* Markdown styling */
@@ -1440,16 +1285,6 @@
             <div class="tab-content" id="pdfTab">
                 <div class="pdf-section">
                     <h2 style="color: #4ec9b0; margin-bottom: 20px;">📄 Upload Documents & Images</h2>
-                    <div style="padding: 10px; background: #2d2d30; border-radius: 5px; margin-bottom: 15px;">
-                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;">
-                            <input type="checkbox" id="webSearchToggle" style="width: 18px; height: 18px; cursor: pointer;">
-                            <span style="color: #e0e0e0; font-size: 14px;">🌐 Enable Web Search</span>
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid #3c3c3c;">
-                            <input type="checkbox" id="individualWebSearchToggle" style="width: 18px; height: 18px; cursor: pointer;">
-                            <span style="color: #c0d0e0; font-size: 13px;">🔍 Enable web search individually <span style="color: #858585; font-size: 12px;">(each AI picks its own query)</span></span>
-                        </label>
-                    </div>
                     <div class="pdf-upload-area" id="pdfUploadArea">
                         <input type="file" id="pdfFileInput" accept=".pdf,.jpg,.jpeg,.png" multiple style="display: none;">
                         <p style="font-size: 18px; margin-bottom: 10px;">📁 Click or Drag & Drop Files Here</p>
@@ -1481,47 +1316,14 @@
                     <textarea id="systemPromptInput" class="system-prompt-input" placeholder="Enter a custom system prompt to prepend to all AI instructions… (optional)"></textarea>
                 </div>
             </div>
-            <div class="ai-status" id="aiSelectPanel">
-                <h2 onclick="togglePanel('aiSelectPanel')">
-                    AI Select
+            <div class="ai-status" id="councilRolesPanel">
+                <h2 onclick="togglePanel('councilRolesPanel')">
+                    👑 Council Roles
                     <span class="panel-toggle">▼</span>
                 </h2>
                 <div class="panel-content">
-                    <div class="price-filters">
-                        <div class="price-filter-item">
-                            <input type="checkbox" id="miniFilter">
-                            <label for="miniFilter">Mini</label>
-                        </div>
-                        <div class="price-filter-item">
-                            <input type="checkbox" id="cheapFilter">
-                            <label for="cheapFilter">Cheap</label>
-                        </div>
-                        <div class="price-filter-item">
-                            <input type="checkbox" id="expensiveFilter">
-                            <label for="expensiveFilter">Expensive</label>
-                        </div>
-                        <div class="price-filter-item">
-                            <input type="checkbox" id="maxFilter">
-                            <label for="maxFilter">Max</label>
-                        </div>
-                    </div>
-                    <div class="price-filters" style="margin-top: 10px;">
-                        <div class="price-filter-item">
-                            <input type="checkbox" id="imageFilter">
-                            <label for="imageFilter">Image In</label>
-                        </div>
-                    </div>
-                    <div id="botList"></div>
-                </div>
-            </div>
-            <div class="ai-status" id="aiStatusPanel">
-                <h2 onclick="togglePanel('aiStatusPanel')">
-                    AI Active Status
-                    <span class="panel-toggle">▼</span>
-                </h2>
-                <div class="panel-content">
-                    <div class="active-ai-list" id="activeAiList">
-                        <div style="color: #858585; font-style: italic;">No AI selected</div>
+                    <div id="councilRolesList">
+                        <div style="color: #858585; font-style: italic;">Loading council...</div>
                     </div>
                 </div>
             </div>
@@ -1530,25 +1332,21 @@
 
     <script>
         const socket = io();
-        let selectedBots = [];
-        let allBots = [];
         let uploadedPDFs = [];
-        let webSearchEnabled = false;
-        let individualWebSearchEnabled = false;
         let isAIProcessing = false;
+        let councilRoles = {};
 
-        // Web search toggle
-        document.getElementById('webSearchToggle').addEventListener('change', function(e) {
-            webSearchEnabled = e.target.checked;
-            const status = webSearchEnabled ? 'enabled' : 'disabled';
-            addConsoleLog(`Web search ${status}`);
-        });
-
-        // Individual web search toggle
-        document.getElementById('individualWebSearchToggle').addEventListener('change', function(e) {
-            individualWebSearchEnabled = e.target.checked;
-            const status = individualWebSearchEnabled ? 'enabled' : 'disabled';
-            addConsoleLog(`Individual web search ${status}`);
+        // Auto-scroll: only follow bottom if user hasn't scrolled up
+        function getConvWindow() { return document.getElementById('conversationWindow'); }
+        function isNearBottom(cw, threshold = 80) {
+            return cw.scrollHeight - cw.scrollTop - cw.clientHeight <= threshold;
+        }
+        function scrollToBottomIfNeeded(cw) {
+            if (isNearBottom(cw)) cw.scrollTop = cw.scrollHeight;
+        }
+        document.addEventListener('DOMContentLoaded', function() {
+            const cw = getConvWindow();
+            if (cw) cw.addEventListener('scroll', function() { /* passive tracking via isNearBottom */ }, { passive: true });
         });
 
         // Tab switching
@@ -1695,237 +1493,62 @@
             });
         }
 
-        // Load bots on page load
-        async function loadBots() {
+        // Load council configuration
+        async function loadCouncil() {
             try {
-                const response = await fetch('/api/bots');
-                const bots = await response.json();
-                displayBots(bots);
+                const response = await fetch('/api/council');
+                councilRoles = await response.json();
+                displayCouncilRoles();
             } catch (error) {
-                console.error('Error loading bots:', error);
-                addConsoleLog('Error loading bot configurations');
+                console.error('Error loading council:', error);
+                addConsoleLog('Error loading council configuration');
             }
         }
 
-        function displayBots(bots) {
-            // Filter out disabled bots
-            const enabledBots = bots.filter(bot => bot.enabled !== false);
-            allBots = enabledBots;
-            const botList = document.getElementById('botList');
-            botList.innerHTML = '';
-
-            // Group bots by provider
-            const botsByProvider = {};
-            enabledBots.forEach(bot => {
-                const provider = bot.provider || 'Other';
-                if (!botsByProvider[provider]) {
-                    botsByProvider[provider] = [];
-                }
-                botsByProvider[provider].push(bot);
-            });
-
-            // Create collapsible sections for each provider
-            Object.keys(botsByProvider).sort().forEach(provider => {
-                const providerGroup = document.createElement('div');
-                providerGroup.className = 'provider-group';
-                
-                const providerHeader = document.createElement('div');
-                providerHeader.className = 'provider-header';
-                providerHeader.innerHTML = `
-                    <span class="provider-name">${provider}</span>
-                    <span class="provider-toggle collapsed">▼</span>
-                `;
-                
-                const providerBots = document.createElement('div');
-                providerBots.className = 'provider-bots collapsed';
-                
-                botsByProvider[provider].forEach(bot => {
-                    const botItem = document.createElement('div');
-                    botItem.className = 'bot-item';
-                    const priceIndicator = bot.price ? `<span class="price-indicator ${bot.price.toLowerCase()}"></span>` : '';
-                    botItem.innerHTML = `
-                        <label>
-                            <input type="checkbox" class="bot-checkbox" data-bot-id="${bot.id}" data-bot-name="${bot.name}">
-                            <div>
-                                <div class="bot-name">${priceIndicator}${bot.name}</div>
-                            </div>
-                        </label>
-                    `;
-
-                    const checkbox = botItem.querySelector('.bot-checkbox');
-                    checkbox.addEventListener('change', function() {
-                        if (this.checked) {
-                            selectedBots.push(bot.id);
-                            botItem.classList.add('active');
-                            addConsoleLog(`${bot.name} enabled`);
-                        } else {
-                            selectedBots = selectedBots.filter(id => id !== bot.id);
-                            botItem.classList.remove('active');
-                            addConsoleLog(`${bot.name} disabled`);
-                        }
-                        updateActiveAIStatus();
-                    });
-
-                    providerBots.appendChild(botItem);
-                });
-                
-                // Toggle collapse on header click
-                providerHeader.addEventListener('click', function() {
-                    const toggle = this.querySelector('.provider-toggle');
-                    toggle.classList.toggle('collapsed');
-                    providerBots.classList.toggle('collapsed');
-                });
-                
-                providerGroup.appendChild(providerHeader);
-                providerGroup.appendChild(providerBots);
-                botList.appendChild(providerGroup);
-            });
-        }
-
-        function setupDragAndDrop() {
-            const container = document.getElementById('activeAiList');
-            const draggables = document.querySelectorAll('.active-ai-item');
-            let draggedElement = null;
-            let draggedIndex = -1;
-            let currentInsertIndex = -1;
-
-            // Measure item height for shift offset
-            if (draggables.length > 0) {
-                const h = draggables[0].offsetHeight + 8; // 8px margin-bottom
-                container.style.setProperty('--drag-item-height', h + 'px');
-            }
-
-            function clearShifts() {
-                draggables.forEach(d => {
-                    d.classList.remove('drag-shift-down', 'drag-shift-up');
-                });
-            }
-
-            function applyShifts(insertIdx) {
-                if (insertIdx === currentInsertIndex) return;
-                currentInsertIndex = insertIdx;
-                clearShifts();
-
-                draggables.forEach(item => {
-                    if (item === draggedElement) return;
-                    const idx = parseInt(item.getAttribute('data-index'));
-                    if (draggedIndex < insertIdx) {
-                        // Dragging down: items between old and new pos shift up
-                        if (idx > draggedIndex && idx < insertIdx) {
-                            item.classList.add('drag-shift-up');
-                        }
-                    } else {
-                        // Dragging up: items between new and old pos shift down
-                        if (idx >= insertIdx && idx < draggedIndex) {
-                            item.classList.add('drag-shift-down');
-                        }
-                    }
-                });
-            }
-
-            draggables.forEach(item => {
-                item.addEventListener('dragstart', function(e) {
-                    draggedElement = this;
-                    draggedIndex = parseInt(this.getAttribute('data-index'));
-                    currentInsertIndex = draggedIndex;
-                    this.classList.add('dragging');
-                    e.dataTransfer.effectAllowed = 'move';
-                    e.dataTransfer.setData('text/plain', this.getAttribute('data-bot-id'));
-                    // Use requestAnimationFrame so the drag image captures before opacity change
-                    requestAnimationFrame(() => {
-                        this.style.opacity = '0.4';
-                    });
-                });
-
-                item.addEventListener('dragend', function(e) {
-                    this.classList.remove('dragging');
-                    this.style.opacity = '';
-                    clearShifts();
-
-                    // Perform the reorder
-                    if (draggedElement && currentInsertIndex !== -1 && currentInsertIndex !== draggedIndex) {
-                        const draggedBotId = draggedElement.getAttribute('data-bot-id');
-                        const item = selectedBots.splice(draggedIndex, 1)[0];
-                        const insertAt = currentInsertIndex > draggedIndex ? currentInsertIndex - 1 : currentInsertIndex;
-                        selectedBots.splice(insertAt, 0, item);
-                        addConsoleLog(`Reordered: ${allBots.find(b => b.id === draggedBotId)?.name || draggedBotId} moved`);
-                    }
-
-                    draggedElement = null;
-                    draggedIndex = -1;
-                    currentInsertIndex = -1;
-                    updateActiveAIStatus();
-                });
-
-                item.addEventListener('dragover', function(e) {
-                    e.preventDefault();
-                    e.dataTransfer.dropEffect = 'move';
-
-                    if (!draggedElement || this === draggedElement) return;
-
-                    const rect = this.getBoundingClientRect();
-                    const midpoint = rect.top + rect.height / 2;
-                    const thisIdx = parseInt(this.getAttribute('data-index'));
-
-                    let insertIdx;
-                    if (e.clientY < midpoint) {
-                        insertIdx = thisIdx;
-                    } else {
-                        insertIdx = thisIdx + 1;
-                    }
-
-                    applyShifts(insertIdx);
-                });
-            });
-
-            // Also handle dragover on the container for edge cases
-            container.addEventListener('dragover', function(e) {
-                e.preventDefault();
-            });
-        }
-
-        function updateActiveAIStatus() {
-            const activeAiList = document.getElementById('activeAiList');
-            if (selectedBots.length === 0) {
-                activeAiList.innerHTML = '<div style="color: #858585; font-style: italic;">No AI selected</div>';
-            } else {
-                const activeBotsInfo = selectedBots.map((botId, index) => {
-                    const bot = allBots.find(b => b.id === botId);
-                    if (bot) {
-                        const priceIndicator = bot.price ? `<span class="price-indicator ${bot.price.toLowerCase()}"></span>` : '';
-                        return `<div class="active-ai-item" draggable="true" data-bot-id="${bot.id}" data-index="${index}">
-                            <div class="ai-item-content">${priceIndicator} ✓ ${bot.name}</div>
-                            <div class="ai-status-indicator">
-                                <button class="remove-ai-btn" data-bot-id="${bot.id}" style="${isAIProcessing ? 'display: none;' : ''}" onclick="removeAIFromSelection('${bot.id}', event)">✕</button>
-                                <span class="ai-status-light" data-bot-id="${bot.id}" style="${isAIProcessing ? '' : 'display: none;'}"></span>
-                            </div>
-                        </div>`;
-                    }
-                    return `<div class="active-ai-item" draggable="true" data-bot-id="${botId}" data-index="${index}">
-                        <div class="ai-item-content">✓ ${botId}</div>
-                        <div class="ai-status-indicator">
-                            <button class="remove-ai-btn" data-bot-id="${botId}" style="${isAIProcessing ? 'display: none;' : ''}" onclick="removeAIFromSelection('${botId}', event)">✕</button>
-                            <span class="ai-status-light" data-bot-id="${botId}" style="${isAIProcessing ? '' : 'display: none;'}"></span>
+        function displayCouncilRoles() {
+            const container = document.getElementById('councilRolesList');
+            const roleIcons = {
+                'Leader': '👑',
+                'Researcher': '🔬',
+                'Creative_Writer': '✍️',
+                'Analyzer': '📊',
+                'Verifier': '🔍'
+            };
+            const roleLabels = {
+                'Leader': 'Leader',
+                'Researcher': 'Researcher',
+                'Creative_Writer': 'Creative Writer',
+                'Analyzer': 'Analyzer',
+                'Verifier': 'Verifier'
+            };
+            
+            let html = '';
+            for (const [role, info] of Object.entries(councilRoles)) {
+                const icon = roleIcons[role] || '🤖';
+                const label = roleLabels[role] || role;
+                html += `
+                    <div class="council-role-item" data-role="${role}">
+                        <div class="council-role-info">
+                            <div class="council-role-name">${icon} ${label}</div>
+                            <div class="council-role-model">${info.model_name}</div>
                         </div>
-                    </div>`;
-                });
-                activeAiList.innerHTML = activeBotsInfo.join('');
-                
-                // Add drag and drop event listeners
-                setupDragAndDrop();
+                        <span class="council-role-light" data-role="${role}"></span>
+                    </div>
+                `;
+            }
+            container.innerHTML = html;
+        }
+
+        function updateCouncilRoleStatus(role, status) {
+            const light = document.querySelector(`.council-role-light[data-role="${role}"]`);
+            if (light) {
+                light.className = 'council-role-light ' + status;
             }
         }
 
-        function updateAIStatus(botId, status) {
-            const statusLight = document.querySelector(`.ai-status-light[data-bot-id="${botId}"]`);
-            if (statusLight) {
-                statusLight.className = 'ai-status-light ' + status;
-            }
-        }
-
-        function setAllAIStatus(status) {
-            selectedBots.forEach(botId => {
-                updateAIStatus(botId, status);
+        function resetCouncilStatus() {
+            document.querySelectorAll('.council-role-light').forEach(light => {
+                light.className = 'council-role-light';
             });
         }
 
@@ -1956,7 +1579,7 @@
                         name: currentSessionName,
                         messages: messages,
                         timestamp: new Date().toISOString(),
-                        selectedBots: selectedBots
+                        selectedBots: []
                     };
 
                     fetch('/api/save_chat', {
@@ -1984,6 +1607,53 @@
             logEntry.textContent = message;
             consoleContent.appendChild(logEntry);
             consoleContent.scrollTop = consoleContent.scrollHeight;
+        }
+
+        function formatTaskDistribution(content) {
+            let tasks;
+            try {
+                const jsonMatch = content.match(/\{[\s\S]*\}/);
+                if (!jsonMatch) throw new Error('No JSON object found');
+                tasks = JSON.parse(jsonMatch[0]);
+            } catch (e) {
+                // Fallback: render raw content as markdown / plain text
+                return formatMessage(content);
+            }
+
+            const roleConfig = [
+                { key: 'researcher_task',     icon: '🔬', label: 'Researcher'      },
+                { key: 'creative_writer_task', icon: '✍️', label: 'Creative Writer' },
+                { key: 'analyzer_task',        icon: '📊', label: 'Analyzer'        },
+                { key: 'verifier_task',        icon: '🔍', label: 'Verifier'        },
+            ];
+
+            let html = '<div class="task-distribution">';
+
+            if (tasks.analysis) {
+                html += `
+                    <div class="task-dist-analysis">
+                        <div class="task-dist-analysis-label">👑 Analysis</div>
+                        ${escapeHtml(tasks.analysis)}
+                    </div>`;
+            }
+
+            html += '<div class="task-dist-grid">';
+            for (const { key, icon, label } of roleConfig) {
+                const task = (tasks[key] || 'SKIP');
+                const isSkip = task.trim().toUpperCase() === 'SKIP';
+                html += `
+                    <div class="task-dist-item${isSkip ? ' skipped' : ''}">
+                        <div class="task-dist-item-header">
+                            <span class="task-dist-role-icon">${icon}</span>
+                            <span class="task-dist-role-name">${label}</span>
+                            ${isSkip ? '<span class="task-dist-skip-badge">Skip</span>' : ''}
+                        </div>
+                        <div class="task-dist-task-text">${isSkip ? '—' : escapeHtml(task)}</div>
+                    </div>`;
+            }
+            html += '</div></div>';
+
+            return html;
         }
 
         function formatMessage(content) {
@@ -2289,6 +1959,7 @@
                 addCopyButtonsToCodeBlocks(messageDiv);
             }, 10);
             
+            // Always scroll when user sends a message or a system message is added
             conversationWindow.scrollTop = conversationWindow.scrollHeight;
             
             // Trigger auto-save for temporary chat
@@ -2309,28 +1980,17 @@
 
             if (!message) return;
 
-            if (selectedBots.length === 0) {
-                addConsoleLog('Error: No AI selected. Please select at least one AI.');
-                return;
-            }
-
             // Display user message
             addMessage('user', message, 'You');
-            
-            // Set all AIs to waiting (yellow) status
-            setAllAIStatus('waiting');
             
             // Switch to stop button
             setProcessingState(true);
             
-            // Send to server with web search state
+            // Send to server
             const systemPromptInput = document.getElementById('systemPromptInput');
             const userSystemPrompt = systemPromptInput ? systemPromptInput.value.trim() : '';
             socket.emit('send_message', {
                 message: message,
-                selected_bots: selectedBots,
-                web_search: webSearchEnabled,
-                individual_web_search: individualWebSearchEnabled,
                 system_prompt: userSystemPrompt
             });
 
@@ -2344,43 +2004,10 @@
             if (processing) {
                 sendBtn.textContent = '⏹ Stop';
                 sendBtn.classList.add('stop-btn');
-                // Hide remove buttons and show status lights
-                document.querySelectorAll('.remove-ai-btn').forEach(btn => btn.style.display = 'none');
-                document.querySelectorAll('.ai-status-light').forEach(light => light.style.display = 'flex');
             } else {
                 sendBtn.textContent = 'Send';
                 sendBtn.classList.remove('stop-btn');
-                // Show remove buttons and hide status lights
-                document.querySelectorAll('.remove-ai-btn').forEach(btn => btn.style.display = 'flex');
-                document.querySelectorAll('.ai-status-light').forEach(light => light.style.display = 'none');
-            }
-        }
-
-        function removeAIFromSelection(botId, event) {
-            event.stopPropagation();
-            
-            // Remove the bot from selectedBots array
-            const index = selectedBots.indexOf(botId);
-            if (index > -1) {
-                selectedBots.splice(index, 1);
-                
-                // Uncheck the bot in the bot list
-                const checkbox = document.querySelector(`input[data-bot-id="${botId}"]`);
-                if (checkbox) {
-                    checkbox.checked = false;
-                    // Also remove active class from the bot item
-                    const botItem = checkbox.closest('.bot-item');
-                    if (botItem) {
-                        botItem.classList.remove('active');
-                    }
-                }
-                
-                // Update the active AI list
-                updateActiveAIStatus();
-                
-                const bot = allBots.find(b => b.id === botId);
-                const botName = bot ? bot.name : botId;
-                addConsoleLog(`Removed ${botName} from selected AIs`);
+                resetCouncilStatus();
             }
         }
 
@@ -2430,9 +2057,7 @@
         });
 
         socket.on('ai_status', function(data) {
-            // Update AI status light
-            // status can be: 'waiting', 'running', 'done', 'error'
-            updateAIStatus(data.bot_id, data.status);
+            // Council status is handled by council_status event
         });
 
         // Track active streaming message bubbles: bot_id -> { div, rawText, thinkingText }
@@ -2456,7 +2081,7 @@
                 </div>
             `;
             conversationWindow.appendChild(messageDiv);
-            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+            scrollToBottomIfNeeded(conversationWindow);
             streamingMessages[data.bot_id] = { div: messageDiv, rawText: '', thinkingText: '' };
         });
 
@@ -2469,7 +2094,7 @@
             if (block) block.style.display = '';
             if (content) content.textContent = entry.thinkingText;
             const conversationWindow = document.getElementById('conversationWindow');
-            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+            scrollToBottomIfNeeded(conversationWindow);
         });
 
         socket.on('ai_response_chunk', function(data) {
@@ -2479,7 +2104,7 @@
             const streamSpan = entry.div.querySelector('.stream-text');
             if (streamSpan) streamSpan.textContent = entry.rawText;
             const conversationWindow = document.getElementById('conversationWindow');
-            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+            scrollToBottomIfNeeded(conversationWindow);
         });
 
         socket.on('ai_response_end', function(data) {
@@ -2487,7 +2112,8 @@
             if (!entry) return;
             const messageDiv = entry.div;
             const hasThinking = data.thinking && data.thinking.trim().length > 0;
-            const formattedContent = formatMessage(data.message);
+            const isTaskDist = data.bot_name && data.bot_name.includes('Task Distribution');
+            const formattedContent = isTaskDist ? formatTaskDistribution(data.message) : formatMessage(data.message);
             const thinkingBlock = hasThinking ? `
                 <div class="thinking-block">
                     <div class="thinking-header" onclick="toggleThinking(this)">
@@ -2521,11 +2147,20 @@
                     </button>
                 </div>
             `;
+            const isCouncilMsg = data.bot_id && data.bot_id.startsWith('council-');
+            const isFinalResponse = data.bot_name && data.bot_name.includes('Final Response');
+            const isCouncilIntermediate = isCouncilMsg && !isFinalResponse;
+            const collapseBtn = isCouncilIntermediate ? '<button class="council-collapse-btn" title="Collapse/expand">&#9660;</button>' : '';
+            const headerClick = isCouncilIntermediate ? ' onclick="toggleCouncilCollapse(this.closest(\'.message\'))"' : '';
             messageDiv.setAttribute('data-raw-content', data.message);
+            if (isCouncilIntermediate) {
+                messageDiv.classList.add('council-intermediate');
+                messageDiv.setAttribute('data-council-intermediate', 'true');
+            }
             messageDiv.classList.remove('streaming');
             messageDiv.innerHTML = `
                 <div class="message-wrapper">
-                    <div class="message-header">${data.bot_name}</div>
+                    <div class="message-header"${headerClick}>${data.bot_name}${collapseBtn}</div>
                     ${thinkingBlock}
                     <div class="message-content">${formattedContent}</div>
                     ${menuUI}
@@ -2536,8 +2171,8 @@
                 addCopyButtonsToCodeBlocks(messageDiv);
             }, 10);
             const conversationWindow = document.getElementById('conversationWindow');
-            conversationWindow.scrollTop = conversationWindow.scrollHeight;
-            updateAIStatus(data.bot_id, data.stopped ? 'stopped' : 'done');
+            scrollToBottomIfNeeded(conversationWindow);
+            // Council role status handled by council_status event
             delete streamingMessages[data.bot_id];
             autoSaveTempChat();
         });
@@ -2596,174 +2231,26 @@
         }
 
         socket.on('all_done', function() {
+            // Auto-collapse all intermediate council messages
+            document.querySelectorAll('.message.council-intermediate').forEach(msg => {
+                msg.classList.add('collapsed');
+            });
             setProcessingState(false);
         });
 
-        socket.on('web_search_results', function(data) {
-            addWebSearchResults(data.results, data.timestamp);
-        });
-
-        socket.on('individual_search_start', function(data) {
-            addConsoleLog(`[${data.timestamp}] ${data.bot_name}: performing individual web search...`);
-        });
-
-        socket.on('individual_search_results', function(data) {
-            addIndividualSearchResults(data.bot_id, data.bot_name, data.query, data.results, data.timestamp);
-        });
-
-        function addWebSearchResults(results, timestamp) {
-            const conversationWindow = document.getElementById('conversationWindow');
-            const searchDiv = document.createElement('div');
-            searchDiv.className = 'web-search-container';
-
-            const formattedResults = formatMessage(results);
-
-            searchDiv.innerHTML = `
-                <div class="web-search-header" onclick="toggleWebSearch(this)">
-                    <span>🌐 Web Search Results [${timestamp}]</span>
-                    <span class="web-search-toggle collapsed">▼</span>
-                </div>
-                <div class="web-search-content collapsed">
-                    ${formattedResults}
-                </div>
-            `;
-
-            conversationWindow.appendChild(searchDiv);
-            
-            // Render LaTeX in the web search results
-            setTimeout(() => {
-                renderLatex(searchDiv);
-                addCopyButtonsToCodeBlocks(searchDiv);
-            }, 10);
-            
-            conversationWindow.scrollTop = conversationWindow.scrollHeight;
-        }
-
-        function toggleWebSearch(header) {
-            const toggle = header.querySelector('.web-search-toggle');
-            const content = header.nextElementSibling;
-            toggle.classList.toggle('collapsed');
-            content.classList.toggle('collapsed');
-        }
-
-        function addIndividualSearchResults(botId, botName, query, results, timestamp) {
-            const conversationWindow = document.getElementById('conversationWindow');
-            const searchDiv = document.createElement('div');
-            searchDiv.className = 'individual-search-container';
-            searchDiv.setAttribute('data-bot-id', botId);
-
-            const formattedResults = formatMessage(results);
-
-            searchDiv.innerHTML = `
-                <div class="individual-search-header" onclick="toggleIndividualSearch(this)">
-                    <span>🔍 <strong>${botName}</strong> searched [${timestamp}]</span>
-                    <span class="individual-search-toggle collapsed">▼</span>
-                </div>
-                <div class="individual-search-query">Query: <em>${escapeHtml(query)}</em></div>
-                <div class="individual-search-content collapsed">
-                    ${formattedResults}
-                </div>
-            `;
-
-            conversationWindow.appendChild(searchDiv);
-            setTimeout(() => {
-                renderLatex(searchDiv);
-                addCopyButtonsToCodeBlocks(searchDiv);
-            }, 10);
-            conversationWindow.scrollTop = conversationWindow.scrollHeight;
-        }
-
-        function toggleIndividualSearch(header) {
-            const toggle = header.querySelector('.individual-search-toggle');
-            // The content is the sibling after the query div
-            const queryDiv = header.nextElementSibling;
-            const content = queryDiv.nextElementSibling;
-            toggle.classList.toggle('collapsed');
-            content.classList.toggle('collapsed');
-        }
-
-        // Price filter handlers
-        function applyFilters() {
-            // Get active filters
-            const miniChecked = document.getElementById('miniFilter').checked;
-            const cheapChecked = document.getElementById('cheapFilter').checked;
-            const expensiveChecked = document.getElementById('expensiveFilter').checked;
-            const maxChecked = document.getElementById('maxFilter').checked;
-            const imageChecked = document.getElementById('imageFilter').checked;
-            
-            const anyPriceFilter = miniChecked || cheapChecked || expensiveChecked || maxChecked;
-            
-            // Clear all selections first
-            selectedBots = [];
-            document.querySelectorAll('.bot-checkbox').forEach(checkbox => {
-                checkbox.checked = false;
-                checkbox.closest('.bot-item').classList.remove('active');
-            });
-            
-            // If no filters are checked, just return (all deselected)
-            if (!anyPriceFilter && !imageChecked) {
-                updateActiveAIStatus();
-                return;
+        function toggleCouncilCollapse(msgDiv) {
+            if (!msgDiv) return;
+            msgDiv.classList.toggle('collapsed');
+            if (!msgDiv.classList.contains('collapsed')) {
+                msgDiv.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }
-            
-            // Get all bots that match the criteria
-            let botsToSelect = allBots.filter(bot => {
-                let matchesPrice = false;
-                let matchesImage = true;
-                
-                // Check price filter
-                if (anyPriceFilter) {
-                    const botPrice = bot.price ? bot.price.toLowerCase() : '';
-                    const botProvider = bot.provider ? bot.provider.toLowerCase() : '';
-                    
-                    // Exclude Miscellaneous if any price filter is checked
-                    if (botProvider === 'miscellaneous') {
-                        matchesPrice = false;
-                    } else {
-                        matchesPrice = (miniChecked && botPrice === 'mini') ||
-                                      (cheapChecked && botPrice === 'cheap') ||
-                                      (expensiveChecked && botPrice === 'expensive') ||
-                                      (maxChecked && botPrice === 'max');
-                    }
-                } else {
-                    matchesPrice = true; // If no price filter, match all
-                }
-                
-                // Check image filter
-                if (imageChecked) {
-                    matchesImage = bot.support_images === true;
-                }
-                
-                // Return true if both conditions are met
-                return matchesPrice && matchesImage;
-            });
-            
-            // Select matching bots
-            botsToSelect.forEach(bot => {
-                const checkbox = document.querySelector(`.bot-checkbox[data-bot-id="${bot.id}"]`);
-                if (checkbox) {
-                    checkbox.checked = true;
-                    const botItem = checkbox.closest('.bot-item');
-                    selectedBots.push(bot.id);
-                    botItem.classList.add('active');
-                    addConsoleLog(`${bot.name} enabled`);
-                }
-            });
-            
-            updateActiveAIStatus();
         }
-        
-        function handleFilterChange() {
-            applyFilters();
-        }
+
+        socket.on('council_status', function(data) {
+            updateCouncilRoleStatus(data.role, data.status);
+        });
 
         // Event listeners
-        document.getElementById('miniFilter').addEventListener('change', handleFilterChange);
-        document.getElementById('cheapFilter').addEventListener('change', handleFilterChange);
-        document.getElementById('expensiveFilter').addEventListener('change', handleFilterChange);
-        document.getElementById('maxFilter').addEventListener('change', handleFilterChange);
-        document.getElementById('imageFilter').addEventListener('change', handleFilterChange);
-        
         document.getElementById('sendButton').addEventListener('click', sendMessage);
         document.getElementById('clearButton').addEventListener('click', clearHistory);
         
@@ -2823,7 +2310,7 @@
                     name: name.trim(),
                     messages: messages,
                     timestamp: new Date().toISOString(),
-                    selectedBots: selectedBots,
+                    selectedBots: [],
                     systemPrompt: (document.getElementById('systemPromptInput') || {}).value || ''
                 };
 
@@ -2968,27 +2455,6 @@
                             }, 10);
                         });
                         
-                        // Restore selected bots if available
-                        if (data.chat.selectedBots && data.chat.selectedBots.length > 0) {
-                            // Clear current selections
-                            document.querySelectorAll('.bot-checkbox').forEach(checkbox => {
-                                checkbox.checked = false;
-                                checkbox.closest('.bot-item').classList.remove('active');
-                            });
-                            selectedBots = [];
-                            
-                            // Select the saved bots
-                            data.chat.selectedBots.forEach(botId => {
-                                const checkbox = document.querySelector(`.bot-checkbox[data-bot-id="${botId}"]`);
-                                if (checkbox) {
-                                    checkbox.checked = true;
-                                    checkbox.closest('.bot-item').classList.add('active');
-                                    selectedBots.push(botId);
-                                }
-                            });
-                            updateActiveAIStatus();
-                        }
-                        
                         // Restore system prompt if available
                         const sysPromptEl = document.getElementById('systemPromptInput');
                         if (sysPromptEl && data.chat.systemPrompt !== undefined) {
@@ -3083,6 +2549,9 @@
             
             // Extract all messages from the conversation window
             conversationWindow.querySelectorAll('.message').forEach(msg => {
+                // Skip intermediate council messages (researcher, analyzer, etc.)
+                // Only the Leader's Final Response is included in history
+                if (msg.getAttribute('data-council-intermediate') === 'true') return;
                 const header = msg.querySelector('.message-header');
                 const content = msg.querySelector('.message-content');
                 
@@ -3134,7 +2603,7 @@
                     const sessionData = {
                         id: tempChatId || ('temp_' + Date.now().toString()),
                         messages: messages,
-                        selectedBots: selectedBots,
+                        selectedBots: [],
                         systemPrompt: (document.getElementById('systemPromptInput') || {}).value || ''
                     };
 
@@ -3259,27 +2728,6 @@
                             }, 10);
                         });
                         
-                        // Restore selected bots if available
-                        if (data.chat.selectedBots && data.chat.selectedBots.length > 0) {
-                            // Clear current selections
-                            document.querySelectorAll('.bot-checkbox').forEach(checkbox => {
-                                checkbox.checked = false;
-                                checkbox.closest('.bot-item').classList.remove('active');
-                            });
-                            selectedBots = [];
-                            
-                            // Select the saved bots
-                            data.chat.selectedBots.forEach(botId => {
-                                const checkbox = document.querySelector(`.bot-checkbox[data-bot-id="${botId}"]`);
-                                if (checkbox) {
-                                    checkbox.checked = true;
-                                    checkbox.closest('.bot-item').classList.add('active');
-                                    selectedBots.push(botId);
-                                }
-                            });
-                            updateActiveAIStatus();
-                        }
-                        
                         // Update temp chat tracking
                         tempChatId = data.chat.id;
                         currentSessionId = null;
@@ -3376,9 +2824,8 @@
         }
 
         // Initialize
-        loadBots();
+        loadCouncil();
         loadSavedChats();
-        loadTempChats();
         loadTempChats();
     </script>
 </body>
