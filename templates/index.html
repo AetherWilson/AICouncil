@@ -704,10 +704,6 @@
             position: relative;
         }
 
-        .message.ai:hover .message-content, .message.user:hover .message-content {
-            padding-bottom: 15px;
-        }
-
         .menu-btn {
             position: absolute;
             bottom: 2px;
@@ -719,18 +715,26 @@
             color: #4ec9b0;
             font-size: 16px;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: opacity 0.15s, background 0.2s, color 0.2s;
             display: flex;
             align-items: center;
             justify-content: center;
             z-index: 10;
             width: 28px;
             height: 28px;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .menu-btn.visible {
+            opacity: 1;
+            pointer-events: auto;
         }
 
         .menu-btn:hover {
             background: #4ec9b0;
             color: #1e1e1e;
+            opacity: 1;
         }
 
         .message-menu {
@@ -1776,6 +1780,34 @@
                     m.classList.remove('active');
                 });
             }
+        });
+
+        // Proximity detection: show menu-btn only when cursor is close to it
+        document.addEventListener('mousemove', function(e) {
+            const menuBtns = document.querySelectorAll('.menu-btn');
+            menuBtns.forEach(btn => {
+                // Keep visible if its menu is open
+                const messageDiv = btn.closest('.message');
+                const menu = messageDiv ? messageDiv.querySelector('.message-menu') : null;
+                if (menu && menu.classList.contains('active')) {
+                    btn.classList.add('visible');
+                    return;
+                }
+
+                const rect = btn.getBoundingClientRect();
+                const btnCenterX = rect.left + rect.width / 2;
+                const btnCenterY = rect.top + rect.height / 2;
+                const dist = Math.sqrt(
+                    Math.pow(e.clientX - btnCenterX, 2) +
+                    Math.pow(e.clientY - btnCenterY, 2)
+                );
+
+                if (dist < 55) {
+                    btn.classList.add('visible');
+                } else {
+                    btn.classList.remove('visible');
+                }
+            });
         });
 
         function copyMessageContent(menuItem) {
