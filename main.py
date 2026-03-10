@@ -9,7 +9,6 @@ import os
 from werkzeug.utils import secure_filename
 import PyPDF2
 from PIL import Image
-import easyocr
 import base64
 
 app = Flask(__name__)
@@ -223,7 +222,7 @@ def upload_document():
             })
         else:
             # Handle image files
-            text_content = extract_image_text(filepath)
+            text_content = "[Image uploaded]"
             img = Image.open(filepath)
             width, height = img.size
             
@@ -462,30 +461,6 @@ def extract_pdf_text(filepath):
         text = f"Error extracting text: {str(e)}"
     return text
 
-# Initialize EasyOCR reader (lazy loading)
-_ocr_reader = None
-
-def get_ocr_reader():
-    """Get or initialize EasyOCR reader"""
-    global _ocr_reader
-    if _ocr_reader is None:
-        _ocr_reader = easyocr.Reader(['en'], gpu=False)  # Use CPU, English only
-    return _ocr_reader
-
-def extract_image_text(filepath):
-    """Extract text from image using OCR"""
-    text = ""
-    try:
-        reader = get_ocr_reader()
-        result = reader.readtext(filepath)
-        # Combine all detected text
-        text = "\n".join([item[1] for item in result])
-        if not text.strip():
-            text = "[Image contains no detectable text or is purely visual]"
-    except Exception as e:
-        text = f"[Image uploaded but text extraction failed: {str(e)}]"
-    return text
-
 def encode_image_to_base64(filepath):
     """Convert image file to base64 data URL"""
     try:
@@ -546,7 +521,7 @@ def build_document_context(system_prompt, support_images):
             system_prompt += pdf_context
     return system_prompt, image_urls
 
-def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, session_id, support_images=False):
+def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, session_id, support_images=False, _retry=False):
     """Run a single council role and stream its response"""
     try:
         # Build document context
@@ -659,22 +634,25 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         return converted_response
     except Exception as e:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        error_message = f"[{timestamp}] {role_label} encountered an error: {str(e)}"
-        socketio.emit('console_log', {'message': error_message})
-        socketio.emit('council_status', {
-            'role': role_name,
-            'status': 'error'
+        socketio.emit('console_log', {
+            'message': f"[{timestamp}] {role_label} encountered an error: {str(e)}{', retrying...' if not _retry else ', giving up.'}"
         })
+        if not _retry:
+            return run_council_role(
+                role_name, role_label, model_id, system_prompt, user_prompt,
+                chat_history, session_id, support_images, _retry=True
+            )
+        # Second failure — skip this role
+        notice = f"{role_label} has encountered an error and has to go without it."
+        socketio.emit('council_status', {'role': role_name, 'status': 'error'})
         bot_id = f"council-{role_name.lower()}"
-        error_msg = f"[Error] {role_label} could not process the request: {str(e)}"
-        converted_error = convert_to_traditional_chinese(error_msg)
         socketio.emit('ai_response', {
             'bot_name': role_label,
             'bot_id': bot_id,
-            'message': converted_error,
+            'message': f"⚠️ {notice}",
             'timestamp': timestamp
         })
-        return error_msg
+        return None
 
 @socketio.on('send_message')
 def handle_message(data):
@@ -738,18 +716,22 @@ def handle_message(data):
         socketio.emit('all_done')
         return
 
-    # Parse task distribution
+    # Parse task distribution — abort if leader failed or returned invalid JSON
+    if task_distribution_raw is None:
+        socketio.emit('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Leader failed to respond. Aborting council workflow."
+        })
+        socketio.emit('all_done')
+        return
+
     try:
         tasks = json.loads(extract_json_from_text(task_distribution_raw))
     except (json.JSONDecodeError, Exception) as e:
         socketio.emit('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution, using full prompt for all roles: {str(e)}"
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution: {str(e)}. Aborting council workflow."
         })
-        tasks = {
-            'researcher_task': user_message,
-            'creative_writer_task': user_message,
-            'analyzer_task': user_message
-        }
+        socketio.emit('all_done')
+        return
 
     council_results = {}
 
@@ -777,7 +759,8 @@ def handle_message(data):
             session_id=session_id,
             support_images=researcher_info.get('support_images', False)
         )
-        council_results['Researcher'] = researcher_response
+        if researcher_response is not None:
+            council_results['Researcher'] = researcher_response
 
         if stop_flags.get(session_id, False):
             socketio.emit('all_done')
@@ -814,7 +797,8 @@ def handle_message(data):
             session_id=session_id,
             support_images=creative_info.get('support_images', False)
         )
-        council_results['Creative_Writer'] = creative_response
+        if creative_response is not None:
+            council_results['Creative_Writer'] = creative_response
 
         if stop_flags.get(session_id, False):
             socketio.emit('all_done')
@@ -849,7 +833,8 @@ def handle_message(data):
             session_id=session_id,
             support_images=analyzer_info.get('support_images', False)
         )
-        council_results['Analyzer'] = analyzer_response
+        if analyzer_response is not None:
+            council_results['Analyzer'] = analyzer_response
 
         if stop_flags.get(session_id, False):
             socketio.emit('all_done')
@@ -895,7 +880,8 @@ def handle_message(data):
             session_id=session_id,
             support_images=verifier_info.get('support_images', False)
         )
-        council_results['Verifier'] = verifier_response
+        if verifier_response is not None:
+            council_results['Verifier'] = verifier_response
 
         if stop_flags.get(session_id, False):
             socketio.emit('all_done')
