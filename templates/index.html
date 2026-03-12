@@ -877,22 +877,6 @@
             align-items: center;
         }
 
-        #clearButton {
-            padding: 12px 20px;
-            background: #d9534f;
-            border: none;
-            border-radius: 5px;
-            color: #fff;
-            font-weight: bold;
-            cursor: pointer;
-            transition: background 0.2s;
-            white-space: nowrap;
-        }
-
-        #clearButton:hover {
-            background: #c9302c;
-        }
-
         #messageInput {
             flex: 1;
             padding: 12px 15px;
@@ -1229,6 +1213,50 @@
             font-style: italic;
         }
 
+        /* Markdown content word wrap */
+        .message-content {
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+        }
+
+        /* Markdown box collapse button */
+        .md-collapse-btn {
+            background: none;
+            border: none;
+            color: #666;
+            cursor: pointer;
+            font-size: 9px;
+            padding: 0 2px;
+            line-height: 1;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+            display: inline-block;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+
+        .md-collapse-btn:hover {
+            color: #4ec9b0;
+        }
+
+        .md-collapse-btn.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .message.md-collapsed .message-content,
+        .message.md-collapsed .thinking-block {
+            display: none !important;
+        }
+
+        .message.md-collapsed {
+            padding: 5px 12px;
+        }
+
+        .message.md-collapsed .message-header {
+            margin-bottom: 0;
+            color: #aaa;
+        }
+
     </style>
 </head>
 <body>
@@ -1279,7 +1307,6 @@
                 </div>
                 <div class="input-area">
                     <div class="input-container">
-                        <button id="clearButton" title="Clear History">❌</button>
                         <textarea id="messageInput" placeholder="Type your message here... (Shift+Enter for new line)" autocomplete="off" rows="1"></textarea>
                         <button id="sendButton">Send</button>
                     </div>
@@ -1974,7 +2001,7 @@
                 
                 messageDiv.innerHTML = `
                     <div class="message-wrapper">
-                        <div class="message-header">${sender}</div>
+                        <div class="message-header">${sender}${type === 'ai' ? '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>' : ''}</div>
                         <div class="message-content">${formattedContent}</div>
                         ${menuUI}
                     </div>
@@ -2183,6 +2210,7 @@
             const isFinalResponse = data.bot_name && data.bot_name.includes('Final Response');
             const isCouncilIntermediate = isCouncilMsg && !isFinalResponse;
             const collapseBtn = isCouncilIntermediate ? '<button class="council-collapse-btn" title="Collapse/expand">&#9660;</button>' : '';
+            const mdCollapseBtn = isCouncilIntermediate ? '' : '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>';
             const headerClick = isCouncilIntermediate ? ' onclick="toggleCouncilCollapse(this.closest(\'.message\'))"' : '';
             messageDiv.setAttribute('data-raw-content', data.message);
             if (isCouncilIntermediate) {
@@ -2192,7 +2220,7 @@
             messageDiv.classList.remove('streaming');
             messageDiv.innerHTML = `
                 <div class="message-wrapper">
-                    <div class="message-header"${headerClick}>${data.bot_name}${collapseBtn}</div>
+                    <div class="message-header"${headerClick}>${data.bot_name}${collapseBtn}${mdCollapseBtn}</div>
                     ${thinkingBlock}
                     <div class="message-content">${formattedContent}</div>
                     ${menuUI}
@@ -2278,13 +2306,19 @@
             }
         }
 
+        function toggleMarkdownCollapse(btn) {
+            const messageDiv = btn.closest('.message');
+            if (!messageDiv) return;
+            messageDiv.classList.toggle('md-collapsed');
+            btn.classList.toggle('collapsed');
+        }
+
         socket.on('council_status', function(data) {
             updateCouncilRoleStatus(data.role, data.status);
         });
 
         // Event listeners
         document.getElementById('sendButton').addEventListener('click', sendMessage);
-        document.getElementById('clearButton').addEventListener('click', clearHistory);
         
         const messageInput = document.getElementById('messageInput');
         
@@ -2325,7 +2359,29 @@
             tempChatId = null;
             currentSessionName = 'Unsaved Chat';
             document.getElementById('currentSessionName').innerHTML = '<span>Unsaved Chat</span>';
-            clearHistory(true); // Skip confirmation
+
+            // Reset UI
+            const conversationWindow = document.getElementById('conversationWindow');
+            conversationWindow.innerHTML = `
+                <div class="message ai">
+                    <div class="message-header">System</div>
+                    <div class="message-content">New chat started. Start a new conversation!</div>
+                </div>
+            `;
+
+            // Clear console log
+            document.getElementById('consoleContent').innerHTML = '';
+
+            // Reset system prompt
+            const sysPromptEl = document.getElementById('systemPromptInput');
+            if (sysPromptEl) sysPromptEl.value = '';
+
+            // Reset council status lights
+            resetCouncilStatus();
+
+            // Tell backend to clear its conversation history
+            socket.emit('clear_history');
+
             // Remove active class from all history items
             document.querySelectorAll('.history-item').forEach(item => {
                 item.classList.remove('active');
@@ -2343,7 +2399,8 @@
                     messages: messages,
                     timestamp: new Date().toISOString(),
                     selectedBots: [],
-                    systemPrompt: (document.getElementById('systemPromptInput') || {}).value || ''
+                    systemPrompt: (document.getElementById('systemPromptInput') || {}).value || '',
+                    uploadedDocuments: uploadedPDFs
                 };
 
                 fetch('/api/save_chat', {
@@ -2469,7 +2526,7 @@
                                 
                                 messageDiv.innerHTML = `
                                     <div class="message-wrapper">
-                                        <div class="message-header">${msg.sender}</div>
+                                        <div class="message-header">${msg.sender}${msg.type === 'ai' ? '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>' : ''}</div>
                                         <div class="message-content">${msg.content}</div>
                                         ${menuUI}
                                     </div>
@@ -2491,6 +2548,26 @@
                         const sysPromptEl = document.getElementById('systemPromptInput');
                         if (sysPromptEl && data.chat.systemPrompt !== undefined) {
                             sysPromptEl.value = data.chat.systemPrompt;
+                        }
+
+                        // Restore uploaded documents if available
+                        if (data.chat.uploadedDocuments && data.chat.uploadedDocuments.length > 0) {
+                            fetch('/api/restore_documents', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({documents: data.chat.uploadedDocuments})
+                            })
+                            .then(response => response.json())
+                            .then(restoreData => {
+                                if (restoreData.success) {
+                                    uploadedPDFs = restoreData.documents;
+                                    displayPDFs();
+                                    addConsoleLog(`Restored ${uploadedPDFs.length} document(s)`);
+                                }
+                            })
+                            .catch(error => {
+                                console.error('Error restoring documents:', error);
+                            });
                         }
 
                         // Update current session info
@@ -2636,7 +2713,8 @@
                         id: tempChatId || ('temp_' + Date.now().toString()),
                         messages: messages,
                         selectedBots: [],
-                        systemPrompt: (document.getElementById('systemPromptInput') || {}).value || ''
+                        systemPrompt: (document.getElementById('systemPromptInput') || {}).value || '',
+                        uploadedDocuments: uploadedPDFs
                     };
 
                     fetch('/api/save_temp_chat', {
@@ -2742,7 +2820,7 @@
                                 
                                 messageDiv.innerHTML = `
                                     <div class="message-wrapper">
-                                        <div class="message-header">${msg.sender}</div>
+                                        <div class="message-header">${msg.sender}${msg.type === 'ai' ? '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>' : ''}</div>
                                         <div class="message-content">${msg.content}</div>
                                         ${menuUI}
                                     </div>
@@ -2770,6 +2848,26 @@
                         const sysPromptElTemp = document.getElementById('systemPromptInput');
                         if (sysPromptElTemp && data.chat.systemPrompt !== undefined) {
                             sysPromptElTemp.value = data.chat.systemPrompt;
+                        }
+
+                        // Restore uploaded documents if available
+                        if (data.chat.uploadedDocuments && data.chat.uploadedDocuments.length > 0) {
+                            fetch('/api/restore_documents', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({documents: data.chat.uploadedDocuments})
+                            })
+                            .then(response => response.json())
+                            .then(restoreData => {
+                                if (restoreData.success) {
+                                    uploadedPDFs = restoreData.documents;
+                                    displayPDFs();
+                                    addConsoleLog(`Restored ${uploadedPDFs.length} document(s)`);
+                                }
+                            })
+                            .catch(error => {
+                                console.error('Error restoring documents:', error);
+                            });
                         }
                         
                         // Update active state in history list

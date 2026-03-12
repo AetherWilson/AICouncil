@@ -249,6 +249,49 @@ def upload_document():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/api/restore_documents', methods=['POST'])
+def restore_documents():
+    """Re-register previously uploaded documents from a saved chat"""
+    try:
+        data = request.json
+        documents = data.get('documents', [])
+        restored = []
+
+        for doc_meta in documents:
+            filename = doc_meta.get('filename')
+            if not filename:
+                continue
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            if not os.path.exists(filepath):
+                continue
+
+            file_size = os.path.getsize(filepath)
+            file_ext = filename.lower().split('.')[-1]
+
+            if file_ext == 'pdf':
+                text_content = extract_pdf_text(filepath)
+                with open(filepath, 'rb') as f:
+                    pdf_reader = PyPDF2.PdfReader(f)
+                    page_count = len(pdf_reader.pages)
+                pdf_documents[filename] = {
+                    'filename': filename, 'content': text_content,
+                    'pages': page_count, 'size': file_size, 'type': 'pdf'
+                }
+                restored.append({'filename': filename, 'pages': page_count, 'size': file_size, 'type': 'pdf'})
+            else:
+                img = Image.open(filepath)
+                width, height = img.size
+                pdf_documents[filename] = {
+                    'filename': filename, 'content': '[Image uploaded]',
+                    'filepath': filepath, 'width': width, 'height': height,
+                    'size': file_size, 'type': 'image'
+                }
+                restored.append({'filename': filename, 'width': width, 'height': height, 'size': file_size, 'type': 'image'})
+
+        return jsonify({'success': True, 'documents': restored})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/api/remove_document', methods=['POST'])
 def remove_document():
     """Remove uploaded document"""
@@ -283,7 +326,8 @@ def save_chat():
             'messages': messages,
             'selectedBots': selected_bots,
             'systemPrompt': data.get('systemPrompt', ''),
-            'timestamp': data.get('timestamp', datetime.now().isoformat())
+            'timestamp': data.get('timestamp', datetime.now().isoformat()),
+            'uploadedDocuments': data.get('uploadedDocuments', [])
         }
         
         # Save to file
@@ -365,6 +409,7 @@ def save_temp_chat():
         chat_id = data.get('id', 'temp_' + str(int(time.time() * 1000)))
         messages = data.get('messages', [])
         selected_bots = data.get('selectedBots', [])
+        uploaded_documents = data.get('uploadedDocuments', [])
         
         chat_data = {
             'id': chat_id,
@@ -373,7 +418,8 @@ def save_temp_chat():
             'selectedBots': selected_bots,
             'systemPrompt': data.get('systemPrompt', ''),
             'timestamp': datetime.now().isoformat(),
-            'isTemporary': True
+            'isTemporary': True,
+            'uploadedDocuments': uploaded_documents
         }
         
         # Save to temp folder
