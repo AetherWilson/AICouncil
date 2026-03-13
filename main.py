@@ -54,13 +54,36 @@ def load_models():
     except FileNotFoundError:
         return []
 
+def infer_model_support_images(model_id):
+    """Best-effort vision capability detection when model metadata is unavailable."""
+    model_lower = (model_id or '').lower()
+    if not model_lower:
+        return False
+
+    # Common model families and tags that typically support image input.
+    vision_hints = [
+        'gpt-4o', 'gpt-4.1', 'gpt-5', 'o1', 'o3',
+        'gemini', 'grok',
+        'claude-3', 'claude-opus-4', 'claude-sonnet-4',
+        'vision', 'vl', 'pixtral', 'llava', 'qwen-vl'
+    ]
+    return any(hint in model_lower for hint in vision_hints)
+
 def get_model_info(model_id):
     """Get model details by ID from model.json"""
     models = load_models()
     for m in models:
         if m['id'] == model_id:
+            # If support_images is missing in model.json, infer from model name.
+            if 'support_images' not in m:
+                m = dict(m)
+                m['support_images'] = infer_model_support_images(model_id)
             return m
-    return {'id': model_id, 'name': model_id, 'support_images': False}
+    return {
+        'id': model_id,
+        'name': model_id,
+        'support_images': infer_model_support_images(model_id)
+    }
 
 # Council role system prompts
 LEADER_DISTRIBUTE_PROMPT = """You are the Leader of an AI council. Your job is to analyze the user's request and distribute tasks to your team members.
