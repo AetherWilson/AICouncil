@@ -821,35 +821,82 @@
             position: relative;
         }
 
-        .code-copy-btn {
-            position: absolute;
+        .code-controls {
+            position: sticky;
             top: 8px;
-            right: 8px;
+            width: 100%;
+            height: 0;
+            display: flex;
+            justify-content: flex-end;
+            gap: 6px;
+            z-index: 6;
+            padding-right: 14px;
+            pointer-events: none;
+            transform: translateY(8px);
+        }
+
+        .code-copy-btn,
+        .code-wrap-btn,
+        .code-hide-btn {
+            position: static;
             background: #3c3c3c;
             border: 1px solid #555;
             border-radius: 4px;
             color: #858585;
-            width: 28px;
+            width: 32px;
             height: 28px;
-            padding: 5px;
+            padding: 4px;
             cursor: pointer;
-            opacity: 0;
+            opacity: 0.4;
             transition: opacity 0.2s, background 0.2s, color 0.2s, border-color 0.2s;
             display: flex;
             align-items: center;
             justify-content: center;
             z-index: 5;
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1;
+            pointer-events: auto;
         }
 
-        pre:hover .code-copy-btn,
-        .code-copy-btn:focus {
+        .code-block-shell:hover .code-copy-btn,
+        .code-copy-btn:focus,
+        .code-block-shell:hover .code-wrap-btn,
+        .code-wrap-btn:focus,
+        .code-wrap-btn.active,
+        .code-block-shell:hover .code-hide-btn,
+        .code-hide-btn:focus,
+        .code-hide-btn.active {
             opacity: 1;
         }
 
-        .code-copy-btn:hover {
+        .code-copy-btn:hover,
+        .code-wrap-btn:hover,
+        .code-wrap-btn.active,
+        .code-hide-btn:hover,
+        .code-hide-btn.active {
             background: #4ec9b0;
             color: #1e1e1e;
             border-color: #4ec9b0;
+        }
+
+        .message.user .code-copy-btn,
+        .message.user .code-wrap-btn,
+        .message.user .code-hide-btn {
+            background: rgba(255, 255, 255, 0.16);
+            border-color: rgba(255, 255, 255, 0.35);
+            color: #e6f4ff;
+        }
+
+        .message.user .code-copy-btn:hover,
+        .message.user .code-wrap-btn:hover,
+        .message.user .code-wrap-btn.active,
+        .message.user .code-hide-btn:hover,
+        .message.user .code-hide-btn.active,
+        .message.user .code-copy-btn.copied {
+            background: #ffffff;
+            color: #0e639c;
+            border-color: #ffffff;
         }
 
         .code-copy-btn.copied {
@@ -863,6 +910,35 @@
             height: 16px;
             fill: currentColor;
             pointer-events: none;
+        }
+
+        .code-wrap-btn,
+        .code-hide-btn {
+            width: auto;
+            min-width: 28px;
+            padding: 0 8px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+        }
+
+        .code-hide-btn {
+            font-size: 16px;
+            font-weight: bold;
+        }
+
+        /* Hide code block content when active */
+        .code-block-shell.hidden pre code {
+            display: none !important;
+        }
+
+        .code-block-shell.hidden pre::after {
+            content: attr(data-hidden-lines);
+            display: block;
+            color: #858585;
+            font-size: 13px;
+            font-style: italic;
+            padding-top: 24px;
+            padding-bottom: 4px;
         }
 
         .input-area {
@@ -1164,14 +1240,23 @@
         }
 
         /* Code blocks */
+        .message-content .code-block-shell {
+            margin: 1em 0;
+            position: relative;
+        }
+
         .message-content pre {
             background: #1e1e1e;
             border: 1px solid #3c3c3c;
             border-radius: 8px;
             padding: 16px;
-            margin: 1em 0;
+            margin: 0;
             overflow-x: auto;
             position: relative;
+        }
+
+        .message-content pre.wrapped {
+            overflow-x: hidden;
         }
 
         .message-content pre code {
@@ -1183,12 +1268,18 @@
             color: #d4d4d4;
         }
 
+        .message-content pre.wrapped code {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
         /* Code block with language tag */
         .message-content pre[class*="language-"]::before {
             content: attr(data-language);
             position: absolute;
             top: 8px;
-            right: 12px;
+            right: 95px;
             font-size: 0.75em;
             color: #858585;
             text-transform: uppercase;
@@ -1596,7 +1687,9 @@
                 
                 // Sync with backend history
                 const messages = getCurrentMessages();
-                socket.emit('load_chat_history', { messages: messages });
+                const activeChatId = currentSessionId || tempChatId;
+                        if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
+                        socket.emit('load_chat_history', { chat_id: activeChatId, messages: messages });
                 
                 addConsoleLog('Message deleted from chat');
                 
@@ -2039,6 +2132,11 @@
 
             if (!message) return;
 
+            // Create temp id before any UI-triggered autosave so data goes to the right file.
+            if (!currentSessionId && !tempChatId) {
+                tempChatId = 'temp_' + Date.now().toString();
+            }
+
             // Display user message
             addMessage('user', message, 'You');
             
@@ -2048,9 +2146,14 @@
             // Send to server
             const systemPromptInput = document.getElementById('systemPromptInput');
             const userSystemPrompt = systemPromptInput ? systemPromptInput.value.trim() : '';
+            const activeChatId = currentSessionId || tempChatId;
+            if (activeChatId) {
+                socket.emit('join_chat', { chat_id: activeChatId });
+            }
             socket.emit('send_message', {
                 message: message,
-                system_prompt: userSystemPrompt
+                system_prompt: userSystemPrompt,
+                chat_id: activeChatId
             });
 
             // Clear input
@@ -2071,7 +2174,8 @@
         }
 
         function stopAI() {
-            socket.emit('stop_generation');
+            const activeChatId = currentSessionId || tempChatId;
+            socket.emit('stop_generation', { chat_id: activeChatId });
             addConsoleLog('Stopping AI generation...');
             setProcessingState(false);
         }
@@ -2104,7 +2208,7 @@
                 displayPDFs();
                 
                 // Notify server to clear history
-                socket.emit('clear_history');
+                socket.emit('clear_history', { chat_id: currentSessionId || tempChatId });
                 
                 addConsoleLog('Conversation history and documents cleared');
             }
@@ -2145,8 +2249,12 @@
         });
 
         socket.on('ai_thinking_chunk', function(data) {
-            const entry = streamingMessages[data.bot_id];
-            if (!entry) return;
+            let entry = streamingMessages[data.bot_id];
+            if (!entry) {
+                addStreamingMessage('ai', data.bot_id, data.bot_name || 'AI');
+                entry = streamingMessages[data.bot_id];
+                if (!entry) return;
+            }
             entry.thinkingText += data.chunk;
             const block = entry.div.querySelector('.thinking-block');
             const content = entry.div.querySelector('.thinking-content');
@@ -2157,8 +2265,12 @@
         });
 
         socket.on('ai_response_chunk', function(data) {
-            const entry = streamingMessages[data.bot_id];
-            if (!entry) return;
+            let entry = streamingMessages[data.bot_id];
+            if (!entry) {
+                addStreamingMessage('ai', data.bot_id, data.bot_name || 'AI');
+                entry = streamingMessages[data.bot_id];
+                if (!entry) return;
+            }
             entry.rawText += data.chunk;
             const streamSpan = entry.div.querySelector('.stream-text');
             if (streamSpan) streamSpan.textContent = entry.rawText;
@@ -2167,8 +2279,12 @@
         });
 
         socket.on('ai_response_end', function(data) {
-            const entry = streamingMessages[data.bot_id];
-            if (!entry) return;
+            let entry = streamingMessages[data.bot_id];
+            if (!entry) {
+                addStreamingMessage('ai', data.bot_id, data.bot_name || 'AI');
+                entry = streamingMessages[data.bot_id];
+                if (!entry) return;
+            }
             const messageDiv = entry.div;
             const hasThinking = data.thinking && data.thinking.trim().length > 0;
             const isTaskDist = data.bot_name && data.bot_name.includes('Task Distribution');
@@ -2255,11 +2371,25 @@
             // Find all code blocks within the message
             const codeBlocks = messageDiv.querySelectorAll('pre');
             codeBlocks.forEach(pre => {
-                // Skip if button already exists
-                if (pre.querySelector('.code-copy-btn')) return;
-                
-                // Create wrapper for positioning
-                pre.style.position = 'relative';
+                // Create a non-scrolling shell so controls stay fixed while the code scrolls
+                let shell = pre.parentElement;
+                if (!shell || !shell.classList.contains('code-block-shell')) {
+                    shell = document.createElement('div');
+                    shell.className = 'code-block-shell';
+                    pre.parentNode.insertBefore(shell, pre);
+                    shell.appendChild(pre);
+                }
+
+                // Remove legacy in-block copy/wrap controls before rebuilding
+                pre.querySelectorAll('.code-copy-btn, .code-wrap-btn, .code-controls').forEach(el => {
+                    if (el.closest('pre') === pre) {
+                        el.remove();
+                    }
+                });
+                shell.querySelectorAll(':scope > .code-controls').forEach(el => el.remove());
+
+                const controls = document.createElement('div');
+                controls.className = 'code-controls';
                 
                 // Create copy button
                 const copyBtn = document.createElement('button');
@@ -2285,8 +2415,46 @@
                         });
                     }
                 };
-                
-                pre.appendChild(copyBtn);
+
+                // Add hide button
+                const hideBtn = document.createElement('button');
+                hideBtn.className = 'code-hide-btn';
+                hideBtn.type = 'button';
+                hideBtn.title = 'Hide code block';
+                hideBtn.textContent = '^';
+
+                hideBtn.onclick = function() {
+                    const hidden = shell.classList.toggle('hidden');
+                    hideBtn.classList.toggle('active', hidden);
+                    hideBtn.textContent = hidden ? 'v' : '^';
+                    hideBtn.title = hidden ? 'Show code block' : 'Hide code block';
+                    
+                    if (hidden) {
+                        const code = pre.querySelector('code');
+                        const text = code ? code.textContent : pre.textContent;
+                        const lineCount = text.split('\n').length;
+                        pre.setAttribute('data-hidden-lines', lineCount + ' hidden lines');
+                    }
+                };
+
+                // Add wrap button for all code blocks
+                const wrapBtn = document.createElement('button');
+                wrapBtn.className = 'code-wrap-btn';
+                wrapBtn.type = 'button';
+                wrapBtn.title = 'Toggle line wrapping';
+                wrapBtn.textContent = '<';
+
+                wrapBtn.onclick = function() {
+                    const wrapped = pre.classList.toggle('wrapped');
+                    wrapBtn.classList.toggle('active', wrapped);
+                    wrapBtn.title = wrapped ? 'Unwrap lines' : 'Wrap lines';
+                };
+
+                controls.appendChild(hideBtn);
+                controls.appendChild(wrapBtn);
+                controls.appendChild(copyBtn);
+
+                shell.insertBefore(controls, pre);
             });
         }
 
@@ -2380,7 +2548,7 @@
             resetCouncilStatus();
 
             // Tell backend to clear its conversation history
-            socket.emit('clear_history');
+            socket.emit('clear_history', { chat_id: currentSessionId || tempChatId });
 
             // Remove active class from all history items
             document.querySelectorAll('.history-item').forEach(item => {
@@ -2604,7 +2772,9 @@
                                 };
                             }
                         });
-                        socket.emit('load_chat_history', {messages: formattedMessages});
+                        const activeChatId = currentSessionId || tempChatId;
+                        if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
+                        socket.emit('load_chat_history', { chat_id: activeChatId, messages: formattedMessages });
                         
                         conversationWindow.scrollTop = conversationWindow.scrollHeight;
                         addConsoleLog(`Loaded chat: ${currentSessionName}`);
@@ -2703,18 +2873,25 @@
                 return;
             }
 
+            // Snapshot current temp chat state now, so quick chat switching won't save the wrong DOM.
+            const snapshotMessages = getCurrentMessages();
+            const snapshotSystemPrompt = (document.getElementById('systemPromptInput') || {}).value || '';
+            const snapshotUploadedDocuments = [...uploadedPDFs];
+            const snapshotTempId = tempChatId || ('temp_' + Date.now().toString());
+            if (!tempChatId) {
+                tempChatId = snapshotTempId;
+            }
+
             // Auto-save after 2 seconds of inactivity
             autoSaveTimeout = setTimeout(() => {
-                const messages = getCurrentMessages();
-
                 // Only save if there are messages
-                if (messages.length > 1) { // More than just the welcome message
+                if (snapshotMessages.length > 1) { // More than just the welcome message
                     const sessionData = {
-                        id: tempChatId || ('temp_' + Date.now().toString()),
-                        messages: messages,
+                        id: snapshotTempId,
+                        messages: snapshotMessages,
                         selectedBots: [],
-                        systemPrompt: (document.getElementById('systemPromptInput') || {}).value || '',
-                        uploadedDocuments: uploadedPDFs
+                        systemPrompt: snapshotSystemPrompt,
+                        uploadedDocuments: snapshotUploadedDocuments
                     };
 
                     fetch('/api/save_temp_chat', {
@@ -2725,7 +2902,7 @@
                     .then(response => response.json())
                     .then(data => {
                         if (data.success) {
-                            if (!tempChatId) {
+                            if (!tempChatId || tempChatId === snapshotTempId) {
                                 tempChatId = data.id;
                             }
                             loadTempChats();
@@ -2900,7 +3077,9 @@
                                 };
                             }
                         });
-                        socket.emit('load_chat_history', {messages: formattedMessages});
+                        const activeChatId = currentSessionId || tempChatId;
+                        if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
+                        socket.emit('load_chat_history', { chat_id: activeChatId, messages: formattedMessages });
                         
                         conversationWindow.scrollTop = conversationWindow.scrollHeight;
                         addConsoleLog(`Loaded temporary chat`);

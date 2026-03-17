@@ -1,5 +1,5 @@
 from flask import Flask, render_template, request, jsonify
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO, emit, join_room
 import json
 import time
 import threading
@@ -24,6 +24,9 @@ conversation_histories = {}
 pdf_documents = {}
 # Track stop requests per session
 stop_flags = {}
+
+# Prevent concurrent writes from overlapping background tasks.
+persistence_lock = threading.Lock()
 
 # Create uploads directory if it doesn't exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -590,7 +593,76 @@ def build_document_context(system_prompt, support_images):
             system_prompt += pdf_context
     return system_prompt, image_urls
 
-def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, session_id, support_images=False, _retry=False):
+def _history_to_ui_messages(session_id):
+    """Convert backend conversation history to UI-friendly message objects."""
+    import re
+
+    ui_messages = []
+    for msg in conversation_histories.get(session_id, []):
+        role = msg.get('role', '')
+        content = msg.get('content', '')
+
+        if role == 'user':
+            ui_messages.append({
+                'type': 'user',
+                'sender': 'You',
+                'content': content
+            })
+            continue
+
+        sender = msg.get('bot_name', 'AI')
+        body = content
+
+        # Parse legacy format: [Sender (id)] content
+        match = re.match(r'^\[(.+?)\]\s*(.*)$', content, re.DOTALL)
+        if match:
+            sender = match.group(1).strip() or sender
+            body = match.group(2)
+
+        ui_messages.append({
+            'type': 'ai',
+            'sender': sender,
+            'content': body,
+            'raw_content': body
+        })
+
+    return ui_messages
+
+def persist_chat_snapshot(session_id, user_system_prompt=''):
+    """Persist the current in-memory session to saved or temp storage."""
+    try:
+        with persistence_lock:
+            is_saved = os.path.exists(
+                os.path.join(app.config['CHAT_HISTORY_FOLDER'], f'{session_id}.json')
+            )
+            folder = app.config['CHAT_HISTORY_FOLDER'] if is_saved else app.config['TEMP_CHAT_HISTORY_FOLDER']
+            filepath = os.path.join(folder, f'{session_id}.json')
+
+            chat_data = {}
+            if os.path.exists(filepath):
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    chat_data = json.load(f)
+
+            chat_data['id'] = session_id
+            if 'name' not in chat_data:
+                chat_data['name'] = 'Saved Chat' if is_saved else 'Temporary Chat'
+            chat_data['messages'] = _history_to_ui_messages(session_id)
+            chat_data['selectedBots'] = chat_data.get('selectedBots', [])
+            chat_data['systemPrompt'] = chat_data.get('systemPrompt', user_system_prompt)
+            chat_data['timestamp'] = chat_data.get('timestamp', datetime.now().isoformat())
+            chat_data['uploadedDocuments'] = chat_data.get('uploadedDocuments', [])
+            if not is_saved:
+                chat_data['isTemporary'] = True
+
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(chat_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Snapshot save error for {session_id}: {e}")
+
+def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, session_id, support_images=False, on_stream_progress=None, _retry=False):
+    def emit_chat(*args, **kwargs):
+        kwargs['to'] = session_id
+        socketio.emit(*args, **kwargs)
     """Run a single council role and stream its response"""
     try:
         # Build document context
@@ -601,14 +673,14 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         timestamp = datetime.now().strftime("%H:%M:%S")
 
         # Emit start event
-        socketio.emit('ai_response_start', {
+        emit_chat('ai_response_start', {
             'bot_name': role_label,
             'bot_id': bot_id,
             'timestamp': timestamp
         })
 
         # Emit running status
-        socketio.emit('council_status', {
+        emit_chat('council_status', {
             'role': role_name,
             'status': 'running'
         })
@@ -617,6 +689,18 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         full_response = ''
         full_thinking = ''
         stopped_early = False
+        last_snapshot_ts = 0.0
+
+        # Create a mutable assistant entry early so partial content can be saved mid-stream.
+        if session_id not in conversation_histories:
+            conversation_histories[session_id] = []
+        assistant_entry = {
+            "role": "assistant",
+            "content": f"[{role_label} ({model_id})] ",
+            "bot_name": role_label,
+            "bot_id": bot_id
+        }
+        conversation_histories[session_id].append(assistant_entry)
 
         for chunk_type, chunk in completion_response_stream(
             model=model_id,
@@ -631,25 +715,31 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 break
             if chunk_type == 'thinking':
                 full_thinking += chunk
-                socketio.emit('ai_thinking_chunk', {
+                emit_chat('ai_thinking_chunk', {
                     'bot_id': bot_id,
                     'chunk': chunk
                 })
             else:
                 full_response += chunk
-                socketio.emit('ai_response_chunk', {
+                assistant_entry["content"] = f"[{role_label} ({model_id})] {full_response}"
+                emit_chat('ai_response_chunk', {
                     'bot_id': bot_id,
                     'chunk': chunk
                 })
 
+                now = time.time()
+                if on_stream_progress and (now - last_snapshot_ts) >= 1.0:
+                    on_stream_progress()
+                    last_snapshot_ts = now
+
         if stopped_early:
             timestamp = datetime.now().strftime("%H:%M:%S")
-            socketio.emit('console_log', {
+            emit_chat('console_log', {
                 'message': f"[{timestamp}] {role_label} stopped by user"
             })
             partial_converted = convert_to_traditional_chinese(full_response)
             thinking_converted = convert_to_traditional_chinese(full_thinking) if full_thinking else ''
-            socketio.emit('ai_response_end', {
+            emit_chat('ai_response_end', {
                 'bot_name': role_label,
                 'bot_id': bot_id,
                 'message': partial_converted,
@@ -657,10 +747,13 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 'timestamp': timestamp,
                 'stopped': True
             })
-            socketio.emit('council_status', {
+            emit_chat('council_status', {
                 'role': role_name,
                 'status': 'stopped'
             })
+            assistant_entry["content"] = f"[{role_label} ({model_id})] {partial_converted}"
+            if on_stream_progress:
+                on_stream_progress()
             return ''
 
         # Clean up self-references
@@ -670,23 +763,16 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         # Convert to Traditional Chinese
         converted_response = convert_to_traditional_chinese(full_response)
 
-        # Store in conversation history
-        if session_id not in conversation_histories:
-            conversation_histories[session_id] = []
-        conversation_histories[session_id].append({
-            "role": "assistant",
-            "content": f"[{role_label} ({model_id})] {converted_response}",
-            "bot_name": role_label,
-            "bot_id": bot_id
-        })
+        # Finalize the in-progress entry content.
+        assistant_entry["content"] = f"[{role_label} ({model_id})] {converted_response}"
 
         # Log completion
         timestamp = datetime.now().strftime("%H:%M:%S")
-        socketio.emit('console_log', {'message': f"[{timestamp}] {role_label} completed"})
+        emit_chat('console_log', {'message': f"[{timestamp}] {role_label} completed"})
 
         # Finalize streaming bubble
         thinking_converted = convert_to_traditional_chinese(full_thinking) if full_thinking else ''
-        socketio.emit('ai_response_end', {
+        emit_chat('ai_response_end', {
             'bot_name': role_label,
             'bot_id': bot_id,
             'message': converted_response,
@@ -695,27 +781,30 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         })
 
         # Status done
-        socketio.emit('council_status', {
+        emit_chat('council_status', {
             'role': role_name,
             'status': 'done'
         })
 
+        if on_stream_progress:
+            on_stream_progress()
+
         return converted_response
     except Exception as e:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        socketio.emit('console_log', {
+        emit_chat('console_log', {
             'message': f"[{timestamp}] {role_label} encountered an error: {str(e)}{', retrying...' if not _retry else ', giving up.'}"
         })
         if not _retry:
             return run_council_role(
                 role_name, role_label, model_id, system_prompt, user_prompt,
-                chat_history, session_id, support_images, _retry=True
+                chat_history, session_id, support_images, on_stream_progress, _retry=True
             )
         # Second failure — skip this role
         notice = f"{role_label} has encountered an error and has to go without it."
-        socketio.emit('council_status', {'role': role_name, 'status': 'error'})
+        emit_chat('council_status', {'role': role_name, 'status': 'error'})
         bot_id = f"council-{role_name.lower()}"
-        socketio.emit('ai_response', {
+        emit_chat('ai_response', {
             'bot_name': role_label,
             'bot_id': bot_id,
             'message': f"⚠️ {notice}",
@@ -723,15 +812,33 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         })
         return None
 
+@socketio.on('join_chat')
+def handle_join_chat(data):
+    chat_id = data.get('chat_id')
+    if chat_id:
+        join_room(chat_id)
+
 @socketio.on('send_message')
-def handle_message(data):
+def handle_message_wrapper(data):
+    chat_id = data.get('chat_id')
+    session_id = chat_id if chat_id else request.sid
+    # Reset stop flag here so it is synchronous
+    stop_flags[session_id] = False
+    socketio.start_background_task(handle_message_task, data, session_id)
+
+def handle_message_task(data, session_id):
     """Handle user message and run the council workflow"""
     user_message = data.get('message', '')
     user_system_prompt = data.get('system_prompt', '')
-    session_id = request.sid
-
-    # Reset stop flag
-    stop_flags[session_id] = False
+    
+    def emit_chat(event, payload=None):
+        if payload is None:
+            socketio.emit(event, to=session_id)
+        else:
+            socketio.emit(event, payload, to=session_id)
+            
+    def auto_save_chat():
+        persist_chat_snapshot(session_id, user_system_prompt)
 
     # Initialize conversation history
     if session_id not in conversation_histories:
@@ -741,6 +848,7 @@ def handle_message(data):
         "role": "user",
         "content": user_message
     })
+    auto_save_chat()
 
     # Build chat history (exclude current message)
     chat_history = [
@@ -751,13 +859,13 @@ def handle_message(data):
     # Load council config
     config = load_config()
     timestamp = datetime.now().strftime("%H:%M:%S")
-    socketio.emit('console_log', {
+    emit_chat('console_log', {
         'message': f"[{timestamp}] Council workflow started"
     })
 
     # Set all roles to waiting
     for role in ['Leader', 'Researcher', 'Creative_Writer', 'Analyzer', 'Verifier']:
-        socketio.emit('council_status', {'role': role, 'status': 'waiting'})
+        emit_chat('council_status', {'role': role, 'status': 'waiting'})
 
     # ── Step 1: Leader distributes tasks ──
     leader_model_id = config.get('Leader', '')
@@ -766,7 +874,7 @@ def handle_message(data):
     if user_system_prompt:
         leader_sys = user_system_prompt + "\n\n" + leader_sys
 
-    socketio.emit('console_log', {
+    emit_chat('console_log', {
         'message': f"[{timestamp}] Leader ({leader_model_id}) analyzing and distributing tasks..."
     })
 
@@ -778,28 +886,29 @@ def handle_message(data):
         user_prompt=user_message,
         chat_history=chat_history,
         session_id=session_id,
-        support_images=leader_info.get('support_images', False)
+        support_images=leader_info.get('support_images', False),
+        on_stream_progress=auto_save_chat
     )
 
     if stop_flags.get(session_id, False):
-        socketio.emit('all_done')
+        emit_chat('all_done')
         return
 
     # Parse task distribution — abort if leader failed or returned invalid JSON
     if task_distribution_raw is None:
-        socketio.emit('console_log', {
+        emit_chat('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Leader failed to respond. Aborting council workflow."
         })
-        socketio.emit('all_done')
+        emit_chat('all_done')
         return
 
     try:
         tasks = json.loads(extract_json_from_text(task_distribution_raw))
     except (json.JSONDecodeError, Exception) as e:
-        socketio.emit('console_log', {
+        emit_chat('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution: {str(e)}. Aborting council workflow."
         })
-        socketio.emit('all_done')
+        emit_chat('all_done')
         return
 
     council_results = {}
@@ -810,7 +919,7 @@ def handle_message(data):
         researcher_model_id = config.get('Researcher', '')
         researcher_info = get_model_info(researcher_model_id)
         timestamp = datetime.now().strftime("%H:%M:%S")
-        socketio.emit('console_log', {
+        emit_chat('console_log', {
             'message': f"[{timestamp}] Researcher ({researcher_model_id}) working..."
         })
 
@@ -826,17 +935,19 @@ def handle_message(data):
             user_prompt=researcher_task,
             chat_history=chat_history,
             session_id=session_id,
-            support_images=researcher_info.get('support_images', False)
+            support_images=researcher_info.get('support_images', False),
+            on_stream_progress=auto_save_chat
         )
         if researcher_response is not None:
             council_results['Researcher'] = researcher_response
+            auto_save_chat()
 
         if stop_flags.get(session_id, False):
-            socketio.emit('all_done')
+            emit_chat('all_done')
             return
     else:
-        socketio.emit('council_status', {'role': 'Researcher', 'status': 'skipped'})
-        socketio.emit('console_log', {
+        emit_chat('council_status', {'role': 'Researcher', 'status': 'skipped'})
+        emit_chat('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Researcher: SKIPPED"
         })
 
@@ -846,7 +957,7 @@ def handle_message(data):
         creative_model_id = config.get('Creative_Writer', '')
         creative_info = get_model_info(creative_model_id)
         timestamp = datetime.now().strftime("%H:%M:%S")
-        socketio.emit('console_log', {
+        emit_chat('console_log', {
             'message': f"[{timestamp}] Creative Writer ({creative_model_id}) working..."
         })
 
@@ -864,17 +975,19 @@ def handle_message(data):
             user_prompt=creative_task,
             chat_history=chat_history,
             session_id=session_id,
-            support_images=creative_info.get('support_images', False)
+            support_images=creative_info.get('support_images', False),
+            on_stream_progress=auto_save_chat
         )
         if creative_response is not None:
             council_results['Creative_Writer'] = creative_response
+            auto_save_chat()
 
         if stop_flags.get(session_id, False):
-            socketio.emit('all_done')
+            emit_chat('all_done')
             return
     else:
-        socketio.emit('council_status', {'role': 'Creative_Writer', 'status': 'skipped'})
-        socketio.emit('console_log', {
+        emit_chat('council_status', {'role': 'Creative_Writer', 'status': 'skipped'})
+        emit_chat('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Creative Writer: SKIPPED"
         })
 
@@ -884,7 +997,7 @@ def handle_message(data):
         analyzer_model_id = config.get('Analyzer', '')
         analyzer_info = get_model_info(analyzer_model_id)
         timestamp = datetime.now().strftime("%H:%M:%S")
-        socketio.emit('console_log', {
+        emit_chat('console_log', {
             'message': f"[{timestamp}] Analyzer ({analyzer_model_id}) working..."
         })
 
@@ -900,17 +1013,19 @@ def handle_message(data):
             user_prompt=analyzer_task,
             chat_history=chat_history,
             session_id=session_id,
-            support_images=analyzer_info.get('support_images', False)
+            support_images=analyzer_info.get('support_images', False),
+            on_stream_progress=auto_save_chat
         )
         if analyzer_response is not None:
             council_results['Analyzer'] = analyzer_response
+            auto_save_chat()
 
         if stop_flags.get(session_id, False):
-            socketio.emit('all_done')
+            emit_chat('all_done')
             return
     else:
-        socketio.emit('council_status', {'role': 'Analyzer', 'status': 'skipped'})
-        socketio.emit('console_log', {
+        emit_chat('council_status', {'role': 'Analyzer', 'status': 'skipped'})
+        emit_chat('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Analyzer: SKIPPED"
         })
 
@@ -920,7 +1035,7 @@ def handle_message(data):
         verifier_model_id = config.get('Verifier', '')
         verifier_info = get_model_info(verifier_model_id)
         timestamp = datetime.now().strftime("%H:%M:%S")
-        socketio.emit('console_log', {
+        emit_chat('console_log', {
             'message': f"[{timestamp}] Verifier ({verifier_model_id}) reviewing team results..."
         })
 
@@ -947,24 +1062,26 @@ def handle_message(data):
             user_prompt=verifier_task,
             chat_history=chat_history,
             session_id=session_id,
-            support_images=verifier_info.get('support_images', False)
+            support_images=verifier_info.get('support_images', False),
+            on_stream_progress=auto_save_chat
         )
         if verifier_response is not None:
             council_results['Verifier'] = verifier_response
+            auto_save_chat()
 
         if stop_flags.get(session_id, False):
-            socketio.emit('all_done')
+            emit_chat('all_done')
             return
     else:
-        socketio.emit('council_status', {'role': 'Verifier', 'status': 'skipped'})
-        socketio.emit('console_log', {
+        emit_chat('council_status', {'role': 'Verifier', 'status': 'skipped'})
+        emit_chat('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Verifier: SKIPPED"
         })
 
     # ── Step 6: Leader synthesizes all results ──
     if council_results:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        socketio.emit('console_log', {
+        emit_chat('console_log', {
             'message': f"[{timestamp}] Leader ({leader_model_id}) combining results..."
         })
 
@@ -987,16 +1104,18 @@ def handle_message(data):
             user_prompt=f"Please combine the team's work and provide the final response to: {user_message}",
             chat_history=chat_history,
             session_id=session_id,
-            support_images=leader_info.get('support_images', False)
+            support_images=leader_info.get('support_images', False),
+            on_stream_progress=auto_save_chat
         )
+        auto_save_chat()
 
     # Signal all done
-    socketio.emit('all_done')
+    emit_chat('all_done')
 
 @socketio.on('stop_generation')
-def handle_stop():
+def handle_stop(data):
     """Handle stop generation request"""
-    session_id = request.sid
+    session_id = data.get('chat_id') if data and data.get('chat_id') else request.sid
     stop_flags[session_id] = True
     timestamp = datetime.now().strftime("%H:%M:%S")
     emit('console_log', {'message': f"[{timestamp}] Stop requested - will stop after current AI finishes"})
@@ -1017,9 +1136,10 @@ def handle_disconnect():
     print('Client disconnected')
 
 @socketio.on('clear_history')
-def handle_clear_history():
+def handle_clear_history(data=None):
     """Clear conversation history for the current session"""
-    session_id = request.sid
+    chat_id = data.get('chat_id') if data else None
+    session_id = chat_id if chat_id else request.sid
     if session_id in conversation_histories:
         conversation_histories[session_id] = []
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1028,7 +1148,8 @@ def handle_clear_history():
 @socketio.on('load_chat_history')
 def handle_load_chat_history(data):
     """Update backend conversation history when a chat is loaded"""
-    session_id = request.sid
+    chat_id = data.get('chat_id')
+    session_id = chat_id if chat_id else request.sid
     messages = data.get('messages', [])
     
     # Convert UI message format to backend conversation history format
