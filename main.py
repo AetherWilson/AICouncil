@@ -3,6 +3,7 @@ from flask_socketio import SocketIO, emit, join_room
 import json
 import time
 import threading
+import uuid
 from datetime import datetime
 from GPT_handle import completion_response_stream, convert_to_traditional_chinese
 import os
@@ -18,15 +19,93 @@ app.config['TEMP_CHAT_HISTORY_FOLDER'] = 'temp_chat_history'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Store conversation history for each session
-conversation_histories = {}
-# Store uploaded PDFs content
-pdf_documents = {}
-# Track stop requests per session
-stop_flags = {}
+# Store all conversation state keyed by conversation_id
+# {
+#   conversation_id: {
+#     messages: list,
+#     is_generating: bool,
+#     active_stream_task: handle,
+#     pending_message_id: str | None,
+#     abort_event: threading.Event,
+#     uploaded_documents: dict[str, dict]
+#   }
+# }
+conversations = {}
 
 # Prevent concurrent writes from overlapping background tasks.
 persistence_lock = threading.Lock()
+
+
+def _new_conversation_state():
+    return {
+        'messages': [],
+        'is_generating': False,
+        'active_stream_task': None,
+        'pending_message_id': None,
+        'abort_event': threading.Event(),
+        'uploaded_documents': {},
+        'run_group_counter': 0,
+        'current_run_group_id': None
+    }
+
+
+def get_conversation(conversation_id):
+    if not conversation_id:
+        return None
+    if conversation_id not in conversations:
+        conversations[conversation_id] = _new_conversation_state()
+    return conversations[conversation_id]
+
+
+def append_conversation_message(conversation_id, role, content, **extra):
+    conv = get_conversation(conversation_id)
+    message = {
+        'id': extra.get('id', uuid.uuid4().hex),
+        'role': role,
+        'content': content,
+        'timestamp': extra.get('timestamp', datetime.now().isoformat())
+    }
+    for key, value in extra.items():
+        if key not in ('id', 'timestamp'):
+            message[key] = value
+    conv['messages'].append(message)
+    return message
+
+
+def update_message_content(conversation_id, message_id, content):
+    conv = get_conversation(conversation_id)
+    for msg in conv['messages']:
+        if msg.get('id') == message_id:
+            msg['content'] = content
+            return True
+    return False
+
+
+def update_message_fields(conversation_id, message_id, **fields):
+    conv = get_conversation(conversation_id)
+    for msg in conv['messages']:
+        if msg.get('id') == message_id:
+            msg.update(fields)
+            return True
+    return False
+
+
+def get_message_content(conversation_id, message_id):
+    conv = get_conversation(conversation_id)
+    for msg in conv['messages']:
+        if msg.get('id') == message_id:
+            return msg.get('content', '')
+    return ''
+
+
+def should_continue_streaming(conversation_id, pending_message_id):
+    conv = get_conversation(conversation_id)
+    return (
+        conv is not None
+        and conv.get('is_generating', False)
+        and not conv.get('abort_event').is_set()
+        and conv.get('pending_message_id') == pending_message_id
+    )
 
 # Create uploads directory if it doesn't exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -94,7 +173,7 @@ LEADER_DISTRIBUTE_PROMPT = """You are the Leader of an AI council. Your job is t
 Your team:
 - Researcher: Gathers factual information, grounds responses with data, finds relevant facts and sources
 - Creative_Writer: Writes creative content, generates engaging narratives, provides creative ideas and solutions
-- Analyzer: Performs calculations, data analysis, and mathematical reasoning
+- Analyzer: Performs calculations, data analysis, and mathematical reasoning, does not have web access and should not research facts
 - Verifier: Reviews and fact-checks all other team members' outputs for accuracy, logical errors, and consistency
 
 Analyze the user's request and create specific tasks for each team member. If a team member is not needed for this request, set their task to "SKIP". The Verifier should almost always be assigned unless nothing needs checking.
@@ -204,6 +283,11 @@ def get_models():
 def upload_document():
     """Handle PDF and image upload and extract text"""
     try:
+        conversation_id = request.form.get('chat_id')
+        if not conversation_id:
+            return jsonify({'success': False, 'error': 'chat_id is required'})
+        conv = get_conversation(conversation_id)
+
         if 'file' not in request.files:
             return jsonify({'success': False, 'error': 'No file provided'})
         
@@ -229,7 +313,7 @@ def upload_document():
                 pdf_reader = PyPDF2.PdfReader(f)
                 page_count = len(pdf_reader.pages)
             
-            pdf_documents[filename] = {
+            conv['uploaded_documents'][filename] = {
                 'filename': filename,
                 'content': text_content,
                 'pages': page_count,
@@ -252,7 +336,7 @@ def upload_document():
             img = Image.open(filepath)
             width, height = img.size
             
-            pdf_documents[filename] = {
+            conv['uploaded_documents'][filename] = {
                 'filename': filename,
                 'content': text_content,
                 'filepath': filepath,  # Store the actual file path
@@ -280,6 +364,10 @@ def restore_documents():
     """Re-register previously uploaded documents from a saved chat"""
     try:
         data = request.json
+        conversation_id = data.get('chat_id')
+        if not conversation_id:
+            return jsonify({'success': False, 'error': 'chat_id is required'})
+        conv = get_conversation(conversation_id)
         documents = data.get('documents', [])
         restored = []
 
@@ -299,7 +387,7 @@ def restore_documents():
                 with open(filepath, 'rb') as f:
                     pdf_reader = PyPDF2.PdfReader(f)
                     page_count = len(pdf_reader.pages)
-                pdf_documents[filename] = {
+                conv['uploaded_documents'][filename] = {
                     'filename': filename, 'content': text_content,
                     'pages': page_count, 'size': file_size, 'type': 'pdf'
                 }
@@ -307,7 +395,7 @@ def restore_documents():
             else:
                 img = Image.open(filepath)
                 width, height = img.size
-                pdf_documents[filename] = {
+                conv['uploaded_documents'][filename] = {
                     'filename': filename, 'content': '[Image uploaded]',
                     'filepath': filepath, 'width': width, 'height': height,
                     'size': file_size, 'type': 'image'
@@ -323,10 +411,14 @@ def remove_document():
     """Remove uploaded document"""
     try:
         data = request.json
+        conversation_id = data.get('chat_id')
+        if not conversation_id:
+            return jsonify({'success': False, 'error': 'chat_id is required'})
+        conv = get_conversation(conversation_id)
         filename = data.get('filename')
         
-        if filename in pdf_documents:
-            del pdf_documents[filename]
+        if filename in conv['uploaded_documents']:
+            del conv['uploaded_documents'][filename]
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             if os.path.exists(filepath):
                 os.remove(filepath)
@@ -381,7 +473,10 @@ def list_chats():
                         'id': chat_data.get('id'),
                         'name': chat_data.get('name'),
                         'timestamp': chat_data.get('timestamp'),
-                        'messageCount': len(chat_data.get('messages', []))
+                        'messageCount': len(chat_data.get('messages', [])),
+                        'lastPreview': ((chat_data.get('messages', [])[-1].get('raw_content')
+                                        if chat_data.get('messages', []) else '') or '')[:120],
+                        'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
                     })
             except Exception as e:
                 print(f"Error loading chat file {filename}: {e}")
@@ -405,6 +500,15 @@ def load_chat(chat_id):
         
         with open(filepath, 'r', encoding='utf-8') as f:
             chat_data = json.load(f)
+        if 'schema_version' not in chat_data:
+            chat_data['schema_version'] = 1
+
+        live_conv = conversations.get(chat_id)
+        if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
+            chat_data['messages'] = _history_to_ui_messages(chat_id)
+            chat_data['uploadedDocuments'] = _conversation_documents_to_ui(chat_id)
+
+        chat_data['isGenerating'] = get_conversation(chat_id).get('is_generating', False)
         
         return jsonify({'success': True, 'chat': chat_data})
     except Exception as e:
@@ -475,7 +579,10 @@ def list_temp_chats():
                         'name': 'Temp Chat',
                         'timestamp': chat_data.get('timestamp'),
                         'messageCount': len(chat_data.get('messages', [])),
-                        'isTemporary': True
+                        'isTemporary': True,
+                        'lastPreview': ((chat_data.get('messages', [])[-1].get('raw_content')
+                                        if chat_data.get('messages', []) else '') or '')[:120],
+                        'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
                     })
             except Exception as e:
                 print(f"Error loading temp chat file {filename}: {e}")
@@ -499,6 +606,15 @@ def load_temp_chat(chat_id):
         
         with open(filepath, 'r', encoding='utf-8') as f:
             chat_data = json.load(f)
+        if 'schema_version' not in chat_data:
+            chat_data['schema_version'] = 1
+
+        live_conv = conversations.get(chat_id)
+        if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
+            chat_data['messages'] = _history_to_ui_messages(chat_id)
+            chat_data['uploadedDocuments'] = _conversation_documents_to_ui(chat_id)
+
+        chat_data['isGenerating'] = get_conversation(chat_id).get('is_generating', False)
         
         return jsonify({'success': True, 'chat': chat_data})
     except Exception as e:
@@ -560,13 +676,15 @@ def extract_json_from_text(text):
         return match.group(0)
     return text
 
-def build_document_context(system_prompt, support_images):
+def build_document_context(conversation_id, system_prompt, support_images):
     """Build document context and image URLs for a council role"""
+    conv = get_conversation(conversation_id)
+    documents = conv.get('uploaded_documents', {})
     image_urls = []
-    if pdf_documents:
+    if documents:
         if support_images:
             pdf_context = ""
-            for filename, doc_info in pdf_documents.items():
+            for filename, doc_info in documents.items():
                 if doc_info['type'] == 'image':
                     img_base64 = encode_image_to_base64(doc_info['filepath'])
                     if img_base64:
@@ -583,7 +701,7 @@ def build_document_context(system_prompt, support_images):
                 system_prompt += pdf_context
         else:
             pdf_context = "\n\n===== AVAILABLE DOCUMENTS =====\n"
-            for filename, doc_info in pdf_documents.items():
+            for filename, doc_info in documents.items():
                 doc_type = "PDF Document" if doc_info['type'] == 'pdf' else "Image"
                 pdf_context += f"\n--- {doc_type}: {filename} ---\n"
                 pdf_context += doc_info['content'][:5000]
@@ -593,12 +711,13 @@ def build_document_context(system_prompt, support_images):
             system_prompt += pdf_context
     return system_prompt, image_urls
 
-def _history_to_ui_messages(session_id):
+def _history_to_ui_messages(conversation_id):
     """Convert backend conversation history to UI-friendly message objects."""
     import re
 
     ui_messages = []
-    for msg in conversation_histories.get(session_id, []):
+    conv = get_conversation(conversation_id)
+    for msg in conv.get('messages', []):
         role = msg.get('role', '')
         content = msg.get('content', '')
 
@@ -606,7 +725,8 @@ def _history_to_ui_messages(session_id):
             ui_messages.append({
                 'type': 'user',
                 'sender': 'You',
-                'content': content
+                'content': content,
+                'id': msg.get('id')
             })
             continue
 
@@ -623,7 +743,15 @@ def _history_to_ui_messages(session_id):
             'type': 'ai',
             'sender': sender,
             'content': body,
-            'raw_content': body
+            'raw_content': body,
+            'id': msg.get('id'),
+            'run_group_id': msg.get('run_group_id'),
+            'run_id': msg.get('run_id') or msg.get('id'),
+            'model_id': msg.get('model_id'),
+            'role_name': msg.get('role_name'),
+            'thinking': msg.get('thinking', ''),
+            'stream_status': msg.get('stream_status', ''),
+            'is_final_response': bool(msg.get('is_final_response', False))
         })
 
     return ui_messages
@@ -632,6 +760,7 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
     """Persist the current in-memory session to saved or temp storage."""
     try:
         with persistence_lock:
+            conv = get_conversation(session_id)
             is_saved = os.path.exists(
                 os.path.join(app.config['CHAT_HISTORY_FOLDER'], f'{session_id}.json')
             )
@@ -644,13 +773,24 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
                     chat_data = json.load(f)
 
             chat_data['id'] = session_id
+            chat_data['schema_version'] = 2
             if 'name' not in chat_data:
                 chat_data['name'] = 'Saved Chat' if is_saved else 'Temporary Chat'
             chat_data['messages'] = _history_to_ui_messages(session_id)
             chat_data['selectedBots'] = chat_data.get('selectedBots', [])
             chat_data['systemPrompt'] = chat_data.get('systemPrompt', user_system_prompt)
             chat_data['timestamp'] = chat_data.get('timestamp', datetime.now().isoformat())
-            chat_data['uploadedDocuments'] = chat_data.get('uploadedDocuments', [])
+            chat_data['uploadedDocuments'] = [
+                {
+                    'filename': doc.get('filename'),
+                    'type': doc.get('type'),
+                    'size': doc.get('size'),
+                    'pages': doc.get('pages'),
+                    'width': doc.get('width'),
+                    'height': doc.get('height')
+                }
+                for doc in conv.get('uploaded_documents', {}).values()
+            ]
             if not is_saved:
                 chat_data['isTemporary'] = True
 
@@ -659,48 +799,82 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
     except Exception as e:
         print(f"Snapshot save error for {session_id}: {e}")
 
-def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, session_id, support_images=False, on_stream_progress=None, _retry=False):
-    def emit_chat(*args, **kwargs):
-        kwargs['to'] = session_id
-        socketio.emit(*args, **kwargs)
+
+def _conversation_documents_to_ui(conversation_id):
+    """Convert in-memory uploaded document metadata into UI payload format."""
+    conv = get_conversation(conversation_id)
+    return [
+        {
+            'filename': doc.get('filename'),
+            'type': doc.get('type'),
+            'size': doc.get('size'),
+            'pages': doc.get('pages'),
+            'width': doc.get('width'),
+            'height': doc.get('height')
+        }
+        for doc in conv.get('uploaded_documents', {}).values()
+    ]
+
+def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, on_stream_progress=None, _retry=False):
+    def emit_chat(event, payload=None):
+        enriched = dict(payload or {})
+        enriched['chat_id'] = conversation_id
+        socketio.emit(event, enriched, to=conversation_id)
+
     """Run a single council role and stream its response"""
     try:
+        conv = get_conversation(conversation_id)
+
         # Build document context
-        system_prompt, image_urls = build_document_context(system_prompt, support_images)
+        system_prompt, image_urls = build_document_context(conversation_id, system_prompt, support_images)
 
         # Use a unique bot_id for the streaming UI
-        bot_id = f"council-{role_name.lower()}"
+        bot_id = f"council-{role_name.lower()}-{uuid.uuid4().hex[:8]}"
         timestamp = datetime.now().strftime("%H:%M:%S")
+        is_final_response = ('final response' in role_label.lower())
+
+        pending_message_id = uuid.uuid4().hex
+        append_conversation_message(
+            conversation_id,
+            role='assistant',
+            content=f"[{role_label} ({model_id})] ",
+            id=pending_message_id,
+            bot_name=role_label,
+            bot_id=bot_id,
+            run_group_id=run_group_id,
+            run_id=pending_message_id,
+            role_name=role_name,
+            model_id=model_id,
+            thinking='',
+            stream_status='running',
+            is_final_response=is_final_response
+        )
+        conv['pending_message_id'] = pending_message_id
 
         # Emit start event
         emit_chat('ai_response_start', {
             'bot_name': role_label,
             'bot_id': bot_id,
-            'timestamp': timestamp
+            'timestamp': timestamp,
+            'message_id': pending_message_id,
+            'run_id': pending_message_id,
+            'run_group_id': run_group_id,
+            'role_name': role_name,
+            'model_id': model_id,
+            'is_final_response': is_final_response
         })
 
         # Emit running status
         emit_chat('council_status', {
             'role': role_name,
-            'status': 'running'
+            'status': 'running',
+            'run_group_id': run_group_id
         })
 
-        # Stream the response
         full_response = ''
         full_thinking = ''
         stopped_early = False
         last_snapshot_ts = 0.0
-
-        # Create a mutable assistant entry early so partial content can be saved mid-stream.
-        if session_id not in conversation_histories:
-            conversation_histories[session_id] = []
-        assistant_entry = {
-            "role": "assistant",
-            "content": f"[{role_label} ({model_id})] ",
-            "bot_name": role_label,
-            "bot_id": bot_id
-        }
-        conversation_histories[session_id].append(assistant_entry)
 
         for chunk_type, chunk in completion_response_stream(
             model=model_id,
@@ -710,21 +884,38 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
             temperature=0.7,
             image_urls=image_urls if support_images else None
         ):
-            if stop_flags.get(session_id, False):
+            if not should_continue_streaming(conversation_id, pending_message_id):
                 stopped_early = True
                 break
+
             if chunk_type == 'thinking':
                 full_thinking += chunk
                 emit_chat('ai_thinking_chunk', {
                     'bot_id': bot_id,
-                    'chunk': chunk
+                    'chunk': chunk,
+                    'message_id': pending_message_id,
+                    'run_id': pending_message_id,
+                    'run_group_id': run_group_id,
+                    'role_name': role_name,
+                    'model_id': model_id,
+                    'is_final_response': is_final_response
                 })
             else:
                 full_response += chunk
-                assistant_entry["content"] = f"[{role_label} ({model_id})] {full_response}"
+                update_message_content(
+                    conversation_id,
+                    pending_message_id,
+                    f"[{role_label} ({model_id})] {full_response}"
+                )
                 emit_chat('ai_response_chunk', {
                     'bot_id': bot_id,
-                    'chunk': chunk
+                    'chunk': chunk,
+                    'message_id': pending_message_id,
+                    'run_id': pending_message_id,
+                    'run_group_id': run_group_id,
+                    'role_name': role_name,
+                    'model_id': model_id,
+                    'is_final_response': is_final_response
                 })
 
                 now = time.time()
@@ -745,13 +936,28 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 'message': partial_converted,
                 'thinking': thinking_converted,
                 'timestamp': timestamp,
-                'stopped': True
+                'stopped': True,
+                'message_id': pending_message_id,
+                'run_id': pending_message_id,
+                'run_group_id': run_group_id,
+                'role_name': role_name,
+                'model_id': model_id,
+                'is_final_response': is_final_response
             })
             emit_chat('council_status', {
                 'role': role_name,
-                'status': 'stopped'
+                'status': 'stopped',
+                'run_group_id': run_group_id
             })
-            assistant_entry["content"] = f"[{role_label} ({model_id})] {partial_converted}"
+            update_message_content(conversation_id, pending_message_id, f"[{role_label} ({model_id})] {partial_converted}")
+            update_message_fields(
+                conversation_id,
+                pending_message_id,
+                thinking=thinking_converted,
+                stream_status='stopped'
+            )
+            if conv.get('pending_message_id') == pending_message_id:
+                conv['pending_message_id'] = None
             if on_stream_progress:
                 on_stream_progress()
             return ''
@@ -764,7 +970,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         converted_response = convert_to_traditional_chinese(full_response)
 
         # Finalize the in-progress entry content.
-        assistant_entry["content"] = f"[{role_label} ({model_id})] {converted_response}"
+        update_message_content(conversation_id, pending_message_id, f"[{role_label} ({model_id})] {converted_response}")
 
         # Log completion
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -777,17 +983,34 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
             'bot_id': bot_id,
             'message': converted_response,
             'thinking': thinking_converted,
-            'timestamp': timestamp
+            'timestamp': timestamp,
+            'message_id': pending_message_id,
+            'run_id': pending_message_id,
+            'run_group_id': run_group_id,
+            'role_name': role_name,
+            'model_id': model_id,
+            'is_final_response': is_final_response
         })
+
+        update_message_fields(
+            conversation_id,
+            pending_message_id,
+            thinking=thinking_converted,
+            stream_status='done'
+        )
 
         # Status done
         emit_chat('council_status', {
             'role': role_name,
-            'status': 'done'
+            'status': 'done',
+            'run_group_id': run_group_id
         })
 
         if on_stream_progress:
             on_stream_progress()
+
+        if conv.get('pending_message_id') == pending_message_id:
+            conv['pending_message_id'] = None
 
         return converted_response
     except Exception as e:
@@ -798,7 +1021,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         if not _retry:
             return run_council_role(
                 role_name, role_label, model_id, system_prompt, user_prompt,
-                chat_history, session_id, support_images, on_stream_progress, _retry=True
+                chat_history, conversation_id, run_group_id, support_images, on_stream_progress, _retry=True
             )
         # Second failure — skip this role
         notice = f"{role_label} has encountered an error and has to go without it."
@@ -821,39 +1044,55 @@ def handle_join_chat(data):
 @socketio.on('send_message')
 def handle_message_wrapper(data):
     chat_id = data.get('chat_id')
-    session_id = chat_id if chat_id else request.sid
-    # Reset stop flag here so it is synchronous
-    stop_flags[session_id] = False
-    socketio.start_background_task(handle_message_task, data, session_id)
+    conversation_id = chat_id if chat_id else request.sid
+    conv = get_conversation(conversation_id)
+    if conv.get('is_generating'):
+        emit('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Generation already running for this chat",
+            'chat_id': conversation_id
+        }, to=conversation_id)
+        return
 
-def handle_message_task(data, session_id):
+    conv['abort_event'].clear()
+    conv['is_generating'] = True
+    task = socketio.start_background_task(handle_message_task, data, conversation_id)
+    conv['active_stream_task'] = task
+
+
+def handle_message_task(data, conversation_id):
     """Handle user message and run the council workflow"""
     user_message = data.get('message', '')
     user_system_prompt = data.get('system_prompt', '')
     
     def emit_chat(event, payload=None):
-        if payload is None:
-            socketio.emit(event, to=session_id)
-        else:
-            socketio.emit(event, payload, to=session_id)
+        enriched = dict(payload or {})
+        enriched['chat_id'] = conversation_id
+        socketio.emit(event, enriched, to=conversation_id)
             
     def auto_save_chat():
-        persist_chat_snapshot(session_id, user_system_prompt)
+        persist_chat_snapshot(conversation_id, user_system_prompt)
 
-    # Initialize conversation history
-    if session_id not in conversation_histories:
-        conversation_histories[session_id] = []
+    def finalize_generation():
+        conv['is_generating'] = False
+        conv['active_stream_task'] = None
+        conv['pending_message_id'] = None
 
-    conversation_histories[session_id].append({
-        "role": "user",
-        "content": user_message
-    })
+    conv = get_conversation(conversation_id)
+    conv['run_group_counter'] = conv.get('run_group_counter', 0) + 1
+    run_group_id = f"rungrp-{conv['run_group_counter']:06d}"
+    conv['current_run_group_id'] = run_group_id
+    append_conversation_message(conversation_id, "user", user_message)
     auto_save_chat()
+
+    emit_chat('run_group_start', {
+        'run_group_id': run_group_id,
+        'timestamp': datetime.now().strftime("%H:%M:%S")
+    })
 
     # Build chat history (exclude current message)
     chat_history = [
         {"role": msg["role"], "content": msg["content"]}
-        for msg in conversation_histories[session_id][:-1]
+        for msg in conv['messages'][:-1]
     ]
 
     # Load council config
@@ -885,13 +1124,15 @@ def handle_message_task(data, session_id):
         system_prompt=leader_sys,
         user_prompt=user_message,
         chat_history=chat_history,
-        session_id=session_id,
+        conversation_id=conversation_id,
+        run_group_id=run_group_id,
         support_images=leader_info.get('support_images', False),
         on_stream_progress=auto_save_chat
     )
 
-    if stop_flags.get(session_id, False):
+    if conv['abort_event'].is_set():
         emit_chat('all_done')
+        finalize_generation()
         return
 
     # Parse task distribution — abort if leader failed or returned invalid JSON
@@ -900,6 +1141,7 @@ def handle_message_task(data, session_id):
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Leader failed to respond. Aborting council workflow."
         })
         emit_chat('all_done')
+        finalize_generation()
         return
 
     try:
@@ -909,6 +1151,7 @@ def handle_message_task(data, session_id):
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution: {str(e)}. Aborting council workflow."
         })
         emit_chat('all_done')
+        finalize_generation()
         return
 
     council_results = {}
@@ -934,7 +1177,8 @@ def handle_message_task(data, session_id):
             system_prompt=researcher_sys,
             user_prompt=researcher_task,
             chat_history=chat_history,
-            session_id=session_id,
+            conversation_id=conversation_id,
+            run_group_id=run_group_id,
             support_images=researcher_info.get('support_images', False),
             on_stream_progress=auto_save_chat
         )
@@ -942,8 +1186,9 @@ def handle_message_task(data, session_id):
             council_results['Researcher'] = researcher_response
             auto_save_chat()
 
-        if stop_flags.get(session_id, False):
+        if conv['abort_event'].is_set():
             emit_chat('all_done')
+            finalize_generation()
             return
     else:
         emit_chat('council_status', {'role': 'Researcher', 'status': 'skipped'})
@@ -974,7 +1219,8 @@ def handle_message_task(data, session_id):
             system_prompt=creative_sys,
             user_prompt=creative_task,
             chat_history=chat_history,
-            session_id=session_id,
+            conversation_id=conversation_id,
+            run_group_id=run_group_id,
             support_images=creative_info.get('support_images', False),
             on_stream_progress=auto_save_chat
         )
@@ -982,8 +1228,9 @@ def handle_message_task(data, session_id):
             council_results['Creative_Writer'] = creative_response
             auto_save_chat()
 
-        if stop_flags.get(session_id, False):
+        if conv['abort_event'].is_set():
             emit_chat('all_done')
+            finalize_generation()
             return
     else:
         emit_chat('council_status', {'role': 'Creative_Writer', 'status': 'skipped'})
@@ -1012,7 +1259,8 @@ def handle_message_task(data, session_id):
             system_prompt=analyzer_sys,
             user_prompt=analyzer_task,
             chat_history=chat_history,
-            session_id=session_id,
+            conversation_id=conversation_id,
+            run_group_id=run_group_id,
             support_images=analyzer_info.get('support_images', False),
             on_stream_progress=auto_save_chat
         )
@@ -1020,8 +1268,9 @@ def handle_message_task(data, session_id):
             council_results['Analyzer'] = analyzer_response
             auto_save_chat()
 
-        if stop_flags.get(session_id, False):
+        if conv['abort_event'].is_set():
             emit_chat('all_done')
+            finalize_generation()
             return
     else:
         emit_chat('council_status', {'role': 'Analyzer', 'status': 'skipped'})
@@ -1061,7 +1310,8 @@ def handle_message_task(data, session_id):
             system_prompt=verifier_sys,
             user_prompt=verifier_task,
             chat_history=chat_history,
-            session_id=session_id,
+            conversation_id=conversation_id,
+            run_group_id=run_group_id,
             support_images=verifier_info.get('support_images', False),
             on_stream_progress=auto_save_chat
         )
@@ -1069,8 +1319,9 @@ def handle_message_task(data, session_id):
             council_results['Verifier'] = verifier_response
             auto_save_chat()
 
-        if stop_flags.get(session_id, False):
+        if conv['abort_event'].is_set():
             emit_chat('all_done')
+            finalize_generation()
             return
     else:
         emit_chat('council_status', {'role': 'Verifier', 'status': 'skipped'})
@@ -1103,7 +1354,8 @@ def handle_message_task(data, session_id):
             system_prompt=combine_sys,
             user_prompt=f"Please combine the team's work and provide the final response to: {user_message}",
             chat_history=chat_history,
-            session_id=session_id,
+            conversation_id=conversation_id,
+            run_group_id=run_group_id,
             support_images=leader_info.get('support_images', False),
             on_stream_progress=auto_save_chat
         )
@@ -1111,14 +1363,25 @@ def handle_message_task(data, session_id):
 
     # Signal all done
     emit_chat('all_done')
+    emit_chat('run_group_end', {
+        'run_group_id': run_group_id,
+        'timestamp': datetime.now().strftime("%H:%M:%S")
+    })
+    conv['current_run_group_id'] = None
+    finalize_generation()
 
 @socketio.on('stop_generation')
 def handle_stop(data):
     """Handle stop generation request"""
-    session_id = data.get('chat_id') if data and data.get('chat_id') else request.sid
-    stop_flags[session_id] = True
+    conversation_id = data.get('chat_id') if data and data.get('chat_id') else request.sid
+    conv = get_conversation(conversation_id)
+    conv['abort_event'].set()
+    conv['is_generating'] = False
     timestamp = datetime.now().strftime("%H:%M:%S")
-    emit('console_log', {'message': f"[{timestamp}] Stop requested - will stop after current AI finishes"})
+    emit('console_log', {
+        'message': f"[{timestamp}] Stop requested - will stop after current AI finishes",
+        'chat_id': conversation_id
+    }, to=conversation_id)
 
 @socketio.on('connect')
 def handle_connect():
@@ -1130,50 +1393,75 @@ def handle_connect():
 def handle_disconnect():
     """Handle client disconnection"""
     session_id = request.sid
-    # Clean up stop flags
-    if session_id in stop_flags:
-        del stop_flags[session_id]
+    # Keep per-chat state alive after UI switches/disconnects.
+    # Conversation lifecycle is tied to chat IDs and persisted history, not socket IDs.
     print('Client disconnected')
 
 @socketio.on('clear_history')
 def handle_clear_history(data=None):
     """Clear conversation history for the current session"""
     chat_id = data.get('chat_id') if data else None
-    session_id = chat_id if chat_id else request.sid
-    if session_id in conversation_histories:
-        conversation_histories[session_id] = []
+    conversation_id = chat_id if chat_id else request.sid
+    conv = get_conversation(conversation_id)
+    conv['messages'] = []
+    conv['uploaded_documents'] = {}
+    conv['pending_message_id'] = None
     timestamp = datetime.now().strftime("%H:%M:%S")
-    emit('console_log', {'message': f"[{timestamp}] Conversation history cleared"})
+    emit('console_log', {'message': f"[{timestamp}] Conversation history cleared", 'chat_id': conversation_id}, to=conversation_id)
 
 @socketio.on('load_chat_history')
 def handle_load_chat_history(data):
     """Update backend conversation history when a chat is loaded"""
     chat_id = data.get('chat_id')
-    session_id = chat_id if chat_id else request.sid
+    conversation_id = chat_id if chat_id else request.sid
+    conv = get_conversation(conversation_id)
     messages = data.get('messages', [])
+
+    # Prevent stale client snapshots from replacing live in-memory generation state.
+    if conv.get('is_generating'):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        emit('console_log', {
+            'message': f"[{timestamp}] Ignored chat history sync during active generation",
+            'chat_id': conversation_id
+        }, to=conversation_id)
+        return
     
     # Convert UI message format to backend conversation history format
-    conversation_histories[session_id] = []
+    conv['messages'] = []
     for msg in messages:
         if msg.get('type') == 'user':
-            conversation_histories[session_id].append({
-                "role": "user",
-                "content": msg.get('content', '')
-            })
+            append_conversation_message(
+                conversation_id,
+                role='user',
+                content=msg.get('content', ''),
+                id=msg.get('id', uuid.uuid4().hex)
+            )
         elif msg.get('type') == 'ai':
             # AI messages in the format [Bot Name (bot-id)] message
             bot_name = msg.get('botName', 'AI')
             bot_id = msg.get('botId', 'unknown')
             content = msg.get('content', '')
-            conversation_histories[session_id].append({
-                "role": "assistant",
-                "content": f"[{bot_name} ({bot_id})] {content}",
-                "bot_name": bot_name,
-                "bot_id": bot_id
-            })
+            append_conversation_message(
+                conversation_id,
+                role='assistant',
+                content=f"[{bot_name} ({bot_id})] {content}",
+                id=msg.get('id', uuid.uuid4().hex),
+                bot_name=bot_name,
+                bot_id=bot_id,
+                run_group_id=msg.get('run_group_id'),
+                run_id=msg.get('run_id') or msg.get('id'),
+                model_id=msg.get('model_id'),
+                role_name=msg.get('role_name'),
+                thinking=msg.get('thinking', ''),
+                stream_status=msg.get('stream_status', ''),
+                is_final_response=bool(msg.get('is_final_response', False))
+            )
     
     timestamp = datetime.now().strftime("%H:%M:%S")
-    emit('console_log', {'message': f"[{timestamp}] Chat history loaded ({len(messages)} messages)"})
+    emit('console_log', {
+        'message': f"[{timestamp}] Chat history loaded ({len(messages)} messages)",
+        'chat_id': conversation_id
+    }, to=conversation_id)
 
 if __name__ == '__main__':
     print("Starting Flask server...")

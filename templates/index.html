@@ -657,47 +657,78 @@
             color: #444;
         }
 
-        /* ── Collapsible council intermediate messages ── */
-        .message.council-intermediate .message-header {
-            cursor: pointer;
+        /* ── Unified Thinking Process container (all non-final output) ── */
+        .thinking-process-container {
+            background: #27272f;
+            border: 1px solid #393942;
+            border-radius: 10px;
+            padding: 10px;
+            margin: 10px 0;
+        }
+
+        .thinking-process-header {
             display: flex;
             align-items: center;
+            gap: 8px;
+            color: #bfc7d5;
+            font-size: 0.9em;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            cursor: pointer;
             user-select: none;
         }
 
-        .council-collapse-btn {
-            margin-left: auto;
-            background: none;
-            border: none;
-            color: #666;
-            cursor: pointer;
-            font-size: 9px;
-            padding: 0 2px;
-            line-height: 1;
-            transition: transform 0.2s;
-            flex-shrink: 0;
+        .thinking-process-toggle {
             display: inline-block;
+            color: #7fd8c5;
+            font-size: 0.75em;
+            transition: transform 0.2s;
         }
 
-        .message.council-intermediate.collapsed .council-collapse-btn {
+        .thinking-process-container.collapsed .thinking-process-toggle {
             transform: rotate(-90deg);
         }
 
-        .message.council-intermediate.collapsed .thinking-block,
-        .message.council-intermediate.collapsed .message-content,
-        .message.council-intermediate.collapsed .menu-btn,
-        .message.council-intermediate.collapsed .message-menu {
-            display: none !important;
+        .thinking-process-active {
+            margin-left: auto;
+            color: #8aa0b9;
+            font-size: 0.8em;
+            font-weight: 600;
+            max-width: 60%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
 
-        .message.council-intermediate.collapsed {
-            padding: 5px 12px;
+        .thinking-process-preview {
+            margin-top: 8px;
+            padding: 8px 10px;
+            border-radius: 6px;
+            border-left: 2px solid #4ec9b0;
+            background: #21222a;
+            color: #d1d6df;
+            font-size: 0.86em;
+            line-height: 1.35;
+            display: none;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
-        .message.council-intermediate.collapsed .message-header {
-            margin-bottom: 0;
-            color: #777;
-            font-size: 0.85em;
+        .thinking-process-container.collapsed.generating .thinking-process-preview.has-text {
+            display: block;
+        }
+
+        .thinking-process-list {
+            margin-top: 10px;
+        }
+
+        .thinking-process-container.collapsed .thinking-process-list {
+            display: none;
+        }
+
+        .thinking-process-item {
+            margin: 8px 0;
         }
 
         .message-wrapper {
@@ -1352,12 +1383,12 @@
 </head>
 <body>
     <div class="container sidebar-collapsed">
-        <!-- Chat History Sidebar -->
+        <!-- Chats Sidebar -->
         <div class="chat-history-sidebar collapsed">
-            <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle Chat History">☰</button>
+            <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle Chats">☰</button>
             <div class="history-content">
                 <div class="history-header">
-                    <h3>💬 Chat History</h3>
+                    <h3>💬 Chats</h3>
                     <button class="new-chat-btn" onclick="startNewChat()">+ New</button>
                 </div>
                 <div class="current-session">
@@ -1410,7 +1441,7 @@
                     <div class="pdf-upload-area" id="pdfUploadArea">
                         <input type="file" id="pdfFileInput" accept=".pdf,.jpg,.jpeg,.png" multiple style="display: none;">
                         <p style="font-size: 18px; margin-bottom: 10px;">📁 Click or Drag & Drop Files Here</p>
-                        <p style="color: #858585; font-size: 14px;">Supports PDF, JPG, PNG - Files will be processed and made available to all AI models</p>
+                        <p style="color: #858585; font-size: 14px;">Supports PDF, JPG, PNG - Files stay scoped to the current chat</p>
                         <p style="color: #4ec9b0; font-size: 13px; margin-top: 10px;">💡 Tip: Press Ctrl+V to paste images from clipboard</p>
                     </div>
                     <div class="pdf-list" id="pdfList">
@@ -1457,6 +1488,245 @@
         let uploadedPDFs = [];
         let isAIProcessing = false;
         let councilRoles = {};
+        const conversations = {};
+
+        function ensureConversation(chatId) {
+            if (!chatId) return null;
+            if (!conversations[chatId]) {
+                conversations[chatId] = {
+                    messages: [],
+                    is_generating: false,
+                    active_stream_task: null,
+                    pending_message_id: null,
+                    cancel_flag: false,
+                    uploaded_documents: [],
+                    streaming: {},
+                    thinking_process: {
+                        collapsed: false,
+                        active_source: '',
+                        preview_text: '',
+                        active_container_id: null,
+                        new_run_pending: false,
+                        active_run_group_id: null,
+                        group_container_ids: {}
+                    }
+                };
+            }
+            return conversations[chatId];
+        }
+
+        function getActiveChatId() {
+            return currentSessionId || tempChatId;
+        }
+
+        function normalizeRoleLabel(role) {
+            if (!role) return '';
+            return role.replace(/_/g, ' ');
+        }
+
+        function isFinalResponseName(name) {
+            const sender = (name || '').toLowerCase();
+            return sender.includes('leader') && sender.includes('final response');
+        }
+
+        function isFinalResponseData(data) {
+            if (!data) return false;
+            if (typeof data.is_final_response === 'boolean') {
+                return data.is_final_response;
+            }
+            return isFinalResponseName(data.bot_name || data.sender || '');
+        }
+
+        function isNonFinalStreamData(data) {
+            if (!data) return false;
+            if (isFinalResponseData(data)) return false;
+            const botId = (data.bot_id || '').toLowerCase();
+            if (botId.startsWith('council-')) return true;
+            const sender = (data.bot_name || '').toLowerCase();
+            const roleHints = ['leader', 'researcher', 'creative writer', 'analyzer', 'verifier'];
+            return roleHints.some(hint => sender.includes(hint));
+        }
+
+        function isNonFinalSavedMessage(msg) {
+            if (!msg || msg.type !== 'ai') return false;
+            if (typeof msg.is_final_response === 'boolean' && msg.is_final_response) return false;
+            if (isFinalResponseName(msg.sender)) return false;
+            const sender = (msg.sender || '').toLowerCase().trim();
+            if (sender === 'system') return false;
+            if (msg.is_council_intermediate === true) return true;
+            const roleHints = ['leader', 'researcher', 'creative writer', 'analyzer', 'verifier'];
+            return roleHints.some(hint => sender.includes(hint));
+        }
+
+        function buildThinkingContainerId() {
+            return `tp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        }
+
+        function resetThinkingProcessState(state, keepCollapsed = true) {
+            if (!state || !state.thinking_process) return;
+            const prevCollapsed = !!state.thinking_process.collapsed;
+            state.thinking_process.active_source = '';
+            state.thinking_process.preview_text = '';
+            state.thinking_process.active_container_id = null;
+            state.thinking_process.new_run_pending = false;
+            state.thinking_process.active_run_group_id = null;
+            state.thinking_process.group_container_ids = {};
+            state.thinking_process.collapsed = keepCollapsed ? prevCollapsed : false;
+        }
+
+        function ensureThinkingProcessContainer(conversationWindow, state, chatIdForToggle, options = {}, runGroupId = null) {
+            if (!conversationWindow || !state) return null;
+            const forceNew = !!options.forceNew;
+            const tp = state.thinking_process;
+            const effectiveRunGroupId = runGroupId || tp.active_run_group_id;
+
+            let container = null;
+            if (!forceNew && effectiveRunGroupId) {
+                container = conversationWindow.querySelector(`[data-run-group-id="${effectiveRunGroupId}"]`);
+            }
+            if (!forceNew && !container && !effectiveRunGroupId && tp.active_container_id) {
+                container = conversationWindow.querySelector(`[data-thinking-container-id="${tp.active_container_id}"]`);
+            }
+            if (!forceNew && !container && !effectiveRunGroupId) {
+                container = conversationWindow.querySelector('.thinking-process-container:last-of-type');
+            }
+            if (container && !forceNew) {
+                if (!container.dataset.thinkingContainerId) {
+                    container.dataset.thinkingContainerId = buildThinkingContainerId();
+                }
+                if (effectiveRunGroupId) {
+                    container.dataset.runGroupId = effectiveRunGroupId;
+                }
+                tp.active_container_id = container.dataset.thinkingContainerId;
+                tp.active_run_group_id = container.dataset.runGroupId || tp.active_run_group_id;
+                if (tp.active_run_group_id && tp.active_container_id) {
+                    tp.group_container_ids[tp.active_run_group_id] = tp.active_container_id;
+                }
+                return container;
+            }
+
+            container = document.createElement('div');
+            container.className = 'thinking-process-container';
+            container.dataset.thinkingContainerId = buildThinkingContainerId();
+            container.dataset.runGroupId = effectiveRunGroupId || `legacy-${Date.now()}`;
+            tp.active_container_id = container.dataset.thinkingContainerId;
+            tp.active_run_group_id = container.dataset.runGroupId;
+            tp.group_container_ids[tp.active_run_group_id] = tp.active_container_id;
+            container.innerHTML = `
+                <div class="thinking-process-header" title="Collapse/expand thinking process">
+                    <span class="thinking-process-toggle">&#9660;</span>
+                    <span>Thinking Process</span>
+                    <span class="thinking-process-active"></span>
+                </div>
+                <div class="thinking-process-preview"></div>
+                <div class="thinking-process-list"></div>
+            `;
+            if (tp.collapsed) {
+                container.classList.add('collapsed');
+            }
+
+            const header = container.querySelector('.thinking-process-header');
+            header.addEventListener('click', () => toggleThinkingProcessContainer(container, chatIdForToggle));
+            conversationWindow.appendChild(container);
+            return container;
+        }
+
+        function getThinkingProcessContainer(chatId, createIfMissing = true, runGroupId = null) {
+            const activeChatId = getActiveChatId();
+            if (!chatId || chatId !== activeChatId) return null;
+            const state = ensureConversation(chatId);
+            const conversationWindow = getConvWindow();
+            if (!conversationWindow) return null;
+            const tp = state.thinking_process;
+
+            let container = null;
+            if (runGroupId) {
+                container = conversationWindow.querySelector(`[data-run-group-id="${runGroupId}"]`);
+            }
+            if (!container && !runGroupId && tp.active_container_id) {
+                container = conversationWindow.querySelector(`[data-thinking-container-id="${tp.active_container_id}"]`);
+            }
+            if (!createIfMissing) {
+                return container;
+            }
+            if (container) return container;
+            return ensureThinkingProcessContainer(conversationWindow, state, chatId, {}, runGroupId);
+        }
+
+        function extractFirstSentencePreview(text) {
+            const normalized = (text || '').replace(/\s+/g, ' ').trim();
+            if (!normalized) return '';
+
+            const sentenceMatch = normalized.match(/^(.+?[.!?。！？])(?:\s|$)/);
+            if (sentenceMatch && sentenceMatch[1]) {
+                return sentenceMatch[1].trim();
+            }
+
+            const firstLine = normalized
+                .split('\n')
+                .map(line => line.trim())
+                .find(line => line.length > 0);
+            if (firstLine) {
+                return firstLine.length > 90 ? `${firstLine.slice(0, 90)}...` : firstLine;
+            }
+
+            return normalized.length > 90 ? `${normalized.slice(0, 90)}...` : normalized;
+        }
+
+        function refreshThinkingProcessUI(chatId) {
+            const state = ensureConversation(chatId);
+            if (!state) return;
+            const container = getThinkingProcessContainer(chatId, false);
+            if (!container) return;
+
+            const tp = state.thinking_process;
+            const isGenerating = !!state.is_generating;
+            container.classList.toggle('collapsed', !!tp.collapsed);
+            container.classList.toggle('generating', isGenerating);
+
+            const activeEl = container.querySelector('.thinking-process-active');
+            const previewEl = container.querySelector('.thinking-process-preview');
+            if (activeEl) {
+                activeEl.textContent = tp.active_source ? tp.active_source : '';
+            }
+            if (previewEl) {
+                previewEl.textContent = tp.preview_text || '';
+                previewEl.classList.toggle('has-text', !!tp.preview_text);
+            }
+        }
+
+        function toggleThinkingProcessContainer(container, chatId = null) {
+            if (!container) return;
+            container.classList.toggle('collapsed');
+            const targetChatId = chatId || getActiveChatId();
+            const state = ensureConversation(targetChatId);
+            if (!state) return;
+            const isActiveContainer =
+                state.thinking_process.active_container_id &&
+                container.dataset.thinkingContainerId === state.thinking_process.active_container_id;
+            if (isActiveContainer) {
+                state.thinking_process.collapsed = container.classList.contains('collapsed');
+            }
+        }
+
+        function toggleThinkingProcess(chatId = null) {
+            const targetChatId = chatId || getActiveChatId();
+            const state = ensureConversation(targetChatId);
+            if (!state) return;
+            const container = getThinkingProcessContainer(targetChatId, false);
+            if (!container) return;
+            toggleThinkingProcessContainer(container, targetChatId);
+        }
+
+        function updateThinkingPreviewFromEntry(chatId, entry) {
+            const state = ensureConversation(chatId);
+            if (!state || !entry) return;
+            const tp = state.thinking_process;
+            tp.active_source = entry.bot_name || tp.active_source;
+            const sourceText = entry.thinkingText || entry.rawText || '';
+            tp.preview_text = extractFirstSentencePreview(sourceText);
+            refreshThinkingProcessUI(chatId);
+        }
 
         // Auto-scroll: only follow bottom if user hasn't scrolled up
         function getConvWindow() { return document.getElementById('conversationWindow'); }
@@ -1545,9 +1815,16 @@
         }
 
         function handlePDFFiles(files) {
+            let activeChatId = getActiveChatId();
+            if (!activeChatId) {
+                tempChatId = 'temp_' + Date.now().toString();
+                activeChatId = tempChatId;
+            }
+
             files.forEach(file => {
                 const formData = new FormData();
                 formData.append('file', file);
+                formData.append('chat_id', activeChatId);
 
                 fetch('/api/upload_document', {
                     method: 'POST',
@@ -1599,10 +1876,11 @@
 
         function removePDF(index) {
             const doc = uploadedPDFs[index];
+            const activeChatId = getActiveChatId();
             fetch('/api/remove_document', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({filename: doc.filename})
+                body: JSON.stringify({filename: doc.filename, chat_id: activeChatId})
             })
             .then(response => response.json())
             .then(data => {
@@ -1798,6 +2076,10 @@
                 return '```html\n' + match + '\n```';
             });
 
+            // Escape raw HTML tags outside fenced code so they are shown literally.
+            content = content.replace(new RegExp('<!--[\\s\\S]*?-->', 'g'), (match) => escapeHtml(match));
+            content = content.replace(new RegExp('<\\/?[A-Za-z!][^>\\n]*>', 'g'), (match) => escapeHtml(match));
+
             // Restore fenced code blocks
             for (let i = 0; i < fencedBlocks.length; i++) {
                 content = content.replace(`FENCEDBLK${i}FENCEDBLK`, fencedBlocks[i]);
@@ -1819,12 +2101,7 @@
                 return placeholder;
             });
             
-            // Extract and protect inline math ($...$, \(...\))
-            content = content.replace(/\$[^\$\n]+?\$/g, (match) => {
-                const placeholder = `LTXBLK${counter++}LTXBLK`;
-                latexBlocks.push(match);
-                return placeholder;
-            });
+            // Extract and protect inline math (\(...\))
             content = content.replace(/\\\([^\)]+?\\\)/g, (match) => {
                 const placeholder = `LTXBLK${counter++}LTXBLK`;
                 latexBlocks.push(match);
@@ -1870,7 +2147,6 @@
                     delimiters: [
                         {left: '$$', right: '$$', display: true},
                         {left: '\\[', right: '\\]', display: true},
-                        {left: '$', right: '$', display: false},
                         {left: '\\(', right: '\\)', display: false}
                     ],
                     throwOnError: false
@@ -2054,6 +2330,8 @@
 
         function addMessage(type, content, sender = null) {
             const conversationWindow = document.getElementById('conversationWindow');
+            const activeChatId = getActiveChatId();
+            const state = ensureConversation(activeChatId);
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type}`;
 
@@ -2104,6 +2382,16 @@
             }
 
             conversationWindow.appendChild(messageDiv);
+
+            if (state) {
+                state.messages.push({
+                    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    role: type === 'user' ? 'user' : 'assistant',
+                    sender: sender,
+                    content: content,
+                    timestamp: new Date().toISOString()
+                });
+            }
             
             // Render LaTeX in the new message
             setTimeout(() => {
@@ -2147,6 +2435,14 @@
             const systemPromptInput = document.getElementById('systemPromptInput');
             const userSystemPrompt = systemPromptInput ? systemPromptInput.value.trim() : '';
             const activeChatId = currentSessionId || tempChatId;
+            const activeState = ensureConversation(activeChatId);
+            if (activeState) {
+                activeState.is_generating = true;
+                activeState.thinking_process.new_run_pending = true;
+                activeState.thinking_process.active_source = '';
+                activeState.thinking_process.preview_text = '';
+                activeState.thinking_process.active_run_group_id = null;
+            }
             if (activeChatId) {
                 socket.emit('join_chat', { chat_id: activeChatId });
             }
@@ -2173,11 +2469,13 @@
             }
         }
 
-        function stopAI() {
-            const activeChatId = currentSessionId || tempChatId;
-            socket.emit('stop_generation', { chat_id: activeChatId });
-            addConsoleLog('Stopping AI generation...');
-            setProcessingState(false);
+        function stopAI(chatId = null) {
+            const targetChatId = chatId || getActiveChatId();
+            socket.emit('stop_generation', { chat_id: targetChatId });
+            addConsoleLog(`Stopping AI generation${targetChatId ? ` for ${targetChatId}` : ''}...`);
+            if (!chatId || targetChatId === getActiveChatId()) {
+                setProcessingState(false);
+            }
         }
 
         function clearHistory(skipConfirm = false) {
@@ -2196,19 +2494,32 @@
                 consoleContent.innerHTML = '';
                 
                 // Clear uploaded documents
+                const activeChatId = getActiveChatId();
                 const documentsToRemove = [...uploadedPDFs]; // Create a copy
                 documentsToRemove.forEach((doc, index) => {
                     fetch('/api/remove_document', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({filename: doc.filename})
+                        body: JSON.stringify({filename: doc.filename, chat_id: activeChatId})
                     });
                 });
                 uploadedPDFs = [];
                 displayPDFs();
                 
                 // Notify server to clear history
-                socket.emit('clear_history', { chat_id: currentSessionId || tempChatId });
+                const activeId = getActiveChatId();
+                const state = ensureConversation(activeId);
+                if (state) {
+                    state.messages = [];
+                    state.streaming = {};
+                    state.pending_message_id = null;
+                    state.is_generating = false;
+                    resetThinkingProcessState(state);
+                }
+                if (activeId && streamingMessages[activeId]) {
+                    delete streamingMessages[activeId];
+                }
+                socket.emit('clear_history', { chat_id: activeId });
                 
                 addConsoleLog('Conversation history and documents cleared');
             }
@@ -2216,6 +2527,9 @@
 
         // Socket event listeners
         socket.on('console_log', function(data) {
+            if (data && data.chat_id && data.chat_id !== getActiveChatId()) {
+                return;
+            }
             addConsoleLog(data.message);
         });
 
@@ -2223,10 +2537,45 @@
             // Council status is handled by council_status event
         });
 
-        // Track active streaming message bubbles: bot_id -> { div, rawText, thinkingText }
+        // Track active streaming message bubbles by chat and message id.
         const streamingMessages = {};
 
-        socket.on('ai_response_start', function(data) {
+        function getStreamEntry(data) {
+            const chatId = data.chat_id;
+            const messageId = data.message_id || data.bot_id;
+            if (!chatId || !messageId) return null;
+
+            if (!streamingMessages[chatId]) {
+                streamingMessages[chatId] = {};
+            }
+            if (!streamingMessages[chatId][messageId]) {
+                streamingMessages[chatId][messageId] = {
+                    bot_id: data.bot_id,
+                    bot_name: data.bot_name || 'AI',
+                    rawText: '',
+                    thinkingText: '',
+                    run_id: data.run_id || messageId,
+                    run_group_id: data.run_group_id || null,
+                    is_final_response: !!data.is_final_response,
+                    isNonFinal: isNonFinalStreamData(data),
+                    div: null
+                };
+            }
+            const entry = streamingMessages[chatId][messageId];
+            if (data.bot_name) {
+                entry.bot_name = data.bot_name;
+            }
+            entry.run_id = data.run_id || entry.run_id;
+            entry.run_group_id = data.run_group_id || entry.run_group_id;
+            entry.is_final_response = (typeof data.is_final_response === 'boolean') ? data.is_final_response : entry.is_final_response;
+            entry.isNonFinal = isNonFinalStreamData(data);
+            ensureConversation(chatId).streaming[messageId] = streamingMessages[chatId][messageId];
+            return entry;
+        }
+
+        function ensureStreamDiv(chatId, data, entry) {
+            if (chatId !== getActiveChatId()) return;
+            if (entry.div) return;
             const conversationWindow = document.getElementById('conversationWindow');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message ai streaming';
@@ -2243,19 +2592,83 @@
                     <div class="message-content"><span class="stream-text"></span><span class="stream-cursor"></span></div>
                 </div>
             `;
-            conversationWindow.appendChild(messageDiv);
+            if (entry.isNonFinal) {
+                const state = ensureConversation(chatId);
+                const container = getThinkingProcessContainer(chatId, true, entry.run_group_id) || ensureThinkingProcessContainer(conversationWindow, state, chatId, {}, entry.run_group_id);
+                const list = container ? container.querySelector('.thinking-process-list') : null;
+                if (list) {
+                    messageDiv.classList.add('thinking-process-item');
+                    messageDiv.setAttribute('data-council-intermediate', 'true');
+                    if (entry.run_group_id) {
+                        messageDiv.setAttribute('data-run-group-id', entry.run_group_id);
+                    }
+                    if (entry.run_id) {
+                        messageDiv.setAttribute('data-run-id', entry.run_id);
+                    }
+                    list.appendChild(messageDiv);
+                    refreshThinkingProcessUI(chatId);
+                } else {
+                    conversationWindow.appendChild(messageDiv);
+                }
+            } else {
+                conversationWindow.appendChild(messageDiv);
+            }
+            entry.div = messageDiv;
+            const streamSpan = messageDiv.querySelector('.stream-text');
+            if (streamSpan) streamSpan.textContent = entry.rawText;
+            const thinkingBlock = messageDiv.querySelector('.thinking-block');
+            const thinkingContent = messageDiv.querySelector('.thinking-content');
+            if (entry.thinkingText && thinkingBlock && thinkingContent) {
+                thinkingBlock.style.display = '';
+                thinkingContent.textContent = entry.thinkingText;
+            }
             scrollToBottomIfNeeded(conversationWindow);
-            streamingMessages[data.bot_id] = { div: messageDiv, rawText: '', thinkingText: '' };
+        }
+
+        socket.on('ai_response_start', function(data) {
+            const chatId = data.chat_id;
+            const state = ensureConversation(chatId);
+            if (!state) return;
+            state.is_generating = true;
+            state.pending_message_id = data.message_id || null;
+            const entry = getStreamEntry(data);
+            if (!entry) return;
+            if (entry.isNonFinal) {
+                const incomingRunGroupId = data.run_group_id || entry.run_group_id;
+                const runGroupChanged = incomingRunGroupId && state.thinking_process.active_run_group_id && incomingRunGroupId !== state.thinking_process.active_run_group_id;
+                const mustCreateNewContainer = state.thinking_process.new_run_pending || !state.thinking_process.active_container_id || runGroupChanged;
+                if (mustCreateNewContainer && chatId === getActiveChatId()) {
+                    const conversationWindow = getConvWindow();
+                    ensureThinkingProcessContainer(conversationWindow, state, chatId, { forceNew: true }, incomingRunGroupId);
+                }
+                state.thinking_process.new_run_pending = false;
+                state.thinking_process.active_run_group_id = incomingRunGroupId || state.thinking_process.active_run_group_id;
+                state.thinking_process.active_source = entry.bot_name || state.thinking_process.active_source;
+                refreshThinkingProcessUI(chatId);
+            }
+            ensureStreamDiv(chatId, data, entry);
+            if (chatId === getActiveChatId()) {
+                setProcessingState(true);
+            }
+            loadSavedChats();
+            loadTempChats();
         });
 
         socket.on('ai_thinking_chunk', function(data) {
-            let entry = streamingMessages[data.bot_id];
-            if (!entry) {
-                addStreamingMessage('ai', data.bot_id, data.bot_name || 'AI');
-                entry = streamingMessages[data.bot_id];
-                if (!entry) return;
+            const chatId = data.chat_id;
+            const messageId = data.message_id || data.bot_id;
+            const state = ensureConversation(chatId);
+            if (state && state.pending_message_id && state.pending_message_id !== messageId) {
+                return;
             }
+            const entry = getStreamEntry(data);
+            if (!entry) return;
             entry.thinkingText += data.chunk;
+            ensureStreamDiv(chatId, data, entry);
+            if (entry.isNonFinal) {
+                updateThinkingPreviewFromEntry(chatId, entry);
+            }
+            if (chatId !== getActiveChatId() || !entry.div) return;
             const block = entry.div.querySelector('.thinking-block');
             const content = entry.div.querySelector('.thinking-content');
             if (block) block.style.display = '';
@@ -2265,13 +2678,20 @@
         });
 
         socket.on('ai_response_chunk', function(data) {
-            let entry = streamingMessages[data.bot_id];
-            if (!entry) {
-                addStreamingMessage('ai', data.bot_id, data.bot_name || 'AI');
-                entry = streamingMessages[data.bot_id];
-                if (!entry) return;
+            const chatId = data.chat_id;
+            const messageId = data.message_id || data.bot_id;
+            const state = ensureConversation(chatId);
+            if (state && state.pending_message_id && state.pending_message_id !== messageId) {
+                return;
             }
+            const entry = getStreamEntry(data);
+            if (!entry) return;
             entry.rawText += data.chunk;
+            ensureStreamDiv(chatId, data, entry);
+            if (entry.isNonFinal) {
+                updateThinkingPreviewFromEntry(chatId, entry);
+            }
+            if (chatId !== getActiveChatId() || !entry.div) return;
             const streamSpan = entry.div.querySelector('.stream-text');
             if (streamSpan) streamSpan.textContent = entry.rawText;
             const conversationWindow = document.getElementById('conversationWindow');
@@ -2279,11 +2699,46 @@
         });
 
         socket.on('ai_response_end', function(data) {
-            let entry = streamingMessages[data.bot_id];
-            if (!entry) {
-                addStreamingMessage('ai', data.bot_id, data.bot_name || 'AI');
-                entry = streamingMessages[data.bot_id];
-                if (!entry) return;
+            const chatId = data.chat_id;
+            const messageId = data.message_id || data.bot_id;
+            const state = ensureConversation(chatId);
+            const isNonFinal = isNonFinalStreamData(data);
+            if (state && state.pending_message_id === messageId) {
+                state.pending_message_id = null;
+            }
+            if (state && !isNonFinal) {
+                state.is_generating = false;
+            }
+
+            const entry = getStreamEntry(data);
+            if (!entry) return;
+            ensureStreamDiv(chatId, data, entry);
+            if (chatId !== getActiveChatId() || !entry.div) {
+                if (state) {
+                    state.messages.push({
+                        id: messageId,
+                        role: 'assistant',
+                        sender: data.bot_name,
+                        content: data.message,
+                        timestamp: data.timestamp || new Date().toISOString(),
+                        run_group_id: data.run_group_id || entry.run_group_id || null,
+                        run_id: data.run_id || entry.run_id || messageId,
+                        model_id: data.model_id || null,
+                        role_name: data.role_name || null,
+                        thinking: data.thinking || '',
+                        is_final_response: (typeof data.is_final_response === 'boolean') ? data.is_final_response : false,
+                        stream_status: data.stopped ? 'stopped' : 'done'
+                    });
+                }
+                if (streamingMessages[chatId]) {
+                    delete streamingMessages[chatId][messageId];
+                }
+                if (state && state.streaming) {
+                    delete state.streaming[messageId];
+                }
+                loadSavedChats();
+                loadTempChats();
+                return;
             }
             const messageDiv = entry.div;
             const hasThinking = data.thinking && data.thinking.trim().length > 0;
@@ -2322,21 +2777,24 @@
                     </button>
                 </div>
             `;
-            const isCouncilMsg = data.bot_id && data.bot_id.startsWith('council-');
-            const isFinalResponse = data.bot_name && data.bot_name.includes('Final Response');
-            const isCouncilIntermediate = isCouncilMsg && !isFinalResponse;
-            const collapseBtn = isCouncilIntermediate ? '<button class="council-collapse-btn" title="Collapse/expand">&#9660;</button>' : '';
-            const mdCollapseBtn = isCouncilIntermediate ? '' : '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>';
-            const headerClick = isCouncilIntermediate ? ' onclick="toggleCouncilCollapse(this.closest(\'.message\'))"' : '';
+            const mdCollapseBtn = entry.isNonFinal ? '' : '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>';
             messageDiv.setAttribute('data-raw-content', data.message);
-            if (isCouncilIntermediate) {
-                messageDiv.classList.add('council-intermediate');
+            messageDiv.setAttribute('data-thinking', data.thinking || '');
+            messageDiv.setAttribute('data-is-final-response', ((typeof data.is_final_response === 'boolean') ? data.is_final_response : false) ? 'true' : 'false');
+            if (data.run_group_id || entry.run_group_id) {
+                messageDiv.setAttribute('data-run-group-id', data.run_group_id || entry.run_group_id);
+            }
+            if (data.run_id || entry.run_id) {
+                messageDiv.setAttribute('data-run-id', data.run_id || entry.run_id);
+            }
+            if (entry.isNonFinal) {
+                messageDiv.classList.add('thinking-process-item');
                 messageDiv.setAttribute('data-council-intermediate', 'true');
             }
             messageDiv.classList.remove('streaming');
             messageDiv.innerHTML = `
                 <div class="message-wrapper">
-                    <div class="message-header"${headerClick}>${data.bot_name}${collapseBtn}${mdCollapseBtn}</div>
+                    <div class="message-header">${data.bot_name}${mdCollapseBtn}</div>
                     ${thinkingBlock}
                     <div class="message-content">${formattedContent}</div>
                     ${menuUI}
@@ -2348,8 +2806,35 @@
             }, 10);
             const conversationWindow = document.getElementById('conversationWindow');
             scrollToBottomIfNeeded(conversationWindow);
+            if (state) {
+                state.messages.push({
+                    id: messageId,
+                    role: 'assistant',
+                    sender: data.bot_name,
+                    content: data.message,
+                    timestamp: data.timestamp || new Date().toISOString(),
+                    run_group_id: data.run_group_id || entry.run_group_id || null,
+                    run_id: data.run_id || entry.run_id || messageId,
+                    model_id: data.model_id || null,
+                    role_name: data.role_name || null,
+                    thinking: data.thinking || '',
+                    is_final_response: (typeof data.is_final_response === 'boolean') ? data.is_final_response : false,
+                    stream_status: data.stopped ? 'stopped' : 'done'
+                });
+            }
+            if (entry.isNonFinal) {
+                updateThinkingPreviewFromEntry(chatId, entry);
+            }
             // Council role status handled by council_status event
-            delete streamingMessages[data.bot_id];
+            if (streamingMessages[chatId]) {
+                delete streamingMessages[chatId][messageId];
+            }
+            if (state && state.streaming) {
+                delete state.streaming[messageId];
+            }
+            refreshThinkingProcessUI(chatId);
+            loadSavedChats();
+            loadTempChats();
             autoSaveTempChat();
         });
 
@@ -2458,12 +2943,46 @@
             });
         }
 
-        socket.on('all_done', function() {
-            // Auto-collapse all intermediate council messages
-            document.querySelectorAll('.message.council-intermediate').forEach(msg => {
-                msg.classList.add('collapsed');
-            });
-            setProcessingState(false);
+        function isLeaderFinalResponseMessage(msg) {
+            if (!msg || msg.type !== 'ai') return false;
+            return isFinalResponseName(msg.sender || '');
+        }
+
+        function applyCollapseOnChatSwap(messageDiv, msg, isCouncilIntermediate) {
+            if (!messageDiv || !msg || msg.type !== 'ai') return;
+
+            const keepExpanded = isLeaderFinalResponseMessage(msg);
+            if (keepExpanded) {
+                messageDiv.classList.remove('collapsed');
+                messageDiv.classList.remove('md-collapsed');
+                return;
+            }
+
+            if (isCouncilIntermediate) {
+                messageDiv.classList.add('collapsed');
+            } else {
+                messageDiv.classList.add('md-collapsed');
+            }
+        }
+
+        socket.on('all_done', function(data) {
+            const chatId = data && data.chat_id;
+            if (chatId) {
+                const state = ensureConversation(chatId);
+                if (state) {
+                    state.is_generating = false;
+                    state.thinking_process.preview_text = '';
+                    state.thinking_process.active_source = '';
+                    state.thinking_process.new_run_pending = false;
+                    state.thinking_process.active_run_group_id = null;
+                }
+            }
+            refreshThinkingProcessUI(chatId || getActiveChatId());
+            if (!chatId || chatId === getActiveChatId()) {
+                setProcessingState(false);
+            }
+            loadSavedChats();
+            loadTempChats();
         });
 
         function toggleCouncilCollapse(msgDiv) {
@@ -2482,7 +3001,32 @@
         }
 
         socket.on('council_status', function(data) {
+            if (!data) return;
+            if (data.chat_id && data.chat_id !== getActiveChatId()) {
+                return;
+            }
             updateCouncilRoleStatus(data.role, data.status);
+
+            const chatId = data.chat_id || getActiveChatId();
+            const state = ensureConversation(chatId);
+            if (!state) return;
+
+            if (data.status === 'running') {
+                if (data.run_group_id) {
+                    state.thinking_process.active_run_group_id = data.run_group_id;
+                }
+                state.thinking_process.active_source = normalizeRoleLabel(data.role);
+                const activeEntry = state.pending_message_id ? state.streaming[state.pending_message_id] : null;
+                if (activeEntry) {
+                    updateThinkingPreviewFromEntry(chatId, activeEntry);
+                } else {
+                    state.thinking_process.preview_text = '';
+                    refreshThinkingProcessUI(chatId);
+                }
+                return;
+            }
+
+            refreshThinkingProcessUI(chatId);
         });
 
         // Event listeners
@@ -2544,16 +3088,20 @@
             const sysPromptEl = document.getElementById('systemPromptInput');
             if (sysPromptEl) sysPromptEl.value = '';
 
+            uploadedPDFs = [];
+            displayPDFs();
+
             // Reset council status lights
             resetCouncilStatus();
-
-            // Tell backend to clear its conversation history
-            socket.emit('clear_history', { chat_id: currentSessionId || tempChatId });
+            setProcessingState(false);
 
             // Remove active class from all history items
             document.querySelectorAll('.history-item').forEach(item => {
                 item.classList.remove('active');
             });
+
+            Object.values(conversations).forEach(conv => resetThinkingProcessState(conv));
+            Object.keys(streamingMessages).forEach(key => delete streamingMessages[key]);
         }
 
         function saveCurrentSession() {
@@ -2626,12 +3174,15 @@
                                 minute: '2-digit'
                             });
                             const isActive = chat.id === currentSessionId ? 'active' : '';
+                            const generating = chat.isGenerating ? ' • generating…' : '';
+                            const preview = chat.lastPreview ? `<div class="history-item-meta" style="margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(chat.lastPreview)}</div>` : '';
                             
                             return `
                                 <div class="history-item ${isActive}" onclick="loadChat('${chat.id}')">
                                     <div class="history-item-title">${chat.name}</div>
+                                    ${preview}
                                     <div class="history-item-meta">
-                                        <span>${timeStr}</span>
+                                        <span>${timeStr}${generating}</span>
                                         <button class="history-item-delete" onclick="deleteChat(event, '${chat.id}')">❌</button>
                                     </div>
                                 </div>
@@ -2646,71 +3197,136 @@
                 });
         }
 
+        function renderLoadedMessages(conversationWindow, messages, chatId) {
+            const state = ensureConversation(chatId);
+            if (!state) return;
+
+            const thinkingListsByGroup = {};
+            let hasNonFinal = false;
+
+            messages.forEach(msg => {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${msg.type}`;
+
+                const isNonFinal = isNonFinalSavedMessage(msg);
+                const runGroupId = msg.run_group_id || 'legacy-non-final';
+                if (isNonFinal) {
+                    hasNonFinal = true;
+                    if (!thinkingListsByGroup[runGroupId]) {
+                        const tpContainer = ensureThinkingProcessContainer(conversationWindow, state, chatId, { forceNew: false }, runGroupId);
+                        thinkingListsByGroup[runGroupId] = tpContainer ? tpContainer.querySelector('.thinking-process-list') : null;
+                    }
+                    messageDiv.classList.add('thinking-process-item');
+                    messageDiv.setAttribute('data-council-intermediate', 'true');
+                    messageDiv.setAttribute('data-run-group-id', runGroupId);
+                    if (msg.run_id) {
+                        messageDiv.setAttribute('data-run-id', msg.run_id);
+                    }
+                }
+
+                if (msg.is_md_collapsed && !isNonFinal) {
+                    messageDiv.classList.add('md-collapsed');
+                }
+
+                if (msg.type === 'ai' && msg.raw_content) {
+                    messageDiv.setAttribute('data-raw-content', msg.raw_content);
+                }
+                if (msg.type === 'ai') {
+                    messageDiv.setAttribute('data-thinking', msg.thinking || '');
+                    messageDiv.setAttribute('data-is-final-response', msg.is_final_response ? 'true' : 'false');
+                    if (msg.run_group_id) {
+                        messageDiv.setAttribute('data-run-group-id', msg.run_group_id);
+                    }
+                    if (msg.run_id) {
+                        messageDiv.setAttribute('data-run-id', msg.run_id);
+                    }
+                }
+
+                const displayContent = (msg.type === 'ai' && msg.raw_content)
+                    ? formatMessage(msg.raw_content)
+                    : msg.content;
+
+                if (msg.sender) {
+                    const mdCollapseBtn = (msg.type === 'ai' && !isNonFinal)
+                        ? '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>'
+                        : '';
+                    const menuUI = `
+                        <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
+                            ⋮
+                        </button>
+                        <div class="message-menu">
+                            <button class="menu-item" onclick="copyMessageContent(this)">
+                                <svg viewBox="0 0 24 24">
+                                    <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                                </svg>
+                                Copy
+                            </button>
+                            <button class="menu-item" onclick="downloadMessageAsPNG(this)">
+                                <svg viewBox="0 0 24 24">
+                                    <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+                                </svg>
+                                Download as PNG
+                            </button>
+                            <button class="menu-item" onclick="deleteMessage(this)">
+                                <svg viewBox="0 0 24 24">
+                                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                                </svg>
+                                Delete
+                            </button>
+                        </div>
+                    `;
+
+                    messageDiv.innerHTML = `
+                        <div class="message-wrapper">
+                            <div class="message-header">${msg.sender}${mdCollapseBtn}</div>
+                            <div class="message-content">${displayContent}</div>
+                            ${menuUI}
+                        </div>
+                    `;
+                } else {
+                    messageDiv.innerHTML = `<div class="message-content">${displayContent}</div>`;
+                }
+
+                if (isNonFinal && thinkingListsByGroup[runGroupId]) {
+                    thinkingListsByGroup[runGroupId].appendChild(messageDiv);
+                } else {
+                    conversationWindow.appendChild(messageDiv);
+                }
+
+                setTimeout(() => {
+                    renderLatex(messageDiv);
+                    addCopyButtonsToCodeBlocks(messageDiv);
+                }, 10);
+            });
+
+            if (!hasNonFinal) {
+                conversationWindow.querySelectorAll('.thinking-process-container').forEach(el => el.remove());
+            }
+            refreshThinkingProcessUI(chatId);
+        }
+
         function loadChat(chatId) {
             fetch(`/api/load_chat/${chatId}`)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success && data.chat) {
+                        currentSessionId = data.chat.id;
+                        currentSessionName = data.chat.name;
                         // Clear current conversation
                         const conversationWindow = document.getElementById('conversationWindow');
                         conversationWindow.innerHTML = '';
+                        const loadedState = ensureConversation(currentSessionId);
+                        if (loadedState) {
+                            loadedState.streaming = {};
+                            loadedState.pending_message_id = null;
+                            resetThinkingProcessState(loadedState);
+                        }
+                        if (streamingMessages[currentSessionId]) {
+                            delete streamingMessages[currentSessionId];
+                        }
                         
-                        // Load messages
-                        data.chat.messages.forEach(msg => {
-                            const messageDiv = document.createElement('div');
-                            messageDiv.className = `message ${msg.type}`;
-                            
-                            // Store raw content as data attribute for copying
-                            if (msg.type === 'ai' && msg.raw_content) {
-                                messageDiv.setAttribute('data-raw-content', msg.raw_content);
-                            }
-                            
-                            if (msg.sender) {
-                                const menuUI = `
-                                    <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
-                                        ⋮
-                                    </button>
-                                    <div class="message-menu">
-                                        <button class="menu-item" onclick="copyMessageContent(this)">
-                                            <svg viewBox="0 0 24 24">
-                                                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                                            </svg>
-                                            Copy
-                                        </button>
-                                        <button class="menu-item" onclick="downloadMessageAsPNG(this)">
-                                            <svg viewBox="0 0 24 24">
-                                                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-                                            </svg>
-                                            Download as PNG
-                                        </button>
-                                        <button class="menu-item" onclick="deleteMessage(this)">
-                                            <svg viewBox="0 0 24 24">
-                                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
-                                            </svg>
-                                            Delete
-                                        </button>
-                                    </div>
-                                `;
-                                
-                                messageDiv.innerHTML = `
-                                    <div class="message-wrapper">
-                                        <div class="message-header">${msg.sender}${msg.type === 'ai' ? '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>' : ''}</div>
-                                        <div class="message-content">${msg.content}</div>
-                                        ${menuUI}
-                                    </div>
-                                `;
-                            } else {
-                                messageDiv.innerHTML = `<div class="message-content">${msg.content}</div>`;
-                            }
-                            
-                            conversationWindow.appendChild(messageDiv);
-                            
-                            // Render LaTeX in loaded messages
-                            setTimeout(() => {
-                                renderLatex(messageDiv);
-                                addCopyButtonsToCodeBlocks(messageDiv);
-                            }, 10);
-                        });
+                        // Load messages with unified non-final grouping
+                        renderLoadedMessages(conversationWindow, data.chat.messages || [], currentSessionId);
                         
                         // Restore system prompt if available
                         const sysPromptEl = document.getElementById('systemPromptInput');
@@ -2719,11 +3335,13 @@
                         }
 
                         // Restore uploaded documents if available
+                        uploadedPDFs = [];
+                        displayPDFs();
                         if (data.chat.uploadedDocuments && data.chat.uploadedDocuments.length > 0) {
                             fetch('/api/restore_documents', {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({documents: data.chat.uploadedDocuments})
+                                body: JSON.stringify({documents: data.chat.uploadedDocuments, chat_id: data.chat.id})
                             })
                             .then(response => response.json())
                             .then(restoreData => {
@@ -2739,9 +3357,12 @@
                         }
 
                         // Update current session info
-                        currentSessionId = data.chat.id;
-                        currentSessionName = data.chat.name;
                         document.getElementById('currentSessionName').innerHTML = `<span>${currentSessionName}</span>`;
+                        if (loadedState) {
+                            loadedState.messages = data.chat.messages || [];
+                            loadedState.is_generating = !!data.chat.isGenerating;
+                        }
+                        setProcessingState(!!data.chat.isGenerating);
                         
                         // Update active state in history list
                         document.querySelectorAll('.history-item').forEach(item => {
@@ -2752,29 +3373,8 @@
                             }
                         });
                         
-                        // Sync chat history to backend
-                        const formattedMessages = data.chat.messages.map(msg => {
-                            if (msg.type === 'ai' && msg.sender) {
-                                // Parse bot name and ID from sender like "Bot Name (bot-id)"
-                                const match = msg.sender.match(/(.+?)\s*\((.+?)\)/);
-                                const botName = match ? match[1].trim() : msg.sender;
-                                const botId = match ? match[2].trim() : 'unknown';
-                                return {
-                                    type: 'ai',
-                                    botName: botName,
-                                    botId: botId,
-                                    content: msg.content
-                                };
-                            } else {
-                                return {
-                                    type: 'user',
-                                    content: msg.content
-                                };
-                            }
-                        });
                         const activeChatId = currentSessionId || tempChatId;
                         if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
-                        socket.emit('load_chat_history', { chat_id: activeChatId, messages: formattedMessages });
                         
                         conversationWindow.scrollTop = conversationWindow.scrollHeight;
                         addConsoleLog(`Loaded chat: ${currentSessionName}`);
@@ -2828,17 +3428,27 @@
             
             // Extract all messages from the conversation window
             conversationWindow.querySelectorAll('.message').forEach(msg => {
-                // Skip intermediate council messages (researcher, analyzer, etc.)
-                // Only the Leader's Final Response is included in history
-                if (msg.getAttribute('data-council-intermediate') === 'true') return;
                 const header = msg.querySelector('.message-header');
                 const content = msg.querySelector('.message-content');
+                let senderText = null;
+                if (header) {
+                    const headerClone = header.cloneNode(true);
+                    headerClone.querySelectorAll('button').forEach(btn => btn.remove());
+                    senderText = headerClone.textContent.trim();
+                }
                 
                 if (content) {
                     const messageData = {
                         type: msg.classList.contains('user') ? 'user' : 'ai',
-                        sender: header ? header.textContent : null,
-                        content: content.innerHTML
+                        sender: senderText,
+                        content: content.innerHTML,
+                        is_council_intermediate: msg.getAttribute('data-council-intermediate') === 'true',
+                        is_collapsed: msg.classList.contains('collapsed'),
+                        is_md_collapsed: msg.classList.contains('md-collapsed'),
+                        run_group_id: msg.getAttribute('data-run-group-id') || null,
+                        run_id: msg.getAttribute('data-run-id') || null,
+                        thinking: msg.getAttribute('data-thinking') || '',
+                        is_final_response: msg.getAttribute('data-is-final-response') === 'true'
                     };
                     
                     // Add raw content if available (for AI messages)
@@ -2929,12 +3539,15 @@
                                 minute: '2-digit'
                             });
                             const isActive = chat.id === tempChatId ? 'active' : '';
+                            const generating = chat.isGenerating ? ' • generating…' : '';
+                            const preview = chat.lastPreview ? `<div class="history-item-meta" style="margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(chat.lastPreview)}</div>` : '';
                             
                             return `
                                 <div class="history-item temporary ${isActive}" onclick="loadTempChat('${chat.id}')">
                                     <div class="history-item-title">💾 ${timeStr}</div>
+                                    ${preview}
                                     <div class="history-item-meta">
-                                        <span>${chat.messageCount} msgs</span>
+                                        <span>${chat.messageCount} msgs${generating}</span>
                                         <button class="history-item-delete" onclick="deleteTempChat(event, '${chat.id}')">❌</button>
                                     </div>
                                 </div>
@@ -2954,72 +3567,32 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.success && data.chat) {
-                        // Clear current conversation
-                        const conversationWindow = document.getElementById('conversationWindow');
-                        conversationWindow.innerHTML = '';
-                        
-                        // Load messages
-                        data.chat.messages.forEach(msg => {
-                            const messageDiv = document.createElement('div');
-                            messageDiv.className = `message ${msg.type}`;
-                            
-                            // Store raw content as data attribute for copying
-                            if (msg.type === 'ai' && msg.raw_content) {
-                                messageDiv.setAttribute('data-raw-content', msg.raw_content);
-                            }
-                            
-                            if (msg.sender) {
-                                const menuUI = `
-                                    <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
-                                        ⋮
-                                    </button>
-                                    <div class="message-menu">
-                                        <button class="menu-item" onclick="copyMessageContent(this)">
-                                            <svg viewBox="0 0 24 24">
-                                                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                                            </svg>
-                                            Copy
-                                        </button>
-                                        <button class="menu-item" onclick="downloadMessageAsPNG(this)">
-                                            <svg viewBox="0 0 24 24">
-                                                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-                                            </svg>
-                                            Download as PNG
-                                        </button>
-                                        <button class="menu-item" onclick="deleteMessage(this)">
-                                            <svg viewBox="0 0 24 24">
-                                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
-                                            </svg>
-                                            Delete
-                                        </button>
-                                    </div>
-                                `;
-                                
-                                messageDiv.innerHTML = `
-                                    <div class="message-wrapper">
-                                        <div class="message-header">${msg.sender}${msg.type === 'ai' ? '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>' : ''}</div>
-                                        <div class="message-content">${msg.content}</div>
-                                        ${menuUI}
-                                    </div>
-                                `;
-                            } else {
-                                messageDiv.innerHTML = `<div class="message-content">${msg.content}</div>`;
-                            }
-                            
-                            conversationWindow.appendChild(messageDiv);
-                            
-                            // Render LaTeX in loaded messages
-                            setTimeout(() => {
-                                renderLatex(messageDiv);
-                                addCopyButtonsToCodeBlocks(messageDiv);
-                            }, 10);
-                        });
-                        
-                        // Update temp chat tracking
                         tempChatId = data.chat.id;
                         currentSessionId = null;
                         currentSessionName = 'Temporary Chat';
+                        // Clear current conversation
+                        const conversationWindow = document.getElementById('conversationWindow');
+                        conversationWindow.innerHTML = '';
+                        const tempState = ensureConversation(tempChatId);
+                        if (tempState) {
+                            tempState.streaming = {};
+                            tempState.pending_message_id = null;
+                            resetThinkingProcessState(tempState);
+                        }
+                        if (streamingMessages[tempChatId]) {
+                            delete streamingMessages[tempChatId];
+                        }
+                        
+                        // Load messages with unified non-final grouping
+                        renderLoadedMessages(conversationWindow, data.chat.messages || [], tempChatId);
+                        
+                        // Update temp chat tracking
                         document.getElementById('currentSessionName').innerHTML = `<span>Temporary Chat</span>`;
+                        if (tempState) {
+                            tempState.messages = data.chat.messages || [];
+                            tempState.is_generating = !!data.chat.isGenerating;
+                        }
+                        setProcessingState(!!data.chat.isGenerating);
 
                         // Restore system prompt if available
                         const sysPromptElTemp = document.getElementById('systemPromptInput');
@@ -3028,11 +3601,13 @@
                         }
 
                         // Restore uploaded documents if available
+                        uploadedPDFs = [];
+                        displayPDFs();
                         if (data.chat.uploadedDocuments && data.chat.uploadedDocuments.length > 0) {
                             fetch('/api/restore_documents', {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({documents: data.chat.uploadedDocuments})
+                                body: JSON.stringify({documents: data.chat.uploadedDocuments, chat_id: data.chat.id})
                             })
                             .then(response => response.json())
                             .then(restoreData => {
@@ -3057,29 +3632,8 @@
                             }
                         });
                         
-                        // Sync chat history to backend
-                        const formattedMessages = data.chat.messages.map(msg => {
-                            if (msg.type === 'ai' && msg.sender) {
-                                // Parse bot name and ID from sender like "Bot Name (bot-id)"
-                                const match = msg.sender.match(/(.+?)\s*\((.+?)\)/);
-                                const botName = match ? match[1].trim() : msg.sender;
-                                const botId = match ? match[2].trim() : 'unknown';
-                                return {
-                                    type: 'ai',
-                                    botName: botName,
-                                    botId: botId,
-                                    content: msg.content
-                                };
-                            } else {
-                                return {
-                                    type: 'user',
-                                    content: msg.content
-                                };
-                            }
-                        });
                         const activeChatId = currentSessionId || tempChatId;
                         if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
-                        socket.emit('load_chat_history', { chat_id: activeChatId, messages: formattedMessages });
                         
                         conversationWindow.scrollTop = conversationWindow.scrollHeight;
                         addConsoleLog(`Loaded temporary chat`);
