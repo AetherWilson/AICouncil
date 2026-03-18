@@ -11,6 +11,7 @@ from werkzeug.utils import secure_filename
 import PyPDF2
 from PIL import Image
 import base64
+from services.config_store import ConfigStore, get_model_info as resolve_model_info, infer_model_support_images
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -18,6 +19,9 @@ app.config['CHAT_HISTORY_FOLDER'] = 'chat_history'
 app.config['TEMP_CHAT_HISTORY_FOLDER'] = 'temp_chat_history'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+COUNCIL_ROLES = ['Leader', 'Researcher', 'Creative_Writer', 'Analyzer', 'Verifier']
+config_store = ConfigStore(base_dir='.')
 
 # Store all conversation state keyed by conversation_id
 # {
@@ -116,56 +120,15 @@ os.makedirs(app.config['TEMP_CHAT_HISTORY_FOLDER'], exist_ok=True)
 
 # Load council role configurations
 def load_config():
-    try:
-        with open('config.json', 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {
-            'Leader': 'gpt-4o',
-            'Researcher': 'gpt-4o',
-            'Creative_Writer': 'gpt-4o',
-            'Analyzer': 'gpt-4o',
-            'Verifier': 'gpt-4o'
-        }
+    return config_store.load_config()
 
 def load_models():
     """Load available models from model.json"""
-    try:
-        with open('model.json', 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return []
-
-def infer_model_support_images(model_id):
-    """Best-effort vision capability detection when model metadata is unavailable."""
-    model_lower = (model_id or '').lower()
-    if not model_lower:
-        return False
-
-    # Common model families and tags that typically support image input.
-    vision_hints = [
-        'gpt-4o', 'gpt-4.1', 'gpt-5', 'o1', 'o3',
-        'gemini', 'grok',
-        'claude-3', 'claude-opus-4', 'claude-sonnet-4',
-        'vision', 'vl', 'pixtral', 'llava', 'qwen-vl'
-    ]
-    return any(hint in model_lower for hint in vision_hints)
+    return config_store.load_models()
 
 def get_model_info(model_id):
     """Get model details by ID from model.json"""
-    models = load_models()
-    for m in models:
-        if m['id'] == model_id:
-            # If support_images is missing in model.json, infer from model name.
-            if 'support_images' not in m:
-                m = dict(m)
-                m['support_images'] = infer_model_support_images(model_id)
-            return m
-    return {
-        'id': model_id,
-        'name': model_id,
-        'support_images': infer_model_support_images(model_id)
-    }
+    return resolve_model_info(load_models(), model_id)
 
 # Council role system prompts
 LEADER_DISTRIBUTE_PROMPT = """You are the Leader of an AI council. Your job is to analyze the user's request and distribute tasks to your team members.
@@ -251,6 +214,49 @@ def cleanup_old_temp_chats():
     except Exception as e:
         print(f"Error cleaning up temporary chats: {e}")
 
+
+def _extract_document_payload(filepath, filename):
+    """Extract normalized metadata/content for a stored document file."""
+    file_size = os.path.getsize(filepath)
+    file_ext = filename.lower().split('.')[-1]
+
+    if file_ext == 'pdf':
+        text_content = extract_pdf_text(filepath)
+        with open(filepath, 'rb') as f:
+            pdf_reader = PyPDF2.PdfReader(f)
+            page_count = len(pdf_reader.pages)
+        return {
+            'filename': filename,
+            'content': text_content,
+            'pages': page_count,
+            'size': file_size,
+            'type': 'pdf'
+        }
+
+    img = Image.open(filepath)
+    width, height = img.size
+    return {
+        'filename': filename,
+        'content': '[Image uploaded]',
+        'filepath': filepath,
+        'width': width,
+        'height': height,
+        'size': file_size,
+        'type': 'image'
+    }
+
+
+def _build_document_response(doc_payload):
+    """Return the UI-safe document payload without internal-only fields."""
+    return {
+        'filename': doc_payload.get('filename'),
+        'type': doc_payload.get('type'),
+        'size': doc_payload.get('size'),
+        'pages': doc_payload.get('pages'),
+        'width': doc_payload.get('width'),
+        'height': doc_payload.get('height')
+    }
+
 @app.route('/')
 def index():
     # Clean up old temporary chats on page load
@@ -304,58 +310,13 @@ def upload_document():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         
-        file_size = os.path.getsize(filepath)
-        
-        # Process based on file type
-        if file_ext == 'pdf':
-            text_content = extract_pdf_text(filepath)
-            with open(filepath, 'rb') as f:
-                pdf_reader = PyPDF2.PdfReader(f)
-                page_count = len(pdf_reader.pages)
-            
-            conv['uploaded_documents'][filename] = {
-                'filename': filename,
-                'content': text_content,
-                'pages': page_count,
-                'size': file_size,
-                'type': 'pdf'
-            }
-            
-            return jsonify({
-                'success': True,
-                'document': {
-                    'filename': filename,
-                    'pages': page_count,
-                    'size': file_size,
-                    'type': 'pdf'
-                }
-            })
-        else:
-            # Handle image files
-            text_content = "[Image uploaded]"
-            img = Image.open(filepath)
-            width, height = img.size
-            
-            conv['uploaded_documents'][filename] = {
-                'filename': filename,
-                'content': text_content,
-                'filepath': filepath,  # Store the actual file path
-                'width': width,
-                'height': height,
-                'size': file_size,
-                'type': 'image'
-            }
-            
-            return jsonify({
-                'success': True,
-                'document': {
-                    'filename': filename,
-                    'width': width,
-                    'height': height,
-                    'size': file_size,
-                    'type': 'image'
-                }
-            })
+        doc_payload = _extract_document_payload(filepath, filename)
+        conv['uploaded_documents'][filename] = doc_payload
+
+        return jsonify({
+            'success': True,
+            'document': _build_document_response(doc_payload)
+        })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -379,28 +340,9 @@ def restore_documents():
             if not os.path.exists(filepath):
                 continue
 
-            file_size = os.path.getsize(filepath)
-            file_ext = filename.lower().split('.')[-1]
-
-            if file_ext == 'pdf':
-                text_content = extract_pdf_text(filepath)
-                with open(filepath, 'rb') as f:
-                    pdf_reader = PyPDF2.PdfReader(f)
-                    page_count = len(pdf_reader.pages)
-                conv['uploaded_documents'][filename] = {
-                    'filename': filename, 'content': text_content,
-                    'pages': page_count, 'size': file_size, 'type': 'pdf'
-                }
-                restored.append({'filename': filename, 'pages': page_count, 'size': file_size, 'type': 'pdf'})
-            else:
-                img = Image.open(filepath)
-                width, height = img.size
-                conv['uploaded_documents'][filename] = {
-                    'filename': filename, 'content': '[Image uploaded]',
-                    'filepath': filepath, 'width': width, 'height': height,
-                    'size': file_size, 'type': 'image'
-                }
-                restored.append({'filename': filename, 'width': width, 'height': height, 'size': file_size, 'type': 'image'})
+            doc_payload = _extract_document_payload(filepath, filename)
+            conv['uploaded_documents'][filename] = doc_payload
+            restored.append(_build_document_response(doc_payload))
 
         return jsonify({'success': True, 'documents': restored})
     except Exception as e:
@@ -1035,6 +977,50 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         })
         return None
 
+
+def _run_optional_council_role(role_name, task_key, base_prompt, user_message, user_system_prompt,
+                               tasks, config, council_results, chat_history, conversation_id,
+                               run_group_id, auto_save_chat, emit_chat, extra_context=''):
+    """Execute one optional council role with consistent skip/log/run behavior."""
+    role_task = tasks.get(task_key, 'SKIP')
+    if role_task.upper().strip() == 'SKIP':
+        emit_chat('council_status', {'role': role_name, 'status': 'skipped'})
+        emit_chat('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] {role_name.replace('_', ' ')}: SKIPPED"
+        })
+        return None
+
+    model_id = config.get(role_name, '')
+    role_info = get_model_info(model_id)
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    action_verb = 'reviewing team results' if role_name == 'Verifier' else 'working'
+    emit_chat('console_log', {
+        'message': f"[{timestamp}] {role_name.replace('_', ' ')} ({model_id}) {action_verb}..."
+    })
+
+    role_system_prompt = base_prompt + f"\n\nOriginal user request: {user_message}"
+    if extra_context:
+        role_system_prompt += extra_context
+    if user_system_prompt:
+        role_system_prompt = user_system_prompt + "\n\n" + role_system_prompt
+
+    role_response = run_council_role(
+        role_name=role_name,
+        role_label=f"{role_name.replace('_', ' ')} ({model_id})",
+        model_id=model_id,
+        system_prompt=role_system_prompt,
+        user_prompt=role_task,
+        chat_history=chat_history,
+        conversation_id=conversation_id,
+        run_group_id=run_group_id,
+        support_images=role_info.get('support_images', False),
+        on_stream_progress=auto_save_chat
+    )
+    if role_response is not None:
+        council_results[role_name] = role_response
+        auto_save_chat()
+    return role_response
+
 @socketio.on('join_chat')
 def handle_join_chat(data):
     chat_id = data.get('chat_id')
@@ -1077,6 +1063,13 @@ def handle_message_task(data, conversation_id):
         conv['active_stream_task'] = None
         conv['pending_message_id'] = None
 
+    def stop_if_aborted():
+        if conv['abort_event'].is_set():
+            emit_chat('all_done')
+            finalize_generation()
+            return True
+        return False
+
     conv = get_conversation(conversation_id)
     conv['run_group_counter'] = conv.get('run_group_counter', 0) + 1
     run_group_id = f"rungrp-{conv['run_group_counter']:06d}"
@@ -1103,7 +1096,7 @@ def handle_message_task(data, conversation_id):
     })
 
     # Set all roles to waiting
-    for role in ['Leader', 'Researcher', 'Creative_Writer', 'Analyzer', 'Verifier']:
+    for role in COUNCIL_ROLES:
         emit_chat('council_status', {'role': role, 'status': 'waiting'})
 
     # ── Step 1: Leader distributes tasks ──
@@ -1130,9 +1123,7 @@ def handle_message_task(data, conversation_id):
         on_stream_progress=auto_save_chat
     )
 
-    if conv['abort_event'].is_set():
-        emit_chat('all_done')
-        finalize_generation()
+    if stop_if_aborted():
         return
 
     # Parse task distribution — abort if leader failed or returned invalid JSON
@@ -1157,177 +1148,92 @@ def handle_message_task(data, conversation_id):
     council_results = {}
 
     # ── Step 2: Researcher ──
-    researcher_task = tasks.get('researcher_task', 'SKIP')
-    if researcher_task.upper().strip() != 'SKIP':
-        researcher_model_id = config.get('Researcher', '')
-        researcher_info = get_model_info(researcher_model_id)
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] Researcher ({researcher_model_id}) working..."
-        })
-
-        researcher_sys = RESEARCHER_PROMPT + f"\n\nOriginal user request: {user_message}"
-        if user_system_prompt:
-            researcher_sys = user_system_prompt + "\n\n" + researcher_sys
-
-        researcher_response = run_council_role(
-            role_name='Researcher',
-            role_label=f'Researcher ({researcher_model_id})',
-            model_id=researcher_model_id,
-            system_prompt=researcher_sys,
-            user_prompt=researcher_task,
-            chat_history=chat_history,
-            conversation_id=conversation_id,
-            run_group_id=run_group_id,
-            support_images=researcher_info.get('support_images', False),
-            on_stream_progress=auto_save_chat
-        )
-        if researcher_response is not None:
-            council_results['Researcher'] = researcher_response
-            auto_save_chat()
-
-        if conv['abort_event'].is_set():
-            emit_chat('all_done')
-            finalize_generation()
-            return
-    else:
-        emit_chat('council_status', {'role': 'Researcher', 'status': 'skipped'})
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Researcher: SKIPPED"
-        })
+    _run_optional_council_role(
+        role_name='Researcher',
+        task_key='researcher_task',
+        base_prompt=RESEARCHER_PROMPT,
+        user_message=user_message,
+        user_system_prompt=user_system_prompt,
+        tasks=tasks,
+        config=config,
+        council_results=council_results,
+        chat_history=chat_history,
+        conversation_id=conversation_id,
+        run_group_id=run_group_id,
+        auto_save_chat=auto_save_chat,
+        emit_chat=emit_chat
+    )
+    if stop_if_aborted():
+        return
 
     # ── Step 3: Creative Writer ──
-    creative_task = tasks.get('creative_writer_task', 'SKIP')
-    if creative_task.upper().strip() != 'SKIP':
-        creative_model_id = config.get('Creative_Writer', '')
-        creative_info = get_model_info(creative_model_id)
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] Creative Writer ({creative_model_id}) working..."
-        })
-
-        creative_sys = CREATIVE_WRITER_PROMPT + f"\n\nOriginal user request: {user_message}"
-        if 'Researcher' in council_results:
-            creative_sys += f"\n\n===== Researcher's Findings (for your context) =====\n{council_results['Researcher']}"
-        if user_system_prompt:
-            creative_sys = user_system_prompt + "\n\n" + creative_sys
-
-        creative_response = run_council_role(
-            role_name='Creative_Writer',
-            role_label=f'Creative Writer ({creative_model_id})',
-            model_id=creative_model_id,
-            system_prompt=creative_sys,
-            user_prompt=creative_task,
-            chat_history=chat_history,
-            conversation_id=conversation_id,
-            run_group_id=run_group_id,
-            support_images=creative_info.get('support_images', False),
-            on_stream_progress=auto_save_chat
-        )
-        if creative_response is not None:
-            council_results['Creative_Writer'] = creative_response
-            auto_save_chat()
-
-        if conv['abort_event'].is_set():
-            emit_chat('all_done')
-            finalize_generation()
-            return
-    else:
-        emit_chat('council_status', {'role': 'Creative_Writer', 'status': 'skipped'})
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Creative Writer: SKIPPED"
-        })
+    creative_context = ""
+    if 'Researcher' in council_results:
+        creative_context = f"\n\n===== Researcher's Findings (for your context) =====\n{council_results['Researcher']}"
+    _run_optional_council_role(
+        role_name='Creative_Writer',
+        task_key='creative_writer_task',
+        base_prompt=CREATIVE_WRITER_PROMPT,
+        user_message=user_message,
+        user_system_prompt=user_system_prompt,
+        tasks=tasks,
+        config=config,
+        council_results=council_results,
+        chat_history=chat_history,
+        conversation_id=conversation_id,
+        run_group_id=run_group_id,
+        auto_save_chat=auto_save_chat,
+        emit_chat=emit_chat,
+        extra_context=creative_context
+    )
+    if stop_if_aborted():
+        return
 
     # ── Step 4: Analyzer ──
-    analyzer_task = tasks.get('analyzer_task', 'SKIP')
-    if analyzer_task.upper().strip() != 'SKIP':
-        analyzer_model_id = config.get('Analyzer', '')
-        analyzer_info = get_model_info(analyzer_model_id)
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] Analyzer ({analyzer_model_id}) working..."
-        })
-
-        analyzer_sys = ANALYZER_PROMPT + f"\n\nOriginal user request: {user_message}"
-        if user_system_prompt:
-            analyzer_sys = user_system_prompt + "\n\n" + analyzer_sys
-
-        analyzer_response = run_council_role(
-            role_name='Analyzer',
-            role_label=f'Analyzer ({analyzer_model_id})',
-            model_id=analyzer_model_id,
-            system_prompt=analyzer_sys,
-            user_prompt=analyzer_task,
-            chat_history=chat_history,
-            conversation_id=conversation_id,
-            run_group_id=run_group_id,
-            support_images=analyzer_info.get('support_images', False),
-            on_stream_progress=auto_save_chat
-        )
-        if analyzer_response is not None:
-            council_results['Analyzer'] = analyzer_response
-            auto_save_chat()
-
-        if conv['abort_event'].is_set():
-            emit_chat('all_done')
-            finalize_generation()
-            return
-    else:
-        emit_chat('council_status', {'role': 'Analyzer', 'status': 'skipped'})
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Analyzer: SKIPPED"
-        })
+    _run_optional_council_role(
+        role_name='Analyzer',
+        task_key='analyzer_task',
+        base_prompt=ANALYZER_PROMPT,
+        user_message=user_message,
+        user_system_prompt=user_system_prompt,
+        tasks=tasks,
+        config=config,
+        council_results=council_results,
+        chat_history=chat_history,
+        conversation_id=conversation_id,
+        run_group_id=run_group_id,
+        auto_save_chat=auto_save_chat,
+        emit_chat=emit_chat
+    )
+    if stop_if_aborted():
+        return
 
     # ── Step 5: Verifier ──
-    verifier_task = tasks.get('verifier_task', 'SKIP')
-    if verifier_task.upper().strip() != 'SKIP':
-        verifier_model_id = config.get('Verifier', '')
-        verifier_info = get_model_info(verifier_model_id)
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] Verifier ({verifier_model_id}) reviewing team results..."
-        })
-
-        # Build a full context block of all previous results for the Verifier
-        verifier_context = ""
-        if 'Researcher' in council_results:
-            verifier_context += f"\n\n===== Researcher's Findings =====\n{council_results['Researcher']}"
-        if 'Creative_Writer' in council_results:
-            verifier_context += f"\n\n===== Creative Writer's Output =====\n{council_results['Creative_Writer']}"
-        if 'Analyzer' in council_results:
-            verifier_context += f"\n\n===== Analyzer's Calculations =====\n{council_results['Analyzer']}"
-
-        verifier_sys = VERIFIER_PROMPT + f"\n\nOriginal user request: {user_message}"
-        if verifier_context:
-            verifier_sys += f"\n\nTeam outputs to review:{verifier_context}"
-        if user_system_prompt:
-            verifier_sys = user_system_prompt + "\n\n" + verifier_sys
-
-        verifier_response = run_council_role(
-            role_name='Verifier',
-            role_label=f'Verifier ({verifier_model_id})',
-            model_id=verifier_model_id,
-            system_prompt=verifier_sys,
-            user_prompt=verifier_task,
-            chat_history=chat_history,
-            conversation_id=conversation_id,
-            run_group_id=run_group_id,
-            support_images=verifier_info.get('support_images', False),
-            on_stream_progress=auto_save_chat
-        )
-        if verifier_response is not None:
-            council_results['Verifier'] = verifier_response
-            auto_save_chat()
-
-        if conv['abort_event'].is_set():
-            emit_chat('all_done')
-            finalize_generation()
-            return
-    else:
-        emit_chat('council_status', {'role': 'Verifier', 'status': 'skipped'})
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Verifier: SKIPPED"
-        })
+    verifier_context = ""
+    if 'Researcher' in council_results:
+        verifier_context += f"\n\n===== Researcher's Findings =====\n{council_results['Researcher']}"
+    if 'Creative_Writer' in council_results:
+        verifier_context += f"\n\n===== Creative Writer's Output =====\n{council_results['Creative_Writer']}"
+    if 'Analyzer' in council_results:
+        verifier_context += f"\n\n===== Analyzer's Calculations =====\n{council_results['Analyzer']}"
+    _run_optional_council_role(
+        role_name='Verifier',
+        task_key='verifier_task',
+        base_prompt=VERIFIER_PROMPT,
+        user_message=user_message,
+        user_system_prompt=user_system_prompt,
+        tasks=tasks,
+        config=config,
+        council_results=council_results,
+        chat_history=chat_history,
+        conversation_id=conversation_id,
+        run_group_id=run_group_id,
+        auto_save_chat=auto_save_chat,
+        emit_chat=emit_chat,
+        extra_context=f"\n\nTeam outputs to review:{verifier_context}" if verifier_context else ''
+    )
+    if stop_if_aborted():
+        return
 
     # ── Step 6: Leader synthesizes all results ──
     if council_results:
