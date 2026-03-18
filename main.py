@@ -131,23 +131,40 @@ def get_model_info(model_id):
     return resolve_model_info(load_models(), model_id)
 
 # Council role system prompts
-LEADER_DISTRIBUTE_PROMPT = """You are the Leader of an AI council. Your job is to analyze the user's request and distribute tasks to your team members.
+LEADER_DISTRIBUTE_PROMPT = """You are the Leader of an AI council. Your only job is task routing.
 
-Your team:
-- Researcher: Gathers factual information, grounds responses with data, finds relevant facts and sources
-- Creative_Writer: Writes creative content, generates engaging narratives, provides creative ideas and solutions
-- Analyzer: Performs calculations, data analysis, and mathematical reasoning, does not have web access and should not research facts
-- Verifier: Reviews and fact-checks all other team members' outputs for accuracy, logical errors, and consistency
+Role boundary policy (HARD CONSTRAINTS):
+1) Researcher
+- Owns: web/info gathering, source lookup, evidence collection, factual freshness checks.
+- Forbidden: mathematical derivation, UX design planning, creative writing, auditing teammates.
 
-Analyze the user's request and create specific tasks for each team member. If a team member is not needed for this request, set their task to "SKIP". The Verifier should almost always be assigned unless nothing needs checking.
+2) Creative_Writer
+- Owns: creative ideation, UX/content planning, writing high-quality user-facing text.
+- Forbidden: fact-checking, source validation, logical auditing, questioning teammate correctness.
 
-You MUST respond with ONLY a valid JSON object in this exact format (no markdown code blocks, no explanation, just raw JSON):
+3) Analyzer
+- Owns: formal logic, mathematical derivation, quantitative reasoning.
+- Forbidden: web research, source verification, teammate auditing.
+
+4) Verifier
+- Owns: auditing other roles' outputs for factual errors, logical flaws, unsupported claims, and step validity.
+- Forbidden: producing primary creative/research/math deliverables except minimal corrections.
+
+Critical routing rules:
+- ONLY Verifier may evaluate, doubt, or critique other roles.
+- Never assign cross-role audit tasks to Researcher, Creative_Writer, or Analyzer.
+- If the user request mixes domains, split into parallel role-specific tasks.
+- Tasks must be concrete, output-oriented, and minimal (no vague wording).
+- If a role is unnecessary, set that role's task to "SKIP".
+- If any non-Verifier role is assigned, Verifier should usually be assigned to check that output.
+
+Return ONLY a valid JSON object in this exact format (no markdown, no extra text):
 {
-    "analysis": "Your brief analysis of what the user needs",
-    "researcher_task": "Specific task for the researcher, or SKIP",
-    "creative_writer_task": "Specific task for the creative writer, or SKIP",
-    "analyzer_task": "Specific task for the analyzer, or SKIP",
-    "verifier_task": "Specific task for the verifier (what to check), or SKIP"
+  "analysis": "Brief routing analysis",
+  "researcher_task": "Concrete task for Researcher, or SKIP",
+  "creative_writer_task": "Concrete task for Creative_Writer, or SKIP",
+  "analyzer_task": "Concrete task for Analyzer, or SKIP",
+  "verifier_task": "Concrete verification task for Verifier, or SKIP"
 }"""
 
 RESEARCHER_PROMPT = """You are the Researcher in an AI council. Gather only the facts directly relevant to the task — nothing more.
@@ -194,6 +211,68 @@ Synthesize into a single cohesive final response:
 - Use proper markdown formatting
 
 Respond directly — do NOT mention the council, team members, or that you are combining results. Do NOT prefix with your role name."""
+
+VERIFIER_DEBATE_STEP_A_PROMPT = """You are the Verifier in a post-round debate stage.
+
+Your job in this step is to raise focused doubts about the first-round outputs.
+
+Rules:
+- Keep everything minimal and sufficient only
+- Question only concrete, high-impact issues
+- If there is no issue worth debating, return empty questioned_roles and empty doubt_points
+- Use lowercase role names: researcher, creator, analyzer
+
+Return ONLY valid JSON in this exact shape:
+{
+    "questioned_roles": ["researcher", "analyzer"],
+    "doubt_points": [
+        {
+            "point_id": "P1",
+            "target_role": "researcher",
+            "doubt": "Specific concise doubt in 1-2 sentences"
+        }
+    ],
+    "confidence_in_doubt": 0.0
+}
+
+Do not include markdown or any extra text."""
+
+CALLOUT_REBUTTAL_PROMPT = """You are in a targeted rebuttal step.
+
+You were explicitly questioned by the Verifier.
+
+Rules:
+- Answer only the questioned points
+- Keep the response as short as possible while fully resolving each doubt
+- For each point_id, provide one concise rebuttal segment
+- You may admit, correct, refute, or provide brief supporting evidence
+- No introductions, no summaries, no unrelated content
+"""
+
+VERIFIER_DEBATE_STEP_C_PROMPT = """You are the Verifier in a post-round debate stage.
+
+Your job in this step is to judge the rebuttal for the questioned role.
+
+Rules:
+- Keep output minimal and sufficient only
+- Judge based only on the provided doubts and rebuttal
+- Use one final verdict for this role in this cycle
+
+Return ONLY valid JSON in this exact shape:
+{
+    "verdict": "accept",
+    "reason": "Short reason with only the decisive point",
+    "next_action": "enough_for_this_role",
+    "updated_confidence": 0.0
+}
+
+Allowed values:
+- verdict: "accept" | "partially_accept" | "reject"
+- next_action: "continue_question" | "move_to_other_point" | "enough_for_this_role"
+
+Do not include markdown or any extra text."""
+
+DEBATE_MAX_CYCLES = 3
 
 def cleanup_old_temp_chats():
     """Remove temporary chats from previous days"""
@@ -618,6 +697,106 @@ def extract_json_from_text(text):
         return match.group(0)
     return text
 
+
+def _clamp_confidence(value, default=0.5):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0.0, min(1.0, parsed))
+
+
+def _normalize_questioned_role(role_name):
+    normalized = (role_name or '').strip().lower()
+    mapping = {
+        'researcher': 'Researcher',
+        'creator': 'Creative_Writer',
+        'creative_writer': 'Creative_Writer',
+        'creative-writer': 'Creative_Writer',
+        'creative writer': 'Creative_Writer',
+        'analyzer': 'Analyzer'
+    }
+    return mapping.get(normalized)
+
+
+def _parse_step_a_payload(raw_text):
+    fallback = {
+        'questioned_roles': [],
+        'doubt_points': [],
+        'confidence_in_doubt': 0.5
+    }
+    if not raw_text:
+        return fallback
+
+    try:
+        payload = json.loads(extract_json_from_text(raw_text))
+    except Exception:
+        return fallback
+
+    questioned_roles = []
+    for role in payload.get('questioned_roles', []):
+        normalized = _normalize_questioned_role(role)
+        if normalized and normalized not in questioned_roles:
+            questioned_roles.append(normalized)
+
+    doubt_points = []
+    for item in payload.get('doubt_points', []):
+        if not isinstance(item, dict):
+            continue
+        target_role = _normalize_questioned_role(item.get('target_role'))
+        point_id = str(item.get('point_id') or '').strip()
+        doubt = str(item.get('doubt') or '').strip()
+        if not target_role or not doubt:
+            continue
+        if not point_id:
+            point_id = f"P{len(doubt_points) + 1}"
+        doubt_points.append({
+            'point_id': point_id,
+            'target_role': target_role,
+            'doubt': doubt
+        })
+        if target_role not in questioned_roles:
+            questioned_roles.append(target_role)
+
+    return {
+        'questioned_roles': questioned_roles,
+        'doubt_points': doubt_points,
+        'confidence_in_doubt': _clamp_confidence(payload.get('confidence_in_doubt'), default=0.5)
+    }
+
+
+def _parse_step_c_payload(raw_text):
+    fallback = {
+        'verdict': 'partially_accept',
+        'reason': 'Unable to parse verifier verdict cleanly.',
+        'next_action': 'move_to_other_point',
+        'updated_confidence': 0.5
+    }
+    if not raw_text:
+        return fallback
+
+    try:
+        payload = json.loads(extract_json_from_text(raw_text))
+    except Exception:
+        return fallback
+
+    verdict = str(payload.get('verdict') or '').strip().lower()
+    if verdict not in {'accept', 'partially_accept', 'reject'}:
+        verdict = fallback['verdict']
+
+    next_action = str(payload.get('next_action') or '').strip().lower()
+    if next_action not in {'continue_question', 'move_to_other_point', 'enough_for_this_role'}:
+        next_action = fallback['next_action']
+
+    reason = str(payload.get('reason') or '').strip() or fallback['reason']
+
+    return {
+        'verdict': verdict,
+        'reason': reason,
+        'next_action': next_action,
+        'updated_confidence': _clamp_confidence(payload.get('updated_confidence'), default=0.5)
+    }
+
 def build_document_context(conversation_id, system_prompt, support_images):
     """Build document context and image URLs for a council role"""
     conv = get_conversation(conversation_id)
@@ -1021,6 +1200,206 @@ def _run_optional_council_role(role_name, task_key, base_prompt, user_message, u
         auto_save_chat()
     return role_response
 
+
+def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config, council_results,
+                                 chat_history, conversation_id, run_group_id, auto_save_chat,
+                                 emit_chat, stop_if_aborted):
+    """Run a verifier-led debate stage after the first round without changing first-round steps."""
+    verifier_task = tasks.get('verifier_task', 'SKIP')
+    if verifier_task.upper().strip() == 'SKIP':
+        return ''
+
+    debate_targets = ['Researcher', 'Creative_Writer', 'Analyzer']
+    available_targets = [role for role in debate_targets if council_results.get(role)]
+    if not available_targets:
+        return ''
+
+    verifier_model_id = config.get('Verifier', '')
+    verifier_info = get_model_info(verifier_model_id)
+    debate_records = []
+    role_latest_outputs = {role: council_results.get(role, '') for role in debate_targets}
+
+    for cycle in range(1, DEBATE_MAX_CYCLES + 1):
+        if stop_if_aborted():
+            return ''
+
+        cycle_ts = datetime.now().strftime("%H:%M:%S")
+        emit_chat('console_log', {
+            'message': f"[{cycle_ts}] Debate cycle {cycle}/{DEBATE_MAX_CYCLES}: Verifier questioning..."
+        })
+
+        round_snapshot = ""
+        for role_name in available_targets:
+            round_snapshot += f"\n\n===== {role_name.replace('_', ' ')} Current Output =====\n{role_latest_outputs.get(role_name, '')}"
+
+        history_snapshot = ""
+        if debate_records:
+            history_snapshot = "\n\n===== Prior Debate Records ====="
+            for record in debate_records:
+                history_snapshot += (
+                    f"\nCycle {record['cycle']} | {record['role'].replace('_', ' ')} | "
+                    f"verdict={record['verdict']} | next_action={record['next_action']}"
+                    f"\nReason: {record['reason']}"
+                )
+
+        step_a_system = (
+            VERIFIER_DEBATE_STEP_A_PROMPT
+            + f"\n\nOriginal user request: {user_message}"
+            + f"\n\nDebate objective: {verifier_task}"
+            + f"\n\nRound 0 outputs:{round_snapshot}"
+            + history_snapshot
+        )
+        if user_system_prompt:
+            step_a_system = user_system_prompt + "\n\n" + step_a_system
+
+        step_a_raw = run_council_role(
+            role_name='Verifier',
+            role_label=f'Verifier - Debate Questioning C{cycle} ({verifier_model_id})',
+            model_id=verifier_model_id,
+            system_prompt=step_a_system,
+            user_prompt='Return the questioning JSON for this debate cycle.',
+            chat_history=chat_history,
+            conversation_id=conversation_id,
+            run_group_id=run_group_id,
+            support_images=verifier_info.get('support_images', False),
+            on_stream_progress=auto_save_chat
+        )
+        if stop_if_aborted():
+            return ''
+
+        step_a_payload = _parse_step_a_payload(step_a_raw)
+        questioned_roles = [
+            role for role in step_a_payload.get('questioned_roles', [])
+            if role in available_targets
+        ]
+        doubt_points = [
+            point for point in step_a_payload.get('doubt_points', [])
+            if point.get('target_role') in questioned_roles
+        ]
+
+        if not questioned_roles or not doubt_points:
+            emit_chat('console_log', {
+                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: no further doubts, debate closed."
+            })
+            break
+
+        role_rebuttals = {}
+        for role_name in questioned_roles:
+            if stop_if_aborted():
+                return ''
+
+            role_points = [p for p in doubt_points if p.get('target_role') == role_name]
+            if not role_points:
+                continue
+
+            model_id = config.get(role_name, '')
+            role_info = get_model_info(model_id)
+            points_json = json.dumps(role_points, ensure_ascii=False, indent=2)
+
+            rebuttal_system = (
+                CALLOUT_REBUTTAL_PROMPT
+                + f"\n\nOriginal user request: {user_message}"
+                + f"\n\nYour current output:\n{role_latest_outputs.get(role_name, '')}"
+                + f"\n\nVerifier doubts (full detail):\n{points_json}"
+            )
+            if user_system_prompt:
+                rebuttal_system = user_system_prompt + "\n\n" + rebuttal_system
+
+            rebuttal_response = run_council_role(
+                role_name=role_name,
+                role_label=f"{role_name.replace('_', ' ')} - Debate Rebuttal C{cycle} ({model_id})",
+                model_id=model_id,
+                system_prompt=rebuttal_system,
+                user_prompt='Respond to all doubts briefly and directly.',
+                chat_history=chat_history,
+                conversation_id=conversation_id,
+                run_group_id=run_group_id,
+                support_images=role_info.get('support_images', False),
+                on_stream_progress=auto_save_chat
+            )
+            if rebuttal_response is None:
+                continue
+
+            role_rebuttals[role_name] = rebuttal_response
+            role_latest_outputs[role_name] = rebuttal_response
+            auto_save_chat()
+
+        if not role_rebuttals:
+            emit_chat('console_log', {
+                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: no rebuttal received, debate closed."
+            })
+            break
+
+        should_continue = False
+        for role_name, rebuttal in role_rebuttals.items():
+            if stop_if_aborted():
+                return ''
+
+            role_points = [p for p in doubt_points if p.get('target_role') == role_name]
+            step_c_system = (
+                VERIFIER_DEBATE_STEP_C_PROMPT
+                + f"\n\nOriginal user request: {user_message}"
+                + f"\n\nRole under review: {role_name}"
+                + f"\n\nQuestioned points:\n{json.dumps(role_points, ensure_ascii=False, indent=2)}"
+                + f"\n\nRebuttal:\n{rebuttal}"
+            )
+            if user_system_prompt:
+                step_c_system = user_system_prompt + "\n\n" + step_c_system
+
+            step_c_raw = run_council_role(
+                role_name='Verifier',
+                role_label=f'Verifier - Debate Verdict C{cycle} {role_name.replace("_", " ")} ({verifier_model_id})',
+                model_id=verifier_model_id,
+                system_prompt=step_c_system,
+                user_prompt='Return the verdict JSON for this role in this cycle.',
+                chat_history=chat_history,
+                conversation_id=conversation_id,
+                run_group_id=run_group_id,
+                support_images=verifier_info.get('support_images', False),
+                on_stream_progress=auto_save_chat
+            )
+            verdict = _parse_step_c_payload(step_c_raw)
+            verdict_record = {
+                'cycle': cycle,
+                'role': role_name,
+                'doubt_points': role_points,
+                'rebuttal': rebuttal,
+                **verdict
+            }
+            debate_records.append(verdict_record)
+
+            if verdict['next_action'] in {'continue_question', 'move_to_other_point'} and verdict['verdict'] != 'accept':
+                should_continue = True
+
+        if not should_continue:
+            emit_chat('console_log', {
+                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: resolved, debate closed."
+            })
+            break
+
+    if not debate_records:
+        return ''
+
+    for role_name, rebuttal in role_latest_outputs.items():
+        if rebuttal:
+            council_results[role_name] = rebuttal
+
+    summary_text = "\n\n===== Debate Stage Summary ====="
+    for record in debate_records:
+        summary_text += (
+            f"\n\n[Cycle {record['cycle']}] {record['role'].replace('_', ' ')}"
+            f"\nDoubts: {json.dumps(record['doubt_points'], ensure_ascii=False)}"
+            f"\nRebuttal: {record['rebuttal']}"
+            f"\nVerdict: {record['verdict']}"
+            f"\nReason: {record['reason']}"
+            f"\nNext action: {record['next_action']}"
+            f"\nUpdated confidence: {record['updated_confidence']}"
+        )
+
+    council_results['Verifier_Debate'] = summary_text.strip()
+    auto_save_chat()
+    return summary_text
+
 @socketio.on('join_chat')
 def handle_join_chat(data):
     chat_id = data.get('chat_id')
@@ -1235,6 +1614,23 @@ def handle_message_task(data, conversation_id):
     if stop_if_aborted():
         return
 
+    # ── Step 5.5: Post-round debate stage (add-on, first round remains unchanged) ──
+    _run_post_round_debate_stage(
+        user_message=user_message,
+        user_system_prompt=user_system_prompt,
+        tasks=tasks,
+        config=config,
+        council_results=council_results,
+        chat_history=chat_history,
+        conversation_id=conversation_id,
+        run_group_id=run_group_id,
+        auto_save_chat=auto_save_chat,
+        emit_chat=emit_chat,
+        stop_if_aborted=stop_if_aborted
+    )
+    if stop_if_aborted():
+        return
+
     # ── Step 6: Leader synthesizes all results ──
     if council_results:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1242,7 +1638,7 @@ def handle_message_task(data, conversation_id):
             'message': f"[{timestamp}] Leader ({leader_model_id}) combining results..."
         })
 
-        ordered_keys = ['Researcher', 'Creative_Writer', 'Analyzer', 'Verifier']
+        ordered_keys = ['Researcher', 'Creative_Writer', 'Analyzer', 'Verifier', 'Verifier_Debate']
         results_text = ""
         for key in ordered_keys:
             if key in council_results:

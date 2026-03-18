@@ -657,6 +657,138 @@
             color: #444;
         }
 
+        /* ── Structured Council Output Cards ── */
+        .structured-card {
+            background: #252831;
+            border: 1px solid #3a3f4b;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 6px 0;
+        }
+
+        .structured-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            font-size: 0.85em;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #9cdcfe;
+        }
+
+        .structured-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 8px 0;
+        }
+
+        .structured-chip {
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid #3f4959;
+            background: #2d3440;
+            color: #c7d5ea;
+            font-size: 0.76em;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .structured-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .structured-list-item {
+            background: #2a2d36;
+            border: 1px solid #3d4250;
+            border-radius: 6px;
+            padding: 8px 10px;
+        }
+
+        .structured-list-head {
+            color: #a4c8ff;
+            font-size: 0.75em;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .structured-list-body {
+            color: #d5d9e0;
+            font-size: 0.9em;
+            line-height: 1.45;
+            white-space: pre-wrap;
+        }
+
+        .structured-meta {
+            margin-top: 8px;
+            font-size: 0.82em;
+            color: #9ba5b7;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 6px;
+        }
+
+        .structured-verdict-badge {
+            margin-left: auto;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 0.72em;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            border: 1px solid transparent;
+        }
+
+        .structured-verdict-badge.accept {
+            color: #95e7b9;
+            background: #1f3a2f;
+            border-color: #2a5a42;
+        }
+
+        .structured-verdict-badge.partially_accept {
+            color: #ffe299;
+            background: #41361a;
+            border-color: #5a4a21;
+        }
+
+        .structured-verdict-badge.reject {
+            color: #ffb2b2;
+            background: #462525;
+            border-color: #6a3333;
+        }
+
+        .structured-confidence {
+            margin-top: 8px;
+        }
+
+        .structured-confidence-label {
+            font-size: 0.78em;
+            color: #9ba5b7;
+            margin-bottom: 4px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .structured-confidence-track {
+            width: 100%;
+            height: 6px;
+            border-radius: 999px;
+            background: #1f232c;
+            border: 1px solid #323743;
+            overflow: hidden;
+        }
+
+        .structured-confidence-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4ec9b0, #9cdcfe);
+        }
+
         /* ── Unified Thinking Process container (all non-final output) ── */
         .thinking-process-container {
             background: #27272f;
@@ -664,6 +796,7 @@
             border-radius: 10px;
             padding: 10px;
             margin: 10px 0;
+            position: relative;
         }
 
         .thinking-process-header {
@@ -676,6 +809,12 @@
             letter-spacing: 0.02em;
             cursor: pointer;
             user-select: none;
+            position: sticky;
+            top: 0;
+            z-index: 12;
+            background: transparent;
+            margin: -10px -10px 0 -10px;
+            padding: 10px 20px 10px 10px;
         }
 
         .thinking-process-toggle {
@@ -683,14 +822,25 @@
             color: #7fd8c5;
             font-size: 0.75em;
             transition: transform 0.2s;
+            order: 3;
+            margin-left: auto;
+            margin-right: 2px;
         }
 
         .thinking-process-container.collapsed .thinking-process-toggle {
             transform: rotate(-90deg);
         }
 
+        .thinking-process-label {
+            order: 1;
+        }
+
+        .thinking-process-container:not(.collapsed) .thinking-process-label {
+            display: none;
+        }
+
         .thinking-process-active {
-            margin-left: auto;
+            order: 2;
             color: #8aa0b9;
             font-size: 0.8em;
             font-weight: 600;
@@ -1615,7 +1765,7 @@
             container.innerHTML = `
                 <div class="thinking-process-header" title="Collapse/expand thinking process">
                     <span class="thinking-process-toggle">&#9660;</span>
-                    <span>Thinking Process</span>
+                    <span class="thinking-process-label">Thinking Process</span>
                     <span class="thinking-process-active"></span>
                 </div>
                 <div class="thinking-process-preview"></div>
@@ -2022,6 +2172,14 @@
                 return formatMessage(content);
             }
 
+            return renderTaskDistributionCard(tasks);
+        }
+
+        function renderTaskDistributionCard(tasks) {
+            if (!tasks || typeof tasks !== 'object') {
+                return formatMessage(String(tasks || ''));
+            }
+
             const roleConfig = [
                 { key: 'researcher_task',     icon: '🔬', label: 'Researcher'      },
                 { key: 'creative_writer_task', icon: '✍️', label: 'Creative Writer' },
@@ -2056,6 +2214,191 @@
             html += '</div></div>';
 
             return html;
+        }
+
+        function parseStructuredJson(content) {
+            if (typeof content !== 'string') return null;
+            try {
+                const jsonMatch = content.match(/\{[\s\S]*\}/);
+                if (!jsonMatch) return null;
+                return JSON.parse(jsonMatch[0]);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function normalizeRoleTag(role) {
+            const raw = String(role || '').trim().toLowerCase();
+            const mapping = {
+                researcher: 'RESEARCHER',
+                creator: 'CREATOR',
+                creative_writer: 'CREATOR',
+                'creative-writer': 'CREATOR',
+                'creative writer': 'CREATOR',
+                analyzer: 'ANALYZER',
+                verifier: 'VERIFIER'
+            };
+            return mapping[raw] || raw.toUpperCase() || 'UNKNOWN';
+        }
+
+        function clampConfidence(value, fallback = 0.5) {
+            const parsed = Number(value);
+            if (!Number.isFinite(parsed)) return fallback;
+            return Math.max(0, Math.min(1, parsed));
+        }
+
+        function formatConfidenceText(value) {
+            const clamped = clampConfidence(value);
+            return `${Math.round(clamped * 100)}%`;
+        }
+
+        function isTaskDistributionPayload(payload) {
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+            const keys = ['analysis', 'researcher_task', 'creative_writer_task', 'analyzer_task', 'verifier_task'];
+            return keys.some(k => Object.prototype.hasOwnProperty.call(payload, k));
+        }
+
+        function isDebateQuestioningPayload(payload) {
+            return !!payload
+                && !Array.isArray(payload)
+                && Array.isArray(payload.questioned_roles)
+                && Array.isArray(payload.doubt_points)
+                && Object.prototype.hasOwnProperty.call(payload, 'confidence_in_doubt');
+        }
+
+        function isDebateVerdictPayload(payload) {
+            return !!payload
+                && !Array.isArray(payload)
+                && Object.prototype.hasOwnProperty.call(payload, 'verdict')
+                && Object.prototype.hasOwnProperty.call(payload, 'reason')
+                && Object.prototype.hasOwnProperty.call(payload, 'next_action')
+                && Object.prototype.hasOwnProperty.call(payload, 'updated_confidence');
+        }
+
+        function formatDebateQuestioningCard(payload, sender = '') {
+            const questionedRoles = Array.isArray(payload.questioned_roles) ? payload.questioned_roles : [];
+            const doubtPoints = Array.isArray(payload.doubt_points) ? payload.doubt_points : [];
+            const confidence = clampConfidence(payload.confidence_in_doubt);
+
+            let html = `
+                <div class="structured-card">
+                    <div class="structured-card-header">
+                        <span>debate questioning</span>
+                        ${sender ? `<span style="opacity:0.7; font-weight:600; text-transform:none;">${escapeHtml(sender)}</span>` : ''}
+                    </div>`;
+
+            if (questionedRoles.length > 0) {
+                html += '<div class="structured-chip-row">';
+                for (const role of questionedRoles) {
+                    html += `<span class="structured-chip">${escapeHtml(normalizeRoleTag(role))}</span>`;
+                }
+                html += '</div>';
+            }
+
+            if (doubtPoints.length > 0) {
+                html += '<div class="structured-list">';
+                for (const point of doubtPoints) {
+                    const pointId = String(point && point.point_id ? point.point_id : 'P?');
+                    const targetRole = normalizeRoleTag(point ? point.target_role : '');
+                    const doubt = String(point && point.doubt ? point.doubt : '');
+                    html += `
+                        <div class="structured-list-item">
+                            <div class="structured-list-head">${escapeHtml(pointId)} • ${escapeHtml(targetRole)}</div>
+                            <div class="structured-list-body">${escapeHtml(doubt)}</div>
+                        </div>`;
+                }
+                html += '</div>';
+            }
+
+            html += `
+                <div class="structured-confidence">
+                    <div class="structured-confidence-label">confidence_in_doubt: ${formatConfidenceText(confidence)}</div>
+                    <div class="structured-confidence-track">
+                        <div class="structured-confidence-fill" style="width: ${Math.round(confidence * 100)}%;"></div>
+                    </div>
+                </div>
+            </div>`;
+
+            return html;
+        }
+
+        function formatDebateVerdictCard(payload, sender = '') {
+            const verdictRaw = String(payload.verdict || '').trim().toLowerCase();
+            const verdict = ['accept', 'partially_accept', 'reject'].includes(verdictRaw) ? verdictRaw : 'partially_accept';
+            const reason = String(payload.reason || '');
+            const nextAction = String(payload.next_action || '');
+            const confidence = clampConfidence(payload.updated_confidence);
+
+            return `
+                <div class="structured-card">
+                    <div class="structured-card-header">
+                        <span>debate verdict</span>
+                        ${sender ? `<span style="opacity:0.7; font-weight:600; text-transform:none;">${escapeHtml(sender)}</span>` : ''}
+                        <span class="structured-verdict-badge ${verdict}">${escapeHtml(verdict)}</span>
+                    </div>
+                    <div class="structured-list">
+                        <div class="structured-list-item">
+                            <div class="structured-list-head">reason</div>
+                            <div class="structured-list-body">${escapeHtml(reason)}</div>
+                        </div>
+                    </div>
+                    <div class="structured-meta">
+                        <div>next_action: ${escapeHtml(nextAction)}</div>
+                        <div>updated_confidence: ${formatConfidenceText(confidence)}</div>
+                    </div>
+                    <div class="structured-confidence">
+                        <div class="structured-confidence-track">
+                            <div class="structured-confidence-fill" style="width: ${Math.round(confidence * 100)}%;"></div>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        function formatGenericStructuredJsonCard(payload, sender = '') {
+            const entries = Object.entries(payload || {});
+            if (entries.length === 0) {
+                return formatMessage('{}');
+            }
+
+            let html = `
+                <div class="structured-card">
+                    <div class="structured-card-header">
+                        <span>structured json</span>
+                        ${sender ? `<span style="opacity:0.7; font-weight:600; text-transform:none;">${escapeHtml(sender)}</span>` : ''}
+                    </div>
+                    <div class="structured-list">`;
+
+            for (const [key, value] of entries) {
+                const rendered = typeof value === 'string'
+                    ? value
+                    : JSON.stringify(value, null, 2);
+                html += `
+                    <div class="structured-list-item">
+                        <div class="structured-list-head">${escapeHtml(String(key))}</div>
+                        <div class="structured-list-body">${escapeHtml(String(rendered))}</div>
+                    </div>`;
+            }
+
+            html += '</div></div>';
+            return html;
+        }
+
+        function formatStructuredCouncilOutput(content, sender = '') {
+            const payload = parseStructuredJson(content);
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+                return formatMessage(content);
+            }
+
+            if (isTaskDistributionPayload(payload)) {
+                return renderTaskDistributionCard(payload);
+            }
+            if (isDebateQuestioningPayload(payload)) {
+                return formatDebateQuestioningCard(payload, sender);
+            }
+            if (isDebateVerdictPayload(payload)) {
+                return formatDebateVerdictCard(payload, sender);
+            }
+            return formatGenericStructuredJsonCard(payload, sender);
         }
 
         function formatMessage(content) {
@@ -2742,8 +3085,7 @@
             }
             const messageDiv = entry.div;
             const hasThinking = data.thinking && data.thinking.trim().length > 0;
-            const isTaskDist = data.bot_name && data.bot_name.includes('Task Distribution');
-            const formattedContent = isTaskDist ? formatTaskDistribution(data.message) : formatMessage(data.message);
+            const formattedContent = formatStructuredCouncilOutput(data.message, data.bot_name || '');
             const thinkingBlock = hasThinking ? `
                 <div class="thinking-block">
                     <div class="thinking-header" onclick="toggleThinking(this)">
@@ -3243,7 +3585,7 @@
                 }
 
                 const displayContent = (msg.type === 'ai' && msg.raw_content)
-                    ? formatMessage(msg.raw_content)
+                    ? formatStructuredCouncilOutput(msg.raw_content, msg.sender || '')
                     : msg.content;
 
                 if (msg.sender) {
