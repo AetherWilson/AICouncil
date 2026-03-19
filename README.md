@@ -47,3 +47,45 @@
 *   **Select Bots**: Choose which members of the "Council" you want to engage for a specific query.
 *   **Upload Context**: Drag and drop files to provide context to the active models.
 *   **Chat**: Send your prompt and watch as multiple perspectives stream in simultaneously.
+
+## 📚 Leader Skills Folder
+
+You can add local markdown skill files that help the Leader decide task routing.
+
+*   Create a folder named `skills/` in the project root.
+*   Add one or more `.md` files with routing rules, decision patterns, or role assignment hints.
+*   A dedicated **MarkReader** role runs before Leader and selects one or more relevant markdown files.
+*   The selected files are loaded into **Leader prompts only** (task distribution and final synthesis), not other roles.
+
+Configure behavior in `config.json` with role models only by default. MarkReader and skills tuning are hardcoded in backend defaults.
+
+```json
+"MarkReader": "gpt-4o",
+"Leader": "gpt-4o",
+"Researcher": "gpt-4o",
+"Creator": "claude-3-5-sonnet",
+"Analyzer": "gpt-4o",
+"Verifier": "gpt-4o"
+```
+
+Optional advanced overrides are still supported if you want to tune behavior:
+
+```json
+"md_reader": {
+    "enabled": true,
+    "max_inventory_files": 40,
+    "preview_lines_per_file": 20,
+    "preview_chars_per_file": 1200
+},
+"skills": {
+    "enabled": true,
+    "folder": "skills",
+    "max_files": 3,
+    "max_chars_per_file": 2500,
+    "max_total_chars": 7000
+}
+```
+
+Runtime notes:
+*   If MarkReader is disabled, misconfigured, or inventory is unavailable, council execution continues normally.
+*   Console logs report MarkReader selected files, rejected files, and loaded Leader context files.

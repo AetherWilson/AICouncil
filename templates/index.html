@@ -1693,7 +1693,7 @@
             const botId = (data.bot_id || '').toLowerCase();
             if (botId.startsWith('council-')) return true;
             const sender = (data.bot_name || '').toLowerCase();
-            const roleHints = ['leader', 'researcher', 'creative writer', 'analyzer', 'verifier'];
+            const roleHints = ['leader', 'markreader', 'researcher', 'creator', 'creative writer', 'analyzer', 'verifier'];
             return roleHints.some(hint => sender.includes(hint));
         }
 
@@ -1704,7 +1704,7 @@
             const sender = (msg.sender || '').toLowerCase().trim();
             if (sender === 'system') return false;
             if (msg.is_council_intermediate === true) return true;
-            const roleHints = ['leader', 'researcher', 'creative writer', 'analyzer', 'verifier'];
+            const roleHints = ['leader', 'markreader', 'researcher', 'creator', 'creative writer', 'analyzer', 'verifier'];
             return roleHints.some(hint => sender.includes(hint));
         }
 
@@ -2058,22 +2058,42 @@
         function displayCouncilRoles() {
             const container = document.getElementById('councilRolesList');
             const roleIcons = {
+                'MarkReader': '🤖',
+                'MD_Reader': '🤖',
                 'Leader': '👑',
                 'Researcher': '🔬',
+                'Creator': '✍️',
                 'Creative_Writer': '✍️',
                 'Analyzer': '📊',
                 'Verifier': '🔍'
             };
             const roleLabels = {
+                'MarkReader': 'MarkReader',
+                'MD_Reader': 'MarkReader',
                 'Leader': 'Leader',
                 'Researcher': 'Researcher',
-                'Creative_Writer': 'Creative Writer',
+                'Creator': 'Creator',
+                'Creative_Writer': 'Creator',
                 'Analyzer': 'Analyzer',
                 'Verifier': 'Verifier'
             };
+            const roleDisplayOrder = [
+                'Leader',
+                'MarkReader',
+                'Researcher',
+                'Creator',
+                'Analyzer',
+                'Verifier'
+            ];
+
+            const orderedRoles = [
+                ...roleDisplayOrder.filter(role => Object.prototype.hasOwnProperty.call(councilRoles, role)),
+                ...Object.keys(councilRoles).filter(role => !roleDisplayOrder.includes(role))
+            ];
             
             let html = '';
-            for (const [role, info] of Object.entries(councilRoles)) {
+            for (const role of orderedRoles) {
+                const info = councilRoles[role];
                 const icon = roleIcons[role] || '🤖';
                 const label = roleLabels[role] || role;
                 html += `
@@ -2182,7 +2202,7 @@
 
             const roleConfig = [
                 { key: 'researcher_task',     icon: '🔬', label: 'Researcher'      },
-                { key: 'creative_writer_task', icon: '✍️', label: 'Creative Writer' },
+                { key: 'creator_task',         icon: '✍️', label: 'Creator'         },
                 { key: 'analyzer_task',        icon: '📊', label: 'Analyzer'        },
                 { key: 'verifier_task',        icon: '🔍', label: 'Verifier'        },
             ];
@@ -2199,7 +2219,7 @@
 
             html += '<div class="task-dist-grid">';
             for (const { key, icon, label } of roleConfig) {
-                const task = (tasks[key] || 'SKIP');
+                const task = (tasks[key] || tasks.creative_writer_task || 'SKIP');
                 const isSkip = task.trim().toUpperCase() === 'SKIP';
                 html += `
                     <div class="task-dist-item${isSkip ? ' skipped' : ''}">
@@ -2254,7 +2274,7 @@
 
         function isTaskDistributionPayload(payload) {
             if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
-            const keys = ['analysis', 'researcher_task', 'creative_writer_task', 'analyzer_task', 'verifier_task'];
+            const keys = ['analysis', 'researcher_task', 'creator_task', 'creative_writer_task', 'analyzer_task', 'verifier_task'];
             return keys.some(k => Object.prototype.hasOwnProperty.call(payload, k));
         }
 

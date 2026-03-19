@@ -1,7 +1,8 @@
 {
+  "MarkReader": "gpt-4o",
   "Leader": "gpt-4o",
   "Researcher": "gpt-4o",
-  "Creative_Writer": "claude-3-5-sonnet",
+  "Creator": "claude-3-5-sonnet",
   "Analyzer": "gpt-4o",
   "Verifier": "gpt-4o"
 }

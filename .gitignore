@@ -7,6 +7,7 @@ gpt_responses/
 !gpt_responses/.gitkeep
 uploads/
 !uploads/.gitkeep
+skills/
 
 # Python environment and cache
 .venv/

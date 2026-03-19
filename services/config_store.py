@@ -4,11 +4,17 @@ import time
 from typing import Any, Dict, List
 
 DEFAULT_COUNCIL_CONFIG = {
+    'MarkReader': 'gpt-4o',
     'Leader': 'gpt-4o',
     'Researcher': 'gpt-4o',
-    'Creative_Writer': 'gpt-4o',
+    'Creator': 'gpt-4o',
     'Analyzer': 'gpt-4o',
     'Verifier': 'gpt-4o'
+}
+
+LEGACY_ROLE_KEY_MAP = {
+    'MD_Reader': 'MarkReader',
+    'Creative_Writer': 'Creator'
 }
 
 
@@ -45,6 +51,10 @@ class ConfigStore:
         if not isinstance(config, dict):
             return dict(DEFAULT_COUNCIL_CONFIG)
         merged = dict(DEFAULT_COUNCIL_CONFIG)
+        for legacy_key, modern_key in LEGACY_ROLE_KEY_MAP.items():
+            # Keep old config files working after role key rename.
+            if modern_key not in config and legacy_key in config:
+                config[modern_key] = config[legacy_key]
         merged.update(config)
         return merged
 

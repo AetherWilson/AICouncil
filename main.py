@@ -5,6 +5,7 @@ import time
 import threading
 import uuid
 from datetime import datetime
+import re
 from GPT_handle import completion_response_stream, convert_to_traditional_chinese
 import os
 from werkzeug.utils import secure_filename
@@ -20,7 +21,20 @@ app.config['TEMP_CHAT_HISTORY_FOLDER'] = 'temp_chat_history'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-COUNCIL_ROLES = ['Leader', 'Researcher', 'Creative_Writer', 'Analyzer', 'Verifier']
+COUNCIL_ROLES = ['MarkReader', 'Leader', 'Researcher', 'Creator', 'Analyzer', 'Verifier']
+DEFAULT_SKILLS_CONFIG = {
+    'enabled': True,
+    'folder': 'skills',
+    'max_files': 3,
+    'max_chars_per_file': 2500,
+    'max_total_chars': 7000
+}
+DEFAULT_MD_READER_CONFIG = {
+    'enabled': True,
+    'max_inventory_files': 40,
+    'preview_lines_per_file': 20,
+    'preview_chars_per_file': 1200
+}
 config_store = ConfigStore(base_dir='.')
 
 # Store all conversation state keyed by conversation_id
@@ -138,7 +152,7 @@ Role boundary policy (HARD CONSTRAINTS):
 - Owns: web/info gathering, source lookup, evidence collection, factual freshness checks.
 - Forbidden: mathematical derivation, UX design planning, creative writing, auditing teammates.
 
-2) Creative_Writer
+2) Creator
 - Owns: creative ideation, UX/content planning, writing high-quality user-facing text.
 - Forbidden: fact-checking, source validation, logical auditing, questioning teammate correctness.
 
@@ -152,7 +166,7 @@ Role boundary policy (HARD CONSTRAINTS):
 
 Critical routing rules:
 - ONLY Verifier may evaluate, doubt, or critique other roles.
-- Never assign cross-role audit tasks to Researcher, Creative_Writer, or Analyzer.
+- Never assign cross-role audit tasks to Researcher, Creator, or Analyzer.
 - If the user request mixes domains, split into parallel role-specific tasks.
 - Tasks must be concrete, output-oriented, and minimal (no vague wording).
 - If a role is unnecessary, set that role's task to "SKIP".
@@ -162,7 +176,7 @@ Return ONLY a valid JSON object in this exact format (no markdown, no extra text
 {
   "analysis": "Brief routing analysis",
   "researcher_task": "Concrete task for Researcher, or SKIP",
-  "creative_writer_task": "Concrete task for Creative_Writer, or SKIP",
+    "creator_task": "Concrete task for Creator, or SKIP",
   "analyzer_task": "Concrete task for Analyzer, or SKIP",
   "verifier_task": "Concrete verification task for Verifier, or SKIP"
 }"""
@@ -175,7 +189,7 @@ RESEARCHER_PROMPT = """You are the Researcher in an AI council. Gather only the 
 
 Do NOT prefix your response with your role name."""
 
-CREATIVE_WRITER_PROMPT = """You are the Creative Writer in an AI council. Produce concise, high-quality creative content for the task.
+CREATOR_PROMPT = """You are the Creator in an AI council. Produce concise, high-quality creative content for the task.
 
 - Include only essential content — no filler or fluff
 - Match tone and style to the context
@@ -211,6 +225,21 @@ Synthesize into a single cohesive final response:
 - Use proper markdown formatting
 
 Respond directly — do NOT mention the council, team members, or that you are combining results. Do NOT prefix with your role name."""
+
+MARK_READER_PROMPT = """You are the MarkReader in an AI council. Your only job is to choose which markdown skill files are relevant for the Leader.
+
+Rules:
+- Use only file paths that appear in the provided inventory
+- Choose up to max_files files, but pick fewer if relevance is weak
+- Prefer files that directly help task routing or final synthesis quality
+- Do not invent file paths
+- Be concise
+
+Return ONLY valid JSON in this exact format (no markdown, no extra text):
+{
+    "selected_files": ["skills/example.md"],
+    "reason": "Short reason for selection"
+}"""
 
 VERIFIER_DEBATE_STEP_A_PROMPT = """You are the Verifier in a post-round debate stage.
 
@@ -347,7 +376,7 @@ def get_council():
     """Get council role configuration with model details"""
     config = load_config()
     roles = {}
-    for role_name in ['Leader', 'Researcher', 'Creative_Writer', 'Analyzer', 'Verifier']:
+    for role_name in COUNCIL_ROLES:
         model_id = config.get(role_name, '')
         model_info = get_model_info(model_id)
         roles[role_name] = {
@@ -710,13 +739,24 @@ def _normalize_questioned_role(role_name):
     normalized = (role_name or '').strip().lower()
     mapping = {
         'researcher': 'Researcher',
-        'creator': 'Creative_Writer',
-        'creative_writer': 'Creative_Writer',
-        'creative-writer': 'Creative_Writer',
-        'creative writer': 'Creative_Writer',
+        'creator': 'Creator',
+        'creative_writer': 'Creator',
+        'creative-writer': 'Creator',
+        'creative writer': 'Creator',
         'analyzer': 'Analyzer'
     }
     return mapping.get(normalized)
+
+
+def _normalize_task_distribution(tasks):
+    if not isinstance(tasks, dict):
+        return {}
+
+    normalized = dict(tasks)
+    # Backward compatibility for older Leader outputs.
+    if 'creator_task' not in normalized and 'creative_writer_task' in normalized:
+        normalized['creator_task'] = normalized.get('creative_writer_task')
+    return normalized
 
 
 def _parse_step_a_payload(raw_text):
@@ -795,6 +835,286 @@ def _parse_step_c_payload(raw_text):
         'reason': reason,
         'next_action': next_action,
         'updated_confidence': _clamp_confidence(payload.get('updated_confidence'), default=0.5)
+    }
+
+
+def _coerce_int(value, default_value, minimum=1):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default_value
+    return max(minimum, parsed)
+
+
+def _coerce_bool(value, default_value=True):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {'1', 'true', 'yes', 'on'}:
+            return True
+        if lowered in {'0', 'false', 'no', 'off'}:
+            return False
+    return default_value
+
+
+def _normalized_md_reader_config(config):
+    md_config = config.get('md_reader', {}) if isinstance(config, dict) else {}
+    if not isinstance(md_config, dict):
+        md_config = {}
+
+    merged = dict(DEFAULT_MD_READER_CONFIG)
+    merged.update(md_config)
+    merged['enabled'] = _coerce_bool(merged.get('enabled'), True)
+    merged['max_inventory_files'] = _coerce_int(
+        merged.get('max_inventory_files'),
+        DEFAULT_MD_READER_CONFIG['max_inventory_files']
+    )
+    merged['preview_lines_per_file'] = _coerce_int(
+        merged.get('preview_lines_per_file'),
+        DEFAULT_MD_READER_CONFIG['preview_lines_per_file']
+    )
+    merged['preview_chars_per_file'] = _coerce_int(
+        merged.get('preview_chars_per_file'),
+        DEFAULT_MD_READER_CONFIG['preview_chars_per_file']
+    )
+    return merged
+
+
+def _normalized_skills_config(config):
+    skills_config = config.get('skills', {}) if isinstance(config, dict) else {}
+    if not isinstance(skills_config, dict):
+        skills_config = {}
+
+    merged = dict(DEFAULT_SKILLS_CONFIG)
+    merged.update(skills_config)
+    merged['enabled'] = _coerce_bool(merged.get('enabled'), True)
+    merged['folder'] = str(merged.get('folder') or 'skills').strip() or 'skills'
+    merged['max_files'] = _coerce_int(merged.get('max_files'), DEFAULT_SKILLS_CONFIG['max_files'])
+    merged['max_chars_per_file'] = _coerce_int(
+        merged.get('max_chars_per_file'),
+        DEFAULT_SKILLS_CONFIG['max_chars_per_file']
+    )
+    merged['max_total_chars'] = _coerce_int(
+        merged.get('max_total_chars'),
+        DEFAULT_SKILLS_CONFIG['max_total_chars']
+    )
+    return merged
+
+
+def _resolve_skills_dir(config):
+    skills_config = _normalized_skills_config(config)
+    if not skills_config['enabled']:
+        return '', '', {'status': 'disabled'}
+
+    workspace_root = os.path.abspath('.')
+    skills_folder = skills_config['folder']
+    skills_dir = skills_folder if os.path.isabs(skills_folder) else os.path.join(workspace_root, skills_folder)
+    skills_dir = os.path.abspath(skills_dir)
+
+    if not skills_dir.startswith(workspace_root):
+        return workspace_root, skills_dir, {'status': 'out_of_workspace'}
+
+    if not os.path.isdir(skills_dir):
+        return workspace_root, skills_dir, {'status': 'missing_folder'}
+
+    return workspace_root, skills_dir, {'status': 'ok'}
+
+
+def _collect_skills_markdown_files(config):
+    workspace_root, skills_dir, dir_meta = _resolve_skills_dir(config)
+    if dir_meta.get('status') != 'ok':
+        return [], workspace_root, skills_dir, dir_meta
+
+    markdown_paths = []
+    for root, _, files in os.walk(skills_dir):
+        for file_name in files:
+            if file_name.lower().endswith('.md'):
+                markdown_paths.append(os.path.join(root, file_name))
+    markdown_paths.sort()
+
+    if not markdown_paths:
+        return [], workspace_root, skills_dir, {'status': 'empty_folder'}
+
+    return markdown_paths, workspace_root, skills_dir, {'status': 'ok'}
+
+
+def _extract_primary_h1_section(markdown_text):
+    """Return content from the first H1 heading until the next H1, if present."""
+    if not markdown_text:
+        return ''
+
+    lines = markdown_text.splitlines()
+    start_idx = None
+    for idx, line in enumerate(lines):
+        if line.lstrip().startswith('# '):
+            start_idx = idx
+            break
+
+    if start_idx is None:
+        return markdown_text
+
+    end_idx = len(lines)
+    for idx in range(start_idx + 1, len(lines)):
+        if lines[idx].lstrip().startswith('# '):
+            end_idx = idx
+            break
+
+    return '\n'.join(lines[start_idx:end_idx]).strip()
+
+
+def build_md_reader_inventory(config):
+    """Prepare a bounded markdown file inventory for MD Reader selection."""
+    markdown_paths, workspace_root, _, scan_meta = _collect_skills_markdown_files(config)
+    if scan_meta.get('status') != 'ok':
+        return '', {'status': scan_meta.get('status'), 'available_files': []}
+
+    md_reader_config = _normalized_md_reader_config(config)
+    limited_paths = markdown_paths[:md_reader_config['max_inventory_files']]
+
+    lines = ["===== AVAILABLE MARKDOWN SKILLS INVENTORY ====="]
+    available_files = []
+    for path in limited_paths:
+        relative_path = os.path.relpath(path, workspace_root).replace('\\', '/')
+        available_files.append(relative_path)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except OSError:
+            continue
+
+        primary_section = _extract_primary_h1_section(content)
+        base_text = primary_section or content
+        preview_lines = '\n'.join(base_text.splitlines()[:md_reader_config['preview_lines_per_file']])
+        preview = preview_lines[:md_reader_config['preview_chars_per_file']]
+        if len(preview_lines) > md_reader_config['preview_chars_per_file']:
+            preview += "\n[... preview truncated ...]"
+
+        lines.append(f"\n--- File: {relative_path} ---\n{preview}\n")
+
+    return '\n'.join(lines), {
+        'status': 'ok',
+        'available_files': available_files
+    }
+
+
+def _parse_md_reader_payload(raw_text):
+    fallback = {
+        'selected_files': [],
+        'reason': 'MD Reader output could not be parsed.'
+    }
+    if not raw_text:
+        return fallback
+
+    try:
+        payload = json.loads(extract_json_from_text(raw_text))
+    except Exception:
+        return fallback
+
+    selected = payload.get('selected_files', [])
+    if not isinstance(selected, list):
+        selected = []
+
+    normalized_files = []
+    for item in selected:
+        if not isinstance(item, str):
+            continue
+        cleaned = item.strip().replace('\\', '/')
+        if cleaned and cleaned not in normalized_files:
+            normalized_files.append(cleaned)
+
+    reason = str(payload.get('reason') or '').strip() or fallback['reason']
+    return {
+        'selected_files': normalized_files,
+        'reason': reason
+    }
+
+
+def _validate_selected_skill_files(config, selected_files):
+    skills_config = _normalized_skills_config(config)
+    markdown_paths, workspace_root, skills_dir, scan_meta = _collect_skills_markdown_files(config)
+    if scan_meta.get('status') != 'ok':
+        return [], {'status': scan_meta.get('status'), 'rejected_files': selected_files}
+
+    available = {
+        os.path.relpath(path, workspace_root).replace('\\', '/'): path
+        for path in markdown_paths
+    }
+
+    validated_abs = []
+    rejected = []
+    for item in selected_files:
+        absolute = available.get(item)
+        if not absolute:
+            rejected.append(item)
+            continue
+        if not os.path.abspath(absolute).startswith(os.path.abspath(skills_dir)):
+            rejected.append(item)
+            continue
+        validated_abs.append(absolute)
+
+    validated_abs = validated_abs[:skills_config['max_files']]
+    validated_rel = [
+        os.path.relpath(path, workspace_root).replace('\\', '/')
+        for path in validated_abs
+    ]
+    return validated_rel, {
+        'status': 'ok',
+        'rejected_files': rejected
+    }
+
+
+def build_leader_skills_context_from_selected(config, selected_files):
+    """Load selected markdown skill files for Leader prompts only."""
+    skills_config = _normalized_skills_config(config)
+    if not skills_config['enabled']:
+        return '', {'status': 'disabled', 'loaded_files': []}
+
+    markdown_paths, workspace_root, _, scan_meta = _collect_skills_markdown_files(config)
+    if scan_meta.get('status') != 'ok':
+        return '', {'status': scan_meta.get('status'), 'loaded_files': []}
+
+    if not selected_files:
+        return '', {'status': 'none_selected', 'loaded_files': []}
+
+    path_map = {
+        os.path.relpath(path, workspace_root).replace('\\', '/'): path
+        for path in markdown_paths
+    }
+    selected_abs = [path_map[path] for path in selected_files if path in path_map]
+    if not selected_abs:
+        return '', {'status': 'none_loaded', 'loaded_files': []}
+
+    sections = ["\n\n===== SELECTED SKILLS (FROM MARKREADER) ====="]
+    total_chars = 0
+    loaded_files = []
+    for path in selected_abs:
+        remaining = skills_config['max_total_chars'] - total_chars
+        if remaining <= 0:
+            break
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+        except OSError:
+            continue
+        if not content:
+            continue
+
+        snippet_limit = min(skills_config['max_chars_per_file'], remaining)
+        snippet = content[:snippet_limit]
+        if len(content) > snippet_limit:
+            snippet += "\n[... skill content truncated ...]"
+        relative_path = os.path.relpath(path, workspace_root).replace('\\', '/')
+        sections.append(f"\n--- Skill File: {relative_path} ---\n{snippet}\n")
+        loaded_files.append(relative_path)
+        total_chars += len(snippet)
+
+    if not loaded_files:
+        return '', {'status': 'none_loaded', 'loaded_files': []}
+
+    return ''.join(sections), {
+        'status': 'loaded',
+        'loaded_files': loaded_files
     }
 
 def build_document_context(conversation_id, system_prompt, support_images):
@@ -1087,6 +1407,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         import re
         full_response = re.sub(r'^\s*\[.*?\]\s*', '', full_response.strip())
 
+
         # Convert to Traditional Chinese
         converted_response = convert_to_traditional_chinese(full_response)
 
@@ -1209,7 +1530,7 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
     if verifier_task.upper().strip() == 'SKIP':
         return ''
 
-    debate_targets = ['Researcher', 'Creative_Writer', 'Analyzer']
+    debate_targets = ['Researcher', 'Creator', 'Analyzer']
     available_targets = [role for role in debate_targets if council_results.get(role)]
     if not available_targets:
         return ''
@@ -1473,15 +1794,96 @@ def handle_message_task(data, conversation_id):
     emit_chat('console_log', {
         'message': f"[{timestamp}] Council workflow started"
     })
+    leader_skills_context = ''
 
     # Set all roles to waiting
     for role in COUNCIL_ROLES:
         emit_chat('council_status', {'role': role, 'status': 'waiting'})
 
+    # ── Step 0: MarkReader selects markdown skill files ──
+    md_reader_model_id = config.get('MarkReader', '') or config.get('MD_Reader', '')
+    md_reader_config = _normalized_md_reader_config(config)
+    inventory_text, inventory_meta = build_md_reader_inventory(config)
+    selected_files = []
+
+    if not md_reader_config.get('enabled', True):
+        emit_chat('council_status', {'role': 'MarkReader', 'status': 'skipped'})
+        emit_chat('console_log', {
+            'message': f"[{timestamp}] MarkReader: disabled by config"
+        })
+    elif inventory_meta.get('status') != 'ok':
+        emit_chat('council_status', {'role': 'MarkReader', 'status': 'skipped'})
+        emit_chat('console_log', {
+            'message': f"[{timestamp}] MarkReader skipped: skills inventory unavailable ({inventory_meta.get('status')})"
+        })
+    elif not md_reader_model_id:
+        emit_chat('council_status', {'role': 'MarkReader', 'status': 'skipped'})
+        emit_chat('console_log', {
+            'message': f"[{timestamp}] MarkReader skipped: no model configured"
+        })
+    else:
+        md_reader_info = get_model_info(md_reader_model_id)
+        md_reader_system = MARK_READER_PROMPT + f"\n\n{inventory_text}"
+        if user_system_prompt:
+            md_reader_system = user_system_prompt + "\n\n" + md_reader_system
+
+        emit_chat('console_log', {
+            'message': f"[{timestamp}] MarkReader ({md_reader_model_id}) selecting markdown files..."
+        })
+
+        md_reader_raw = run_council_role(
+            role_name='MarkReader',
+            role_label=f'MarkReader ({md_reader_model_id})',
+            model_id=md_reader_model_id,
+            system_prompt=md_reader_system,
+            user_prompt=(
+                "Select relevant markdown files for Leader context based on the user request."
+                f"\n\nUser request:\n{user_message}"
+            ),
+            chat_history=chat_history,
+            conversation_id=conversation_id,
+            run_group_id=run_group_id,
+            support_images=md_reader_info.get('support_images', False),
+            on_stream_progress=auto_save_chat
+        )
+
+        if stop_if_aborted():
+            return
+
+        md_reader_payload = _parse_md_reader_payload(md_reader_raw)
+        candidate_files = md_reader_payload.get('selected_files', [])
+        selected_files, validate_meta = _validate_selected_skill_files(config, candidate_files)
+        rejected = validate_meta.get('rejected_files', [])
+        if rejected:
+            emit_chat('console_log', {
+                'message': f"[{timestamp}] MarkReader rejected invalid files: {', '.join(rejected)}"
+            })
+        if selected_files:
+            emit_chat('console_log', {
+                'message': f"[{timestamp}] MarkReader selected files: {', '.join(selected_files)}"
+            })
+        else:
+            emit_chat('console_log', {
+                'message': f"[{timestamp}] MarkReader selected no files ({md_reader_payload.get('reason', 'no reason provided')})"
+            })
+
+    leader_skills_context, skills_meta = build_leader_skills_context_from_selected(config, selected_files)
+    if skills_meta.get('status') == 'loaded':
+        joined = ', '.join(skills_meta.get('loaded_files', []))
+        emit_chat('console_log', {
+            'message': f"[{timestamp}] Leader skill context loaded from MarkReader: {joined}"
+        })
+    elif skills_meta.get('status') == 'none_selected':
+        emit_chat('console_log', {
+            'message': f"[{timestamp}] Leader skill context empty: MarkReader selected no markdown"
+        })
+
     # ── Step 1: Leader distributes tasks ──
     leader_model_id = config.get('Leader', '')
     leader_info = get_model_info(leader_model_id)
     leader_sys = LEADER_DISTRIBUTE_PROMPT
+    if leader_skills_context:
+        leader_sys += leader_skills_context
     if user_system_prompt:
         leader_sys = user_system_prompt + "\n\n" + leader_sys
 
@@ -1516,6 +1918,7 @@ def handle_message_task(data, conversation_id):
 
     try:
         tasks = json.loads(extract_json_from_text(task_distribution_raw))
+        tasks = _normalize_task_distribution(tasks)
     except (json.JSONDecodeError, Exception) as e:
         emit_chat('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution: {str(e)}. Aborting council workflow."
@@ -1545,14 +1948,14 @@ def handle_message_task(data, conversation_id):
     if stop_if_aborted():
         return
 
-    # ── Step 3: Creative Writer ──
+    # ── Step 3: Creator ──
     creative_context = ""
     if 'Researcher' in council_results:
         creative_context = f"\n\n===== Researcher's Findings (for your context) =====\n{council_results['Researcher']}"
     _run_optional_council_role(
-        role_name='Creative_Writer',
-        task_key='creative_writer_task',
-        base_prompt=CREATIVE_WRITER_PROMPT,
+        role_name='Creator',
+        task_key='creator_task',
+        base_prompt=CREATOR_PROMPT,
         user_message=user_message,
         user_system_prompt=user_system_prompt,
         tasks=tasks,
@@ -1591,8 +1994,8 @@ def handle_message_task(data, conversation_id):
     verifier_context = ""
     if 'Researcher' in council_results:
         verifier_context += f"\n\n===== Researcher's Findings =====\n{council_results['Researcher']}"
-    if 'Creative_Writer' in council_results:
-        verifier_context += f"\n\n===== Creative Writer's Output =====\n{council_results['Creative_Writer']}"
+    if 'Creator' in council_results:
+        verifier_context += f"\n\n===== Creator's Output =====\n{council_results['Creator']}"
     if 'Analyzer' in council_results:
         verifier_context += f"\n\n===== Analyzer's Calculations =====\n{council_results['Analyzer']}"
     _run_optional_council_role(
@@ -1638,14 +2041,17 @@ def handle_message_task(data, conversation_id):
             'message': f"[{timestamp}] Leader ({leader_model_id}) combining results..."
         })
 
-        ordered_keys = ['Researcher', 'Creative_Writer', 'Analyzer', 'Verifier', 'Verifier_Debate']
+        ordered_keys = ['Researcher', 'Creator', 'Analyzer', 'Verifier', 'Verifier_Debate']
         results_text = ""
         for key in ordered_keys:
             if key in council_results:
                 label = key.replace('_', ' ')
                 results_text += f"\n\n===== {label} =====\n{council_results[key]}"
 
-        combine_sys = LEADER_COMBINE_PROMPT + f"\n\nTeam outputs:{results_text}"
+        combine_sys = LEADER_COMBINE_PROMPT
+        if leader_skills_context:
+            combine_sys += leader_skills_context
+        combine_sys += f"\n\nTeam outputs:{results_text}"
         if user_system_prompt:
             combine_sys = user_system_prompt + "\n\n" + combine_sys
 
