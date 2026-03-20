@@ -2421,7 +2421,44 @@
             return formatGenericStructuredJsonCard(payload, sender);
         }
 
+        function looksLikeHtmlFragment(text) {
+            if (typeof text !== 'string') return false;
+            const trimmed = text.trim();
+            if (!trimmed) return false;
+            if (trimmed.includes('```')) return false;
+            // Detect common authored HTML tags that LLMs sometimes emit.
+            return /<\/?(p|ul|ol|li|h[1-6]|br|div|span|strong|em|a|blockquote|code|pre)\b[^>]*>/i.test(trimmed);
+        }
+
+        function decodeHtmlEntities(text) {
+            const textarea = document.createElement('textarea');
+            textarea.innerHTML = text;
+            return textarea.value;
+        }
+
+        function normalizeHtmlLikeResponse(text) {
+            let normalized = text;
+
+            normalized = normalized.replace(/<\s*li\b[^>]*>/gi, '\n- ');
+            normalized = normalized.replace(/<\s*br\s*\/?\s*>/gi, '\n');
+            normalized = normalized.replace(/<\s*\/\s*(p|div|h[1-6])\s*>/gi, '\n\n');
+            normalized = normalized.replace(/<\s*(p|div|h[1-6]|ul|ol)\b[^>]*>/gi, '');
+            normalized = normalized.replace(/<\s*\/\s*(ul|ol|li)\s*>/gi, '');
+
+            // Strip remaining tags and decode entities from HTML-ish output.
+            normalized = normalized.replace(/<[^>]+>/g, '');
+            normalized = decodeHtmlEntities(normalized);
+
+            // Collapse excessive blank lines while preserving paragraph separation.
+            normalized = normalized.replace(/\n{3,}/g, '\n\n');
+            return normalized.trim();
+        }
+
         function formatMessage(content) {
+            if (looksLikeHtmlFragment(content)) {
+                content = normalizeHtmlLikeResponse(content);
+            }
+
             // Protect fenced code blocks so raw HTML inside them isn't re-wrapped
             const fencedBlocks = [];
             let fcIdx = 0;

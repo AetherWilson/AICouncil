@@ -4,5 +4,6 @@
   "Researcher": "gpt-4o",
   "Creator": "claude-3-5-sonnet",
   "Analyzer": "gpt-4o",
-  "Verifier": "gpt-4o"
+  "Verifier": "gpt-4o",
+  "MemWriter": "gpt-5"
 }

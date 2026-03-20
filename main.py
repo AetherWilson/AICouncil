@@ -6,13 +6,14 @@ import threading
 import uuid
 from datetime import datetime
 import re
-from GPT_handle import completion_response_stream, convert_to_traditional_chinese
+from GPT_handle import completion_response, completion_response_stream, convert_to_traditional_chinese
 import os
 from werkzeug.utils import secure_filename
 import PyPDF2
 from PIL import Image
 import base64
 from services.config_store import ConfigStore, get_model_info as resolve_model_info, infer_model_support_images
+from services import memory_manager
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -223,6 +224,7 @@ Synthesize into a single cohesive final response:
 - Incorporate any Verifier corrections
 - Be well-organized and directly address the user's request
 - Use proper markdown formatting
+- Never use raw HTML tags (for example: <p>, <ul>, <li>, <div>); use markdown syntax only
 
 Respond directly — do NOT mention the council, team members, or that you are combining results. Do NOT prefix with your role name."""
 
@@ -302,6 +304,43 @@ Allowed values:
 Do not include markdown or any extra text."""
 
 DEBATE_MAX_CYCLES = 3
+
+MEMORY_EXTRACT_PROMPT = """You are a memory management system. Your job is to analyze the conversation and manage the user's persistent cross-chat memory: adding new facts, updating outdated ones, and removing entries that are no longer relevant.
+
+Rules for ADDING new memories:
+- Extract ONLY facts that would be useful in future unrelated conversations
+- Focus on: user identity, profession, location, preferences, communication style, technical level, recurring topics, stated goals
+- Do NOT extract ephemeral information (what the user asked about today, task-specific details)
+- Do NOT duplicate information that already exists in memory
+- Each fact should be a short, standalone statement
+
+Rules for UPDATING existing memories:
+- Update a memory if the conversation reveals it is now outdated or inaccurate (e.g., user changed jobs, updated a preference, corrected a fact)
+- Consolidate multiple related memories into one updated entry when appropriate (update one, delete the others)
+- Reference memories by their ID number
+
+Rules for DELETING existing memories:
+- Remove memories that are explicitly contradicted by the conversation
+- Remove memories that are redundant (covered by another memory or a new/updated one)
+- Remove memories that are no longer relevant or useful
+- Reference memories by their ID number
+
+Existing memories (with IDs for reference):
+{existing_memories}
+
+Return ONLY valid JSON in this exact format (no markdown, no extra text):
+{
+    "new_memories": [
+        {"section": "User Profile", "content": "fact about the user"}
+    ],
+    "updated_memories": [
+        {"id": 0, "content": "corrected or refreshed fact"}
+    ],
+    "deleted_memory_ids": [3, 5]
+}
+
+Valid sections: "User Profile", "Preferences", "Key Facts", "Project Context"
+If no changes needed, return: {"new_memories": [], "updated_memories": [], "deleted_memory_ids": []}"""
 
 def cleanup_old_temp_chats():
     """Remove temporary chats from previous days"""
@@ -1278,7 +1317,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         append_conversation_message(
             conversation_id,
             role='assistant',
-            content=f"[{role_label} ({model_id})] ",
+            content=f"[{role_label}] ",
             id=pending_message_id,
             bot_name=role_label,
             bot_id=bot_id,
@@ -1346,7 +1385,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 update_message_content(
                     conversation_id,
                     pending_message_id,
-                    f"[{role_label} ({model_id})] {full_response}"
+                    f"[{role_label}] {full_response}"
                 )
                 emit_chat('ai_response_chunk', {
                     'bot_id': bot_id,
@@ -1390,7 +1429,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 'status': 'stopped',
                 'run_group_id': run_group_id
             })
-            update_message_content(conversation_id, pending_message_id, f"[{role_label} ({model_id})] {partial_converted}")
+            update_message_content(conversation_id, pending_message_id, f"[{role_label}] {partial_converted}")
             update_message_fields(
                 conversation_id,
                 pending_message_id,
@@ -1412,7 +1451,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         converted_response = convert_to_traditional_chinese(full_response)
 
         # Finalize the in-progress entry content.
-        update_message_content(conversation_id, pending_message_id, f"[{role_label} ({model_id})] {converted_response}")
+        update_message_content(conversation_id, pending_message_id, f"[{role_label}] {converted_response}")
 
         # Log completion
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1796,6 +1835,14 @@ def handle_message_task(data, conversation_id):
     })
     leader_skills_context = ''
 
+    # ── Inject cross-chat memory into system prompt (always-on, like ChatGPT/Grok) ──
+    memory_context = memory_manager.build_memory_context(config)
+    if memory_context:
+        user_system_prompt = (user_system_prompt + memory_context) if user_system_prompt else memory_context.strip()
+        emit_chat('console_log', {
+            'message': f"[{timestamp}] Cross-chat memory injected ({len(memory_manager.read_flat(config))} memories)"
+        })
+
     # Set all roles to waiting
     for role in COUNCIL_ROLES:
         emit_chat('council_status', {'role': role, 'status': 'waiting'})
@@ -2069,6 +2116,89 @@ def handle_message_task(data, conversation_id):
         )
         auto_save_chat()
 
+    # ── Step 7: Silent memory management (runs in background, like ChatGPT) ──
+    try:
+        if memory_manager.is_enabled(config) and memory_manager.auto_extract_enabled(config):
+            mem_writer_model_id = config.get('MemWriter', '') or leader_model_id
+
+            # Build existing memories with IDs so the model can reference them
+            existing_flat = memory_manager.read_flat(config)
+            if existing_flat:
+                existing_lines = []
+                for entry in existing_flat:
+                    existing_lines.append(f"  [ID {entry['id']}] ({entry['section']}) {entry['content']}")
+                existing_text = '\n'.join(existing_lines)
+            else:
+                existing_text = '(none yet)'
+
+            extract_sys = MEMORY_EXTRACT_PROMPT.replace('{existing_memories}', existing_text)
+            convo_summary = f"User: {user_message}"
+            for key in ['Researcher', 'Creator', 'Analyzer', 'Verifier']:
+                if key in council_results:
+                    convo_summary += f"\n{key}: {council_results[key][:500]}"
+
+            extract_raw = completion_response(
+                model=mem_writer_model_id,
+                system_prompt=extract_sys,
+                user_prompt=convo_summary,
+                temperature=0.3
+            )
+            try:
+                extract_payload = json.loads(extract_json_from_text(extract_raw))
+                added = 0
+                updated = 0
+                deleted = 0
+
+                # Process updates first (updates don't shift indices)
+                updated_memories = extract_payload.get('updated_memories', [])
+                if isinstance(updated_memories, list):
+                    for item in updated_memories:
+                        if not isinstance(item, dict):
+                            continue
+                        mid = item.get('id')
+                        content = item.get('content', '').strip()
+                        if mid is None or not content:
+                            continue
+                        try:
+                            memory_manager.update_memory(int(mid), content, config)
+                            updated += 1
+                        except (ValueError, TypeError):
+                            pass
+
+                # Process deletions (highest IDs first to avoid index shifting)
+                deleted_ids = extract_payload.get('deleted_memory_ids', [])
+                if isinstance(deleted_ids, list):
+                    for mid in sorted(deleted_ids, reverse=True):
+                        try:
+                            memory_manager.delete_memory(int(mid), config)
+                            deleted += 1
+                        except (ValueError, TypeError):
+                            pass
+
+                # Process additions
+                new_memories = extract_payload.get('new_memories', [])
+                if isinstance(new_memories, list) and new_memories:
+                    memory_manager.add_memories_bulk(new_memories, config)
+                    added = len(new_memories)
+
+                # Log summary
+                parts = []
+                if added:
+                    parts.append(f"+{added} added")
+                if updated:
+                    parts.append(f"~{updated} updated")
+                if deleted:
+                    parts.append(f"-{deleted} removed")
+                if parts:
+                    emit_chat('console_log', {
+                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory managed ({', '.join(parts)})"
+                    })
+                    emit_chat('memory_updated', {'added': added, 'updated': updated, 'deleted': deleted})
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"Memory extraction error: {e}")
+
     # Signal all done
     emit_chat('all_done')
     emit_chat('run_group_end', {
@@ -2170,6 +2300,88 @@ def handle_load_chat_history(data):
         'message': f"[{timestamp}] Chat history loaded ({len(messages)} messages)",
         'chat_id': conversation_id
     }, to=conversation_id)
+
+# ─── Memory Management API Endpoints ────────────────────────────────
+
+@app.route('/api/memories', methods=['GET'])
+def get_memories():
+    """Get all cross-chat memory entries"""
+    try:
+        config = load_config()
+        entries = memory_manager.read_flat(config)
+        enabled = memory_manager.is_enabled(config)
+        auto_extract = memory_manager.auto_extract_enabled(config)
+        return jsonify({
+            'success': True,
+            'memories': entries,
+            'enabled': enabled,
+            'auto_extract': auto_extract,
+            'sections': memory_manager.SECTIONS
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/memories', methods=['POST'])
+def add_memory_endpoint():
+    """Add a new memory entry"""
+    try:
+        data = request.json
+        section = data.get('section', 'Key Facts')
+        content = data.get('content', '').strip()
+        if not content:
+            return jsonify({'success': False, 'error': 'Content is required'})
+
+        config = load_config()
+        entries = memory_manager.add_memory(section, content, config)
+        return jsonify({'success': True, 'memories': entries})
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/memories/<int:memory_id>', methods=['PUT'])
+def update_memory_endpoint(memory_id):
+    """Update an existing memory entry"""
+    try:
+        data = request.json
+        content = data.get('content', '').strip()
+        if not content:
+            return jsonify({'success': False, 'error': 'Content is required'})
+
+        config = load_config()
+        entries = memory_manager.update_memory(memory_id, content, config)
+        return jsonify({'success': True, 'memories': entries})
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/memories/<int:memory_id>', methods=['DELETE'])
+def delete_memory_endpoint(memory_id):
+    """Delete a memory entry"""
+    try:
+        config = load_config()
+        entries = memory_manager.delete_memory(memory_id, config)
+        return jsonify({'success': True, 'memories': entries})
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/memories/clear', methods=['POST'])
+def clear_memories_endpoint():
+    """Clear all memory entries"""
+    try:
+        config = load_config()
+        memory_manager.clear_all(config)
+        return jsonify({'success': True, 'memories': []})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 
 if __name__ == '__main__':
     print("Starting Flask server...")

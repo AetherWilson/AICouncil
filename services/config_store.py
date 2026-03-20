@@ -9,7 +9,8 @@ DEFAULT_COUNCIL_CONFIG = {
     'Researcher': 'gpt-4o',
     'Creator': 'gpt-4o',
     'Analyzer': 'gpt-4o',
-    'Verifier': 'gpt-4o'
+    'Verifier': 'gpt-4o',
+    'MemWriter': 'gpt-5'
 }
 
 LEGACY_ROLE_KEY_MAP = {
