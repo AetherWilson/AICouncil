@@ -2236,12 +2236,26 @@
             return html;
         }
 
-        function parseStructuredJson(content) {
+        function extractStructuredJsonCandidate(content) {
             if (typeof content !== 'string') return null;
+
+            const trimmed = content.trim();
+            if (!trimmed) return null;
+
+            const fencedMatch = trimmed.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
+            if (fencedMatch) {
+                const inner = fencedMatch[1].trim();
+                return (inner.startsWith('{') && inner.endsWith('}')) ? inner : null;
+            }
+
+            return (trimmed.startsWith('{') && trimmed.endsWith('}')) ? trimmed : null;
+        }
+
+        function parseStructuredJson(content) {
+            const candidate = extractStructuredJsonCandidate(content);
+            if (!candidate) return null;
             try {
-                const jsonMatch = content.match(/\{[\s\S]*\}/);
-                if (!jsonMatch) return null;
-                return JSON.parse(jsonMatch[0]);
+                return JSON.parse(candidate);
             } catch (e) {
                 return null;
             }
@@ -2421,13 +2435,12 @@
             return formatGenericStructuredJsonCard(payload, sender);
         }
 
-        function looksLikeHtmlFragment(text) {
-            if (typeof text !== 'string') return false;
-            const trimmed = text.trim();
-            if (!trimmed) return false;
-            if (trimmed.includes('```')) return false;
-            // Detect common authored HTML tags that LLMs sometimes emit.
-            return /<\/?(p|ul|ol|li|h[1-6]|br|div|span|strong|em|a|blockquote|code|pre)\b[^>]*>/i.test(trimmed);
+        function formatAIResponseContent(content, sender = '', options = {}) {
+            const allowStructuredCards = !!options.allowStructuredCards;
+            if (allowStructuredCards) {
+                return formatStructuredCouncilOutput(content, sender);
+            }
+            return formatMessage(content);
         }
 
         function decodeHtmlEntities(text) {
@@ -2436,77 +2449,301 @@
             return textarea.value;
         }
 
-        function normalizeHtmlLikeResponse(text) {
-            let normalized = text;
+        function looksLikeStandaloneHtmlDocument(text) {
+            const source = String(text || '').trim();
+            if (!source) return false;
+            return /<!DOCTYPE\s+html/i.test(source) || /<html\b[\s\S]*<\/html>/i.test(source);
+        }
 
-            normalized = normalized.replace(/<\s*li\b[^>]*>/gi, '\n- ');
-            normalized = normalized.replace(/<\s*br\s*\/?\s*>/gi, '\n');
-            normalized = normalized.replace(/<\s*\/\s*(p|div|h[1-6])\s*>/gi, '\n\n');
-            normalized = normalized.replace(/<\s*(p|div|h[1-6]|ul|ol)\b[^>]*>/gi, '');
-            normalized = normalized.replace(/<\s*\/\s*(ul|ol|li)\s*>/gi, '');
+        function wrapStandaloneHtmlAsCodeBlock(text) {
+            const normalized = String(text || '').trim();
+            if (!normalized) return '';
+            return '```html\n' + normalized + '\n```';
+        }
 
-            // Strip remaining tags and decode entities from HTML-ish output.
-            normalized = normalized.replace(/<[^>]+>/g, '');
-            normalized = decodeHtmlEntities(normalized);
+        function recoverLegacyRawMessageContent(content) {
+            if (typeof content !== 'string') {
+                return String(content || '');
+            }
+            if (!/[<>]/.test(content)) {
+                return content;
+            }
 
-            // Collapse excessive blank lines while preserving paragraph separation.
-            normalized = normalized.replace(/\n{3,}/g, '\n\n');
-            return normalized.trim();
+            const temp = document.createElement('div');
+            temp.innerHTML = content;
+
+            temp.querySelectorAll('.code-controls, .code-copy-btn, .code-wrap-btn, .code-hide-btn, .menu-btn, .message-menu, .katex-html').forEach(el => el.remove());
+
+            temp.querySelectorAll('.katex').forEach(el => {
+                const annotation = el.querySelector('annotation');
+                const latexSource = annotation ? annotation.textContent : (el.textContent || '');
+                el.replaceWith(document.createTextNode(latexSource));
+            });
+
+            temp.querySelectorAll('pre').forEach(pre => {
+                const code = pre.querySelector('code');
+                const text = code ? code.textContent : pre.textContent;
+                pre.replaceWith(document.createTextNode(`\n\`\`\`\n${text}\n\`\`\`\n`));
+            });
+
+            temp.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode('\n')));
+            temp.querySelectorAll('li').forEach(li => {
+                if (!li.textContent.trim().startsWith('- ')) {
+                    li.insertBefore(document.createTextNode('- '), li.firstChild);
+                }
+                li.appendChild(document.createTextNode('\n'));
+            });
+            temp.querySelectorAll('p, div, blockquote, h1, h2, h3, h4, h5, h6').forEach(el => {
+                el.appendChild(document.createTextNode('\n\n'));
+            });
+
+            const recovered = temp.textContent || temp.innerText || '';
+            return decodeHtmlEntities(recovered).replace(/\n{3,}/g, '\n\n').trim();
+        }
+
+        function getStoredMessageRawContent(msg) {
+            if (!msg) return '';
+
+            if (typeof msg.raw_markdown === 'string' && msg.raw_markdown.length > 0) {
+                return msg.raw_markdown;
+            }
+            if (typeof msg.raw_content === 'string' && msg.raw_content.length > 0) {
+                return msg.raw_content;
+            }
+            if (typeof msg.content_raw === 'string' && msg.content_raw.length > 0) {
+                return msg.content_raw;
+            }
+            if (typeof msg.content === 'string') {
+                return recoverLegacyRawMessageContent(msg.content);
+            }
+            return '';
+        }
+
+        function unwrapTopLevelMarkdownFence(text) {
+            const source = String(text || '');
+            const trimmed = source.trim();
+            const match = trimmed.match(/^```([^\n`]*)\n([\s\S]*?)\n```$/);
+            if (!match) return source;
+
+            const lang = (match[1] || '').trim().toLowerCase();
+            const body = match[2] || '';
+            if (lang && !['markdown', 'md', 'mdx', 'text', 'plain', 'plaintext'].includes(lang)) {
+                return source;
+            }
+
+            return body.trim();
+        }
+
+        function protectCodeSegments(text) {
+            let content = String(text || '');
+            const fencedBlocks = [];
+            const inlineCodeSpans = [];
+
+            content = content.replace(/```[\s\S]*?```/g, (match) => {
+                const token = `@@FENCED_CODE_${fencedBlocks.length}@@`;
+                fencedBlocks.push(match);
+                return token;
+            });
+
+            content = content.replace(/`[^`\n]*`/g, (match) => {
+                const token = `@@INLINE_CODE_${inlineCodeSpans.length}@@`;
+                inlineCodeSpans.push(match);
+                return token;
+            });
+
+            return { content, fencedBlocks, inlineCodeSpans };
+        }
+
+        function restoreCodeSegments(text, protectedState) {
+            let content = String(text || '');
+
+            for (let i = 0; i < protectedState.inlineCodeSpans.length; i++) {
+                content = content.replace(`@@INLINE_CODE_${i}@@`, protectedState.inlineCodeSpans[i]);
+            }
+
+            for (let i = 0; i < protectedState.fencedBlocks.length; i++) {
+                content = content.replace(`@@FENCED_CODE_${i}@@`, protectedState.fencedBlocks[i]);
+            }
+
+            return content;
+        }
+
+        function escapeRawHtmlOutsideCode(text) {
+            let content = String(text || '');
+            content = content.replace(new RegExp('<!--[\\s\\S]*?-->', 'g'), (match) => escapeHtml(match));
+            content = content.replace(new RegExp('<\\/?[A-Za-z!][^>\\n]*>', 'g'), (match) => escapeHtml(match));
+            return content;
+        }
+
+        function isLikelyInlineMathExpression(inner) {
+            const value = String(inner || '').trim();
+            if (!value || value.length > 300) return false;
+            if (/^[\d\s.,]+$/.test(value)) return false;
+            if (/^\d+[\d,]*(\.\d+)?([\s]*[%a-zA-Z]+)?$/.test(value)) return false;
+
+            if (/\\[a-zA-Z]+/.test(value)) return true;
+            if (/[_^{}]/.test(value)) return true;
+            if (/[A-Za-z]\s*[-+*/=]\s*[A-Za-z0-9]/.test(value)) return true;
+            if (/[A-Za-z][A-Za-z0-9()]*\s*=\s*[^=]/.test(value)) return true;
+            if (/\b(sin|cos|tan|log|ln|exp|lim|sum|int|min|max|frac|sqrt|cdot|times)\b/i.test(value)) return true;
+            if (/^[A-Za-z][A-Za-z0-9]*\s*\([^()]+\)$/.test(value)) return true;
+            if (/^[A-Za-z][A-Za-z0-9]*\s*\([^()]+\)\s*[A-Za-z0-9^_{}+-/*]*$/.test(value)) return true;
+            if (/^[A-Za-z][A-Za-z0-9]*$/.test(value)) return true;
+
+            return false;
+        }
+
+        function normalizeLegacySingleDollarLineMath(text) {
+            const lines = String(text || '').split('\n');
+            const out = [];
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                const trimmed = line.trim();
+
+                if (!trimmed) {
+                    out.push(line);
+                    continue;
+                }
+
+                // Already-valid display math block line; do not rewrite.
+                if (trimmed.startsWith('$$') && trimmed.endsWith('$$')) {
+                    out.push(line);
+                    continue;
+                }
+
+                const wrapped = trimmed.match(/^\$(?!\$)\s*([\s\S]*?)\s*\$(?!\$)$/);
+                if (!wrapped) {
+                    out.push(line);
+                    continue;
+                }
+
+                const inner = String(wrapped[1] || '').trim();
+                if (!inner) {
+                    out.push(line);
+                    continue;
+                }
+
+                const looksMath = isLikelyInlineMathExpression(inner)
+                    || /\\[a-zA-Z]+/.test(inner)
+                    || /[=^_{}]/.test(inner)
+                    || /\b[A-Za-z]+\([^)]*\)/.test(inner);
+
+                if (!looksMath) {
+                    out.push(line);
+                    continue;
+                }
+
+                out.push(`$$ ${inner} $$`);
+            }
+
+            return out.join('\n');
+        }
+
+        function normalizeInlineDollarMath(text) {
+            const source = String(text || '');
+            let out = '';
+            let i = 0;
+
+            while (i < source.length) {
+                const ch = source[i];
+                if (ch !== '$' || source[i - 1] === '\\') {
+                    out += ch;
+                    i += 1;
+                    continue;
+                }
+
+                // Preserve display delimiters as-is.
+                if (source[i + 1] === '$') {
+                    out += '$$';
+                    i += 2;
+                    continue;
+                }
+
+                const prev = source[i - 1] || '';
+                const next = source[i + 1] || '';
+                if (/\d/.test(next) || /\d/.test(prev)) {
+                    out += '$';
+                    i += 1;
+                    continue;
+                }
+
+                let j = i + 1;
+                let found = -1;
+                while (j < source.length) {
+                    if (source[j] === '$' && source[j - 1] !== '\\' && source[j + 1] !== '$') {
+                        found = j;
+                        break;
+                    }
+                    if (source[j] === '\n') break;
+                    if (j - i > 5000) break;
+                    j += 1;
+                }
+
+                if (found === -1) {
+                    out += '$';
+                    i += 1;
+                    continue;
+                }
+
+                const inner = source.slice(i + 1, found).trim();
+                if (isLikelyInlineMathExpression(inner)) {
+                    out += `\\(${inner}\\)`;
+                    i = found + 1;
+                    continue;
+                }
+
+                out += '$';
+                i += 1;
+            }
+
+            return out;
+        }
+
+        function protectLatexSegments(text) {
+            let content = String(text || '');
+            const latexBlocks = [];
+
+            const stash = (match) => {
+                const token = `@@LATEX_${latexBlocks.length}@@`;
+                latexBlocks.push(match);
+                return token;
+            };
+
+            content = content.replace(/\$\$[\s\S]*?\$\$/g, stash);
+            content = content.replace(/\\\[[\s\S]*?\\\]/g, stash);
+            content = content.replace(/\\\([\s\S]+?\\\)/g, stash);
+
+            return { content, latexBlocks };
+        }
+
+        function restoreLatexSegments(text, protectedLatex) {
+            let content = String(text || '');
+            for (let i = 0; i < protectedLatex.latexBlocks.length; i++) {
+                content = content.replace(`@@LATEX_${i}@@`, protectedLatex.latexBlocks[i]);
+            }
+            return content;
         }
 
         function formatMessage(content) {
-            if (looksLikeHtmlFragment(content)) {
-                content = normalizeHtmlLikeResponse(content);
+            content = String(content || '');
+            content = unwrapTopLevelMarkdownFence(content);
+
+            if (looksLikeStandaloneHtmlDocument(content)) {
+                content = wrapStandaloneHtmlAsCodeBlock(content);
             }
 
-            // Protect fenced code blocks so raw HTML inside them isn't re-wrapped
-            const fencedBlocks = [];
-            let fcIdx = 0;
-            content = content.replace(/```[\s\S]*?```/g, (match) => {
-                const ph = `FENCEDBLK${fcIdx++}FENCEDBLK`;
-                fencedBlocks.push(match);
-                return ph;
-            });
+            const protectedCode = protectCodeSegments(content);
+            content = protectedCode.content;
 
-            // Detect raw HTML output (<!DOCTYPE html>...) outside code fences and wrap safely
-            content = content.replace(/(<!DOCTYPE\s+html[\s\S]*?<\/html>)/gi, (match) => {
-                return '```html\n' + match + '\n```';
-            });
-            content = content.replace(/(<html[\s\S]*?<\/html>)/gi, (match) => {
-                return '```html\n' + match + '\n```';
-            });
+            content = normalizeLegacySingleDollarLineMath(content);
+            content = normalizeInlineDollarMath(content);
+            content = escapeRawHtmlOutsideCode(content);
 
-            // Escape raw HTML tags outside fenced code so they are shown literally.
-            content = content.replace(new RegExp('<!--[\\s\\S]*?-->', 'g'), (match) => escapeHtml(match));
-            content = content.replace(new RegExp('<\\/?[A-Za-z!][^>\\n]*>', 'g'), (match) => escapeHtml(match));
+            content = restoreCodeSegments(content, protectedCode);
 
-            // Restore fenced code blocks
-            for (let i = 0; i < fencedBlocks.length; i++) {
-                content = content.replace(`FENCEDBLK${i}FENCEDBLK`, fencedBlocks[i]);
-            }
-
-            // Protect LaTeX blocks from markdown parsing
-            const latexBlocks = [];
-            let counter = 0;
-            
-            // Extract and protect display math blocks ($$...$$, \[...\])
-            content = content.replace(/\$\$[\s\S]*?\$\$/g, (match) => {
-                const placeholder = `LTXBLK${counter++}LTXBLK`;
-                latexBlocks.push(match);
-                return placeholder;
-            });
-            content = content.replace(/\\\[[\s\S]*?\\\]/g, (match) => {
-                const placeholder = `LTXBLK${counter++}LTXBLK`;
-                latexBlocks.push(match);
-                return placeholder;
-            });
-            
-            // Extract and protect inline math (\(...\))
-            content = content.replace(/\\\([^\)]+?\\\)/g, (match) => {
-                const placeholder = `LTXBLK${counter++}LTXBLK`;
-                latexBlocks.push(match);
-                return placeholder;
-            });
+            const protectedLatex = protectLatexSegments(content);
+            content = protectedLatex.content;
             
             // Configure marked.js options
             marked.setOptions({
@@ -2532,26 +2769,33 @@
                 return `<pre data-language="${lang}"><code class="language-${lang}">`;
             });
 
-            // Restore LaTeX blocks
-            for (let i = 0; i < latexBlocks.length; i++) {
-                html = html.replace(`LTXBLK${i}LTXBLK`, latexBlocks[i]);
-            }
+            html = restoreLatexSegments(html, protectedLatex);
             
             return html;
         }
 
-        function renderLatex(element) {
-            // Wait for KaTeX to load
-            if (typeof renderMathInElement !== 'undefined') {
-                renderMathInElement(element, {
-                    delimiters: [
-                        {left: '$$', right: '$$', display: true},
-                        {left: '\\[', right: '\\]', display: true},
-                        {left: '\\(', right: '\\)', display: false}
-                    ],
-                    throwOnError: false
-                });
+        function renderLatex(element, retryCount = 0) {
+            if (!element) return;
+
+            // KaTeX auto-render can be unavailable briefly on initial page parse
+            // because the library is loaded via deferred external script.
+            if (typeof renderMathInElement === 'undefined') {
+                if (retryCount < 40) {
+                    setTimeout(() => renderLatex(element, retryCount + 1), 75);
+                }
+                return;
             }
+
+            renderMathInElement(element, {
+                delimiters: [
+                    {left: '$$',   right: '$$',   display: true  },
+                    {left: '\\[',  right: '\\]',  display: true  },
+                    {left: '\\(',  right: '\\)',  display: false },
+                    // Legacy/history fallback: render residual single-dollar math.
+                    {left: '$',    right: '$',    display: false }
+                ],
+                throwOnError: false
+            });
         }
 
         function toggleMessageMenu(button) {
@@ -2734,14 +2978,10 @@
             const state = ensureConversation(activeChatId);
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type}`;
+            messageDiv.setAttribute('data-raw-content', String(content || ''));
 
             // Format the content
             const formattedContent = formatMessage(content);
-
-            // Store raw content as data attribute for copying
-            if (type === 'ai') {
-                messageDiv.setAttribute('data-raw-content', content);
-            }
 
             if (sender) {
                 const menuUI = `
@@ -2789,6 +3029,7 @@
                     role: type === 'user' ? 'user' : 'assistant',
                     sender: sender,
                     content: content,
+                    raw_markdown: content,
                     timestamp: new Date().toISOString()
                 });
             }
@@ -3120,6 +3361,7 @@
                         role: 'assistant',
                         sender: data.bot_name,
                         content: data.message,
+                        raw_markdown: data.message,
                         timestamp: data.timestamp || new Date().toISOString(),
                         run_group_id: data.run_group_id || entry.run_group_id || null,
                         run_id: data.run_id || entry.run_id || messageId,
@@ -3142,7 +3384,9 @@
             }
             const messageDiv = entry.div;
             const hasThinking = data.thinking && data.thinking.trim().length > 0;
-            const formattedContent = formatStructuredCouncilOutput(data.message, data.bot_name || '');
+            const formattedContent = formatAIResponseContent(data.message, data.bot_name || '', {
+                allowStructuredCards: !!entry.isNonFinal
+            });
             const thinkingBlock = hasThinking ? `
                 <div class="thinking-block">
                     <div class="thinking-header" onclick="toggleThinking(this)">
@@ -3211,6 +3455,7 @@
                     role: 'assistant',
                     sender: data.bot_name,
                     content: data.message,
+                    raw_markdown: data.message,
                     timestamp: data.timestamp || new Date().toISOString(),
                     run_group_id: data.run_group_id || entry.run_group_id || null,
                     run_id: data.run_id || entry.run_id || messageId,
@@ -3627,8 +3872,9 @@
                     messageDiv.classList.add('md-collapsed');
                 }
 
-                if (msg.type === 'ai' && msg.raw_content) {
-                    messageDiv.setAttribute('data-raw-content', msg.raw_content);
+                const rawContent = getStoredMessageRawContent(msg);
+                if (rawContent) {
+                    messageDiv.setAttribute('data-raw-content', rawContent);
                 }
                 if (msg.type === 'ai') {
                     messageDiv.setAttribute('data-thinking', msg.thinking || '');
@@ -3641,9 +3887,12 @@
                     }
                 }
 
-                const displayContent = (msg.type === 'ai' && msg.raw_content)
-                    ? formatStructuredCouncilOutput(msg.raw_content, msg.sender || '')
-                    : msg.content;
+                const displaySource = rawContent || String(msg.content || '');
+                const displayContent = (msg.type === 'ai')
+                    ? formatAIResponseContent(displaySource, msg.sender || '', {
+                        allowStructuredCards: isNonFinal
+                    })
+                    : formatMessage(displaySource);
 
                 if (msg.sender) {
                     const mdCollapseBtn = (msg.type === 'ai' && !isNonFinal)
@@ -3837,10 +4086,13 @@
                 }
                 
                 if (content) {
+                    const rawContent = msg.getAttribute('data-raw-content') || recoverLegacyRawMessageContent(content.innerHTML);
                     const messageData = {
                         type: msg.classList.contains('user') ? 'user' : 'ai',
                         sender: senderText,
-                        content: content.innerHTML,
+                        content: rawContent,
+                        raw_content: rawContent,
+                        raw_markdown: rawContent,
                         is_council_intermediate: msg.getAttribute('data-council-intermediate') === 'true',
                         is_collapsed: msg.classList.contains('collapsed'),
                         is_md_collapsed: msg.classList.contains('md-collapsed'),
@@ -3851,11 +4103,6 @@
                     };
                     
                     // Add raw content if available (for AI messages)
-                    const rawContent = msg.getAttribute('data-raw-content');
-                    if (rawContent) {
-                        messageData.raw_content = rawContent;
-                    }
-                    
                     // Try to extract bot name and id for AI messages if available in sender
                     if (messageData.type === 'ai' && messageData.sender) {
                         const botMatch = messageData.sender.match(/^(.*?)\s*\((.*?)\)$/);
@@ -4089,6 +4336,14 @@
         loadCouncil();
         loadSavedChats();
         loadTempChats();
+
+        // Re-render existing messages once deferred KaTeX scripts are guaranteed loaded.
+        window.addEventListener('load', () => {
+            const conversationWindow = document.getElementById('conversationWindow');
+            if (conversationWindow) {
+                renderLatex(conversationWindow);
+            }
+        });
     </script>
 </body>
 </html>

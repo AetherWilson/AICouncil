@@ -213,12 +213,7 @@ def add_memory(section, content, config=None):
     path = _memory_path(config)
     _ensure_file(path)
 
-    date_tag = f'[{_today()}]'
-    # Prepend date if not already present
-    if not re.match(r'^\[\d{4}-\d{2}-\d{2}\]', content.strip()):
-        content = f'{date_tag} {content.strip()}'
-    else:
-        content = content.strip()
+    content = content.strip()
 
     cap = max_memories(config)
 
@@ -254,7 +249,6 @@ def add_memories_bulk(entries, config=None):
     """
     path = _memory_path(config)
     _ensure_file(path)
-    date_tag = f'[{_today()}]'
     cap = max_memories(config)
 
     with _lock:
@@ -269,8 +263,7 @@ def add_memories_bulk(entries, config=None):
                 continue
             if section not in SECTIONS:
                 section = 'Key Facts'
-            if not re.match(r'^\[\d{4}-\d{2}-\d{2}\]', content):
-                content = f'{date_tag} {content}'
+            
             if content not in sections[section]:
                 sections[section].append(content)
 

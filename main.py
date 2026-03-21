@@ -50,6 +50,7 @@ config_store = ConfigStore(base_dir='.')
 #   }
 # }
 conversations = {}
+CURRENT_CHAT_SCHEMA_VERSION = 3
 
 # Prevent concurrent writes from overlapping background tasks.
 persistence_lock = threading.Lock()
@@ -109,6 +110,93 @@ def update_message_fields(conversation_id, message_id, **fields):
     return False
 
 
+def _extract_raw_markdown_from_ui_message(message):
+    if not isinstance(message, dict):
+        return str(message or '')
+
+    for key in ('raw_markdown', 'raw_content', 'content_raw', 'content'):
+        value = message.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ''
+
+
+def _normalize_ui_message_for_storage(message):
+    if not isinstance(message, dict):
+        raw = str(message or '')
+        return {
+            'type': 'ai',
+            'content': raw,
+            'raw_content': raw,
+            'raw_markdown': raw
+        }
+
+    normalized = dict(message)
+    raw_markdown = _extract_raw_markdown_from_ui_message(normalized)
+    normalized['raw_markdown'] = raw_markdown
+    if not isinstance(normalized.get('raw_content'), str) or not normalized.get('raw_content'):
+        normalized['raw_content'] = raw_markdown
+    return normalized
+
+
+def _normalize_messages_for_storage(messages):
+    return [_normalize_ui_message_for_storage(msg) for msg in (messages or [])]
+
+
+def _get_last_preview(messages):
+    if not messages:
+        return ''
+    return (_extract_raw_markdown_from_ui_message(messages[-1]) or '')[:120]
+
+
+def migrate_chat_payload(chat_data):
+    if not isinstance(chat_data, dict):
+        return False
+
+    changed = False
+    if chat_data.get('schema_version') != CURRENT_CHAT_SCHEMA_VERSION:
+        chat_data['schema_version'] = CURRENT_CHAT_SCHEMA_VERSION
+        changed = True
+
+    messages = chat_data.get('messages', [])
+    if isinstance(messages, list):
+        normalized = _normalize_messages_for_storage(messages)
+        if normalized != messages:
+            chat_data['messages'] = normalized
+            changed = True
+
+    return changed
+
+
+def _migrate_chat_file(filepath):
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            chat_data = json.load(f)
+        if migrate_chat_payload(chat_data):
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(chat_data, f, ensure_ascii=False, indent=2)
+            return True
+    except Exception as e:
+        print(f"Chat migration error for {filepath}: {e}")
+    return False
+
+
+def migrate_chat_files_once():
+    updated = 0
+    scanned = 0
+    for folder in (app.config['CHAT_HISTORY_FOLDER'], app.config['TEMP_CHAT_HISTORY_FOLDER']):
+        if not os.path.isdir(folder):
+            continue
+        for filename in os.listdir(folder):
+            if not filename.endswith('.json'):
+                continue
+            scanned += 1
+            if _migrate_chat_file(os.path.join(folder, filename)):
+                updated += 1
+    if scanned:
+        print(f"Chat schema migration checked {scanned} file(s), updated {updated}.")
+
+
 def get_message_content(conversation_id, message_id):
     conv = get_conversation(conversation_id)
     for msg in conv['messages']:
@@ -132,6 +220,9 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['CHAT_HISTORY_FOLDER'], exist_ok=True)
 # Create temp chat history directory if it doesn't exist
 os.makedirs(app.config['TEMP_CHAT_HISTORY_FOLDER'], exist_ok=True)
+
+# One-time migration to keep persisted chat messages on the current schema.
+migrate_chat_files_once()
 
 # Load council role configurations
 def load_config():
@@ -310,12 +401,14 @@ MEMORY_EXTRACT_PROMPT = """You are a memory management system. Your job is to an
 Rules for ADDING new memories:
 - Extract ONLY facts that would be useful in future unrelated conversations
 - Focus on: user identity, profession, location, preferences, communication style, technical level, recurring topics, stated goals
+- Store memories by topic, so they are grouped together.
 - Do NOT extract ephemeral information (what the user asked about today, task-specific details)
 - Do NOT duplicate information that already exists in memory
-- Each fact should be a short, standalone statement
+- Each fact should be a short, standalone statement. If the user mentions a new fact about an existing topic, prefer updating the existing memory for that topic rather than creating a new one.
 
 Rules for UPDATING existing memories:
 - Update a memory if the conversation reveals it is now outdated or inaccurate (e.g., user changed jobs, updated a preference, corrected a fact)
+- Merge and store new information to one point based on topic so that it's easier to catch up instead of having a long list of fragmented entries.
 - Consolidate multiple related memories into one updated entry when appropriate (update one, delete the others)
 - Reference memories by their ID number
 
@@ -524,12 +617,13 @@ def save_chat():
         data = request.json
         chat_id = data.get('id')
         chat_name = data.get('name')
-        messages = data.get('messages', [])
+        messages = _normalize_messages_for_storage(data.get('messages', []))
         selected_bots = data.get('selectedBots', [])
         
         chat_data = {
             'id': chat_id,
             'name': chat_name,
+            'schema_version': CURRENT_CHAT_SCHEMA_VERSION,
             'messages': messages,
             'selectedBots': selected_bots,
             'systemPrompt': data.get('systemPrompt', ''),
@@ -563,8 +657,7 @@ def list_chats():
                         'name': chat_data.get('name'),
                         'timestamp': chat_data.get('timestamp'),
                         'messageCount': len(chat_data.get('messages', [])),
-                        'lastPreview': ((chat_data.get('messages', [])[-1].get('raw_content')
-                                        if chat_data.get('messages', []) else '') or '')[:120],
+                        'lastPreview': _get_last_preview(chat_data.get('messages', [])),
                         'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
                     })
             except Exception as e:
@@ -589,8 +682,9 @@ def load_chat(chat_id):
         
         with open(filepath, 'r', encoding='utf-8') as f:
             chat_data = json.load(f)
-        if 'schema_version' not in chat_data:
-            chat_data['schema_version'] = 1
+        if migrate_chat_payload(chat_data):
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(chat_data, f, ensure_ascii=False, indent=2)
 
         live_conv = conversations.get(chat_id)
         if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
@@ -626,13 +720,14 @@ def save_temp_chat():
     try:
         data = request.json
         chat_id = data.get('id', 'temp_' + str(int(time.time() * 1000)))
-        messages = data.get('messages', [])
+        messages = _normalize_messages_for_storage(data.get('messages', []))
         selected_bots = data.get('selectedBots', [])
         uploaded_documents = data.get('uploadedDocuments', [])
         
         chat_data = {
             'id': chat_id,
             'name': 'Temporary Chat',
+            'schema_version': CURRENT_CHAT_SCHEMA_VERSION,
             'messages': messages,
             'selectedBots': selected_bots,
             'systemPrompt': data.get('systemPrompt', ''),
@@ -669,8 +764,7 @@ def list_temp_chats():
                         'timestamp': chat_data.get('timestamp'),
                         'messageCount': len(chat_data.get('messages', [])),
                         'isTemporary': True,
-                        'lastPreview': ((chat_data.get('messages', [])[-1].get('raw_content')
-                                        if chat_data.get('messages', []) else '') or '')[:120],
+                        'lastPreview': _get_last_preview(chat_data.get('messages', [])),
                         'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
                     })
             except Exception as e:
@@ -695,8 +789,9 @@ def load_temp_chat(chat_id):
         
         with open(filepath, 'r', encoding='utf-8') as f:
             chat_data = json.load(f)
-        if 'schema_version' not in chat_data:
-            chat_data['schema_version'] = 1
+        if migrate_chat_payload(chat_data):
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(chat_data, f, ensure_ascii=False, indent=2)
 
         live_conv = conversations.get(chat_id)
         if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
@@ -1200,30 +1295,36 @@ def _history_to_ui_messages(conversation_id):
     for msg in conv.get('messages', []):
         role = msg.get('role', '')
         content = msg.get('content', '')
+        raw_markdown = msg.get('raw_markdown')
 
         if role == 'user':
+            body = raw_markdown if isinstance(raw_markdown, str) and raw_markdown else content
             ui_messages.append({
                 'type': 'user',
                 'sender': 'You',
-                'content': content,
+                'content': body,
+                'raw_content': body,
+                'raw_markdown': body,
                 'id': msg.get('id')
             })
             continue
 
         sender = msg.get('bot_name', 'AI')
-        body = content
+        body = raw_markdown if isinstance(raw_markdown, str) and raw_markdown else content
 
-        # Parse legacy format: [Sender (id)] content
-        match = re.match(r'^\[(.+?)\]\s*(.*)$', content, re.DOTALL)
-        if match:
-            sender = match.group(1).strip() or sender
-            body = match.group(2)
+        if body == content:
+            # Parse legacy format: [Sender (id)] content
+            match = re.match(r'^\[(.+?)\]\s*(.*)$', content, re.DOTALL)
+            if match:
+                sender = match.group(1).strip() or sender
+                body = match.group(2)
 
         ui_messages.append({
             'type': 'ai',
             'sender': sender,
             'content': body,
             'raw_content': body,
+            'raw_markdown': body,
             'id': msg.get('id'),
             'run_group_id': msg.get('run_group_id'),
             'run_id': msg.get('run_id') or msg.get('id'),
@@ -1253,7 +1354,7 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
                     chat_data = json.load(f)
 
             chat_data['id'] = session_id
-            chat_data['schema_version'] = 2
+            chat_data['schema_version'] = CURRENT_CHAT_SCHEMA_VERSION
             if 'name' not in chat_data:
                 chat_data['name'] = 'Saved Chat' if is_saved else 'Temporary Chat'
             chat_data['messages'] = _history_to_ui_messages(session_id)
@@ -1318,6 +1419,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
             conversation_id,
             role='assistant',
             content=f"[{role_label}] ",
+            raw_markdown='',
             id=pending_message_id,
             bot_name=role_label,
             bot_id=bot_id,
@@ -1434,6 +1536,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 conversation_id,
                 pending_message_id,
                 thinking=thinking_converted,
+                raw_markdown=partial_converted,
                 stream_status='stopped'
             )
             if conv.get('pending_message_id') == pending_message_id:
@@ -1477,6 +1580,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
             conversation_id,
             pending_message_id,
             thinking=thinking_converted,
+            raw_markdown=converted_response,
             stream_status='done'
         )
 
@@ -1813,7 +1917,7 @@ def handle_message_task(data, conversation_id):
     conv['run_group_counter'] = conv.get('run_group_counter', 0) + 1
     run_group_id = f"rungrp-{conv['run_group_counter']:06d}"
     conv['current_run_group_id'] = run_group_id
-    append_conversation_message(conversation_id, "user", user_message)
+    append_conversation_message(conversation_id, "user", user_message, raw_markdown=user_message)
     auto_save_chat()
 
     emit_chat('run_group_start', {
@@ -2268,21 +2372,24 @@ def handle_load_chat_history(data):
     conv['messages'] = []
     for msg in messages:
         if msg.get('type') == 'user':
+            raw_user = _extract_raw_markdown_from_ui_message(msg)
             append_conversation_message(
                 conversation_id,
                 role='user',
-                content=msg.get('content', ''),
+                content=raw_user,
+                raw_markdown=raw_user,
                 id=msg.get('id', uuid.uuid4().hex)
             )
         elif msg.get('type') == 'ai':
             # AI messages in the format [Bot Name (bot-id)] message
-            bot_name = msg.get('botName', 'AI')
+            bot_name = msg.get('botName') or msg.get('sender') or 'AI'
             bot_id = msg.get('botId', 'unknown')
-            content = msg.get('content', '')
+            raw_ai = _extract_raw_markdown_from_ui_message(msg)
             append_conversation_message(
                 conversation_id,
                 role='assistant',
-                content=f"[{bot_name} ({bot_id})] {content}",
+                content=f"[{bot_name} ({bot_id})] {raw_ai}",
+                raw_markdown=raw_ai,
                 id=msg.get('id', uuid.uuid4().hex),
                 bot_name=bot_name,
                 bot_id=bot_id,
