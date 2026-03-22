@@ -149,6 +149,45 @@ def _get_last_preview(messages):
     return (_extract_raw_markdown_from_ui_message(messages[-1]) or '')[:120]
 
 
+def _is_final_response_ui_message(message):
+    """Identify final-response UI messages, including legacy records."""
+    if not isinstance(message, dict):
+        return False
+
+    if bool(message.get('is_final_response', False)):
+        return True
+
+    sender = str(
+        message.get('sender')
+        or message.get('bot_name')
+        or message.get('botName')
+        or ''
+    ).lower()
+    if 'leader' in sender and 'final response' in sender:
+        return True
+
+    role_name = str(message.get('role_name') or '').lower()
+    return 'final response' in role_name
+
+
+def _count_primary_chat_messages(messages):
+    """Count only user messages and final-response AI messages for chat list badges."""
+    count = 0
+    for message in (messages or []):
+        if not isinstance(message, dict):
+            continue
+
+        msg_type = str(message.get('type') or '').lower()
+        if msg_type == 'user':
+            count += 1
+            continue
+
+        if msg_type == 'ai' and _is_final_response_ui_message(message):
+            count += 1
+
+    return count
+
+
 def migrate_chat_payload(chat_data):
     if not isinstance(chat_data, dict):
         return False
@@ -656,7 +695,7 @@ def list_chats():
                         'id': chat_data.get('id'),
                         'name': chat_data.get('name'),
                         'timestamp': chat_data.get('timestamp'),
-                        'messageCount': len(chat_data.get('messages', [])),
+                        'messageCount': _count_primary_chat_messages(chat_data.get('messages', [])),
                         'lastPreview': _get_last_preview(chat_data.get('messages', [])),
                         'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
                     })
@@ -762,7 +801,7 @@ def list_temp_chats():
                         'id': chat_data.get('id'),
                         'name': 'Temp Chat',
                         'timestamp': chat_data.get('timestamp'),
-                        'messageCount': len(chat_data.get('messages', [])),
+                        'messageCount': _count_primary_chat_messages(chat_data.get('messages', [])),
                         'isTemporary': True,
                         'lastPreview': _get_last_preview(chat_data.get('messages', [])),
                         'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
