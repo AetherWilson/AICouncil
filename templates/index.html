@@ -883,102 +883,101 @@
 
         .message-wrapper {
             position: relative;
+            padding-bottom: 0;
         }
 
-        .menu-btn {
+        .message.has-inline-actions .message-wrapper {
+            padding-bottom: 34px;
+        }
+
+        .message-action-row {
             position: absolute;
-            bottom: 2px;
-            right: 8px;
-            padding: 4px 8px;
-            background: transparent;
-            border: none;
-            border-radius: 3px;
-            color: #4ec9b0;
-            font-size: 16px;
-            cursor: pointer;
-            transition: opacity 0.15s, background 0.2s, color 0.2s;
+            left: 10px;
+            bottom: 4px;
             display: flex;
             align-items: center;
-            justify-content: center;
+            gap: 6px;
             z-index: 10;
-            width: 28px;
-            height: 28px;
             opacity: 0;
             pointer-events: none;
+            transition: opacity 0.15s;
         }
 
-        .menu-btn.visible {
+        .message.user .message-action-row {
+            right: 10px;
+            left: auto;
+        }
+
+        .message.has-inline-actions:hover .message-action-row,
+        .message.has-inline-actions:focus-within .message-action-row,
+        .message.has-inline-actions.latest-final-response .message-action-row {
             opacity: 1;
             pointer-events: auto;
         }
 
-        .menu-btn:hover {
-            background: #4ec9b0;
-            color: #1e1e1e;
+        .message-action-btn {
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            border: none;
+            background: transparent;
+            color: rgba(216, 245, 238, 0.9);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1;
+            transition: color 0.2s, opacity 0.2s;
+        }
+
+        .message-action-btn:hover {
+            color: #4ec9b0;
             opacity: 1;
         }
 
-        .message-menu {
-            position: absolute;
-            bottom: 35px;
-            right: 8px;
-            background: #2d2d30;
-            border: 1px solid #4ec9b0;
-            border-radius: 5px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-            min-width: 150px;
-            z-index: 100;
-            display: none;
-            overflow: hidden;
+        .message.user .message-action-btn {
+            color: rgba(244, 251, 255, 0.92);
         }
 
-        .message-menu.active {
-            display: block;
+        .message.user .message-action-btn:hover {
+            color: #0e639c;
+            opacity: 1;
         }
 
-        .message.user .menu-btn {
-            left: 8px;
-            right: auto;
+        .message-action-btn svg {
+            width: 15px;
+            height: 15px;
+            fill: currentColor;
         }
 
-        .message.user .message-menu {
-            left: 8px;
-            right: auto;
+        .message-action-btn.disabled {
+            opacity: 0.5;
+            pointer-events: none;
         }
 
-        .menu-item {
-            padding: 10px 15px;
-            cursor: pointer;
-            transition: background 0.2s;
+        .edit-message-panel {
             display: flex;
-            align-items: center;
-            gap: 10px;
-            color: #e0e0e0;
-            border: none;
-            background: transparent;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .edit-message-input {
             width: 100%;
-            text-align: left;
-            font-size: 13px;
+            min-height: 96px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            background: rgba(0, 0, 0, 0.2);
+            color: #ffffff;
+            padding: 10px;
+            font-family: inherit;
+            resize: vertical;
         }
 
-        .menu-item:hover {
-            background: #3c3c3c;
-        }
-
-        .menu-item svg {
-            width: 16px;
-            height: 16px;
-            fill: currentColor;
-        }
-
-        .download-btn:hover {
-            background: #3da891;
-        }
-
-        .download-btn svg {
-            width: 14px;
-            height: 14px;
-            fill: currentColor;
+        .edit-message-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 6px;
         }
 
         .message-header {
@@ -2120,17 +2119,14 @@
             });
         }
 
-        function deleteMessage(menuItem) {
+        function deleteMessage(actionBtn, evt) {
+            if (evt) evt.stopPropagation();
             if (confirm('Are you sure you want to delete this message?')) {
-                const messageDiv = menuItem.closest('.message');
+                const messageDiv = actionBtn.closest('.message');
                 if (!messageDiv) return;
-                const menu = messageDiv.querySelector('.message-menu');
                 const activeChatId = currentSessionId || tempChatId;
                 const runGroupId = messageDiv.getAttribute('data-run-group-id');
                 const isFinalResponse = messageDiv.getAttribute('data-is-final-response') === 'true';
-                
-                // Close the menu
-                if (menu) menu.classList.remove('active');
 
                 if (isFinalResponse && runGroupId) {
                     const safeRunGroupId = (window.CSS && typeof window.CSS.escape === 'function')
@@ -2194,6 +2190,8 @@
 
                     addConsoleLog('Message deleted from chat');
                 }
+
+                refreshInlineActionVisibility(activeChatId);
                 
                 // Sync with backend history
                 const messages = getCurrentMessages();
@@ -2228,6 +2226,299 @@
                         console.error('Error updating saved chat after deletion:', error);
                     });
                 }
+            }
+        }
+
+        function getSystemPromptValue() {
+            const systemPromptInput = document.getElementById('systemPromptInput');
+            return systemPromptInput ? systemPromptInput.value.trim() : '';
+        }
+
+        function setRunPendingState(chatId) {
+            const state = ensureConversation(chatId);
+            if (!state) return;
+            state.is_generating = true;
+            state.pending_message_id = null;
+            state.thinking_process.new_run_pending = true;
+            state.thinking_process.active_source = '';
+            state.thinking_process.preview_text = '';
+            state.thinking_process.active_run_group_id = null;
+            state.thinking_process.active_container_id = null;
+        }
+
+        function syncCurrentHistoryToBackend(activeChatId) {
+            const messages = getCurrentMessages();
+            if (activeChatId) {
+                socket.emit('join_chat', { chat_id: activeChatId });
+                socket.emit('load_chat_history', { chat_id: activeChatId, messages: messages });
+            }
+
+            autoSaveTempChat();
+
+            if (currentSessionId && !currentSessionId.startsWith('temp_')) {
+                const sessionData = {
+                    id: currentSessionId,
+                    name: currentSessionName,
+                    messages: messages,
+                    timestamp: new Date().toISOString(),
+                    selectedBots: []
+                };
+
+                fetch('/api/save_chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(sessionData)
+                }).catch(error => {
+                    console.error('Error updating saved chat:', error);
+                });
+            }
+
+            return messages;
+        }
+
+        function rerenderConversationFromState(chatId) {
+            const state = ensureConversation(chatId);
+            if (!state) return;
+
+            const conversationWindow = document.getElementById('conversationWindow');
+            conversationWindow.innerHTML = '';
+            renderLoadedMessages(conversationWindow, state.messages || [], chatId);
+            refreshInlineActionVisibility(chatId);
+            conversationWindow.scrollTop = conversationWindow.scrollHeight;
+        }
+
+        function truncateStateAfterIndex(chatId, keepIndexInclusive) {
+            const state = ensureConversation(chatId);
+            if (!state || !Array.isArray(state.messages)) return;
+
+            state.messages = state.messages.slice(0, keepIndexInclusive + 1);
+            state.pending_message_id = null;
+            state.streaming = {};
+            if (streamingMessages[chatId]) {
+                delete streamingMessages[chatId];
+            }
+            resetThinkingProcessState(state, true);
+        }
+
+        function rerunFromExistingUserMessage(chatId, userMessageId, userMessageText) {
+            if (!chatId || !userMessageId) return;
+
+            setRunPendingState(chatId);
+            setProcessingState(chatId === getActiveChatId());
+
+            socket.emit('send_message', {
+                message: userMessageText,
+                system_prompt: getSystemPromptValue(),
+                chat_id: chatId,
+                existing_user_message_id: userMessageId
+            });
+        }
+
+        function findFinalMessageIndex(state, messageId, runGroupId) {
+            if (!state || !Array.isArray(state.messages)) return -1;
+
+            if (messageId) {
+                const byId = state.messages.findIndex(msg => msg.id === messageId);
+                if (byId >= 0) return byId;
+            }
+
+            if (runGroupId) {
+                for (let i = state.messages.length - 1; i >= 0; i--) {
+                    const msg = state.messages[i];
+                    if ((msg.run_group_id || null) === runGroupId && msg.role === 'assistant' && msg.is_final_response) {
+                        return i;
+                    }
+                }
+            }
+            return -1;
+        }
+
+        function findSourceUserIndexForFinal(state, finalIdx, runGroupId) {
+            if (!state || !Array.isArray(state.messages) || finalIdx < 0) return -1;
+
+            let runStartIdx = finalIdx;
+            if (runGroupId) {
+                for (let i = 0; i <= finalIdx; i++) {
+                    if ((state.messages[i].run_group_id || null) === runGroupId) {
+                        runStartIdx = i;
+                        break;
+                    }
+                }
+            }
+
+            for (let i = runStartIdx - 1; i >= 0; i--) {
+                if (state.messages[i].role === 'user') {
+                    return i;
+                }
+            }
+
+            for (let i = finalIdx - 1; i >= 0; i--) {
+                if (state.messages[i].role === 'user') {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        function redoFinalResponse(actionBtn, evt) {
+            if (evt) evt.stopPropagation();
+            if (isAIProcessing) {
+                addConsoleLog('Cannot redo while generation is running.');
+                return;
+            }
+
+            const messageDiv = actionBtn.closest('.message');
+            if (!messageDiv) return;
+
+            const activeChatId = getActiveChatId();
+            const state = ensureConversation(activeChatId);
+            if (!state || !Array.isArray(state.messages)) return;
+
+            const runGroupId = messageDiv.getAttribute('data-run-group-id') || null;
+            const messageId = messageDiv.getAttribute('data-message-id') || null;
+            const finalIdx = findFinalMessageIndex(state, messageId, runGroupId);
+            if (finalIdx < 0) {
+                addConsoleLog('Unable to locate target final response for redo.');
+                return;
+            }
+
+            const sourceUserIdx = findSourceUserIndexForFinal(state, finalIdx, runGroupId);
+            if (sourceUserIdx < 0) {
+                addConsoleLog('Unable to locate source user message for redo.');
+                return;
+            }
+
+            const sourceUser = state.messages[sourceUserIdx];
+            if (!sourceUser || sourceUser.role !== 'user') {
+                addConsoleLog('Redo source is not a user message.');
+                return;
+            }
+
+            if (!confirm('Redo from this point? This will remove all later messages and run the full process again.')) {
+                return;
+            }
+
+            truncateStateAfterIndex(activeChatId, sourceUserIdx);
+            rerenderConversationFromState(activeChatId);
+            syncCurrentHistoryToBackend(activeChatId);
+            rerunFromExistingUserMessage(
+                activeChatId,
+                sourceUser.id,
+                sourceUser.raw_markdown || sourceUser.content || ''
+            );
+        }
+
+        function startEditUserMessage(actionBtn, evt) {
+            if (evt) evt.stopPropagation();
+            if (isAIProcessing) {
+                addConsoleLog('Cannot edit while generation is running.');
+                return;
+            }
+
+            const messageDiv = actionBtn.closest('.message.user');
+            if (!messageDiv) return;
+            if (messageDiv.getAttribute('data-editing') === 'true') return;
+
+            const contentDiv = messageDiv.querySelector('.message-content');
+            if (!contentDiv) return;
+
+            const original = messageDiv.getAttribute('data-raw-content') || '';
+            messageDiv.setAttribute('data-editing', 'true');
+            contentDiv.innerHTML = `
+                <div class="edit-message-panel">
+                    <textarea class="edit-message-input">${escapeHtml(original)}</textarea>
+                    <div class="edit-message-actions">
+                        <button class="message-action-btn" title="Save edit" onclick="saveEditedUserMessage(this, event)">✓</button>
+                        <button class="message-action-btn" title="Cancel" onclick="cancelEditUserMessage(this, event)">✕</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function cancelEditUserMessage(actionBtn, evt) {
+            if (evt) evt.stopPropagation();
+            const messageDiv = actionBtn.closest('.message.user');
+            if (!messageDiv) return;
+            const raw = messageDiv.getAttribute('data-raw-content') || '';
+            const contentDiv = messageDiv.querySelector('.message-content');
+            if (!contentDiv) return;
+            contentDiv.innerHTML = formatMessage(raw);
+            messageDiv.removeAttribute('data-editing');
+            setTimeout(() => {
+                renderLatex(messageDiv);
+                addCopyButtonsToCodeBlocks(messageDiv);
+            }, 10);
+        }
+
+        function saveEditedUserMessage(actionBtn, evt) {
+            if (evt) evt.stopPropagation();
+
+            const messageDiv = actionBtn.closest('.message.user');
+            if (!messageDiv) return;
+            const textarea = messageDiv.querySelector('.edit-message-input');
+            if (!textarea) return;
+
+            const newContent = textarea.value.trim();
+            if (!newContent) {
+                alert('Message cannot be empty.');
+                return;
+            }
+
+            const activeChatId = getActiveChatId();
+            const state = ensureConversation(activeChatId);
+            if (!state || !Array.isArray(state.messages)) return;
+
+            const messageId = messageDiv.getAttribute('data-message-id');
+            const targetIdx = state.messages.findIndex(msg => msg.id === messageId && msg.role === 'user');
+            if (targetIdx < 0) {
+                addConsoleLog('Edited message was not found in chat state.');
+                return;
+            }
+
+            const removedCount = Math.max(0, state.messages.length - (targetIdx + 1));
+            if (removedCount > 0) {
+                const shouldProceed = confirm('Editing this message will remove all following messages and regenerate. Continue?');
+                if (!shouldProceed) return;
+            }
+
+            state.messages[targetIdx].content = newContent;
+            state.messages[targetIdx].raw_markdown = newContent;
+            state.messages[targetIdx].raw_content = newContent;
+
+            truncateStateAfterIndex(activeChatId, targetIdx);
+            rerenderConversationFromState(activeChatId);
+            syncCurrentHistoryToBackend(activeChatId);
+            rerunFromExistingUserMessage(activeChatId, state.messages[targetIdx].id, newContent);
+        }
+
+        function refreshInlineActionVisibility(chatId = getActiveChatId()) {
+            const conversationWindow = document.getElementById('conversationWindow');
+            if (!conversationWindow) return;
+
+            conversationWindow.querySelectorAll('.message.latest-final-response').forEach(node => {
+                node.classList.remove('latest-final-response');
+            });
+
+            const state = ensureConversation(chatId);
+            if (!state || !Array.isArray(state.messages)) return;
+
+            let latestFinalId = null;
+            for (let i = state.messages.length - 1; i >= 0; i--) {
+                const msg = state.messages[i];
+                if (msg.role === 'assistant' && msg.is_final_response) {
+                    latestFinalId = msg.id;
+                    break;
+                }
+            }
+
+            if (!latestFinalId) return;
+
+            const escapedId = (window.CSS && typeof window.CSS.escape === 'function')
+                ? window.CSS.escape(latestFinalId)
+                : String(latestFinalId).replace(/(["\\])/g, '\\$1');
+            const latestNode = conversationWindow.querySelector(`.message[data-message-id="${escapedId}"]`);
+            if (latestNode) {
+                latestNode.classList.add('latest-final-response');
             }
         }
 
@@ -2575,7 +2866,7 @@
             const temp = document.createElement('div');
             temp.innerHTML = content;
 
-            temp.querySelectorAll('.code-controls, .code-copy-btn, .code-wrap-btn, .code-hide-btn, .menu-btn, .message-menu, .katex-html').forEach(el => el.remove());
+            temp.querySelectorAll('.code-controls, .code-copy-btn, .code-wrap-btn, .code-hide-btn, .message-action-row, .message-action-btn, .katex-html').forEach(el => el.remove());
 
             temp.querySelectorAll('.katex').forEach(el => {
                 const annotation = el.querySelector('annotation');
@@ -2930,64 +3221,54 @@
             });
         }
 
-        function toggleMessageMenu(button) {
-            event.stopPropagation();
-            
-            const messageDiv = button.closest('.message');
-            const menu = messageDiv.querySelector('.message-menu');
-            
-            // Close all other menus
-            document.querySelectorAll('.message-menu.active').forEach(m => {
-                if (m !== menu) m.classList.remove('active');
-            });
-            
-            // Toggle this menu
-            menu.classList.toggle('active');
+        function buildInlineActionButton(action, title, iconSvg, onClick) {
+            return `
+                <button class="message-action-btn" data-action="${action}" title="${title}" onclick="${onClick}">
+                    ${iconSvg}
+                </button>
+            `;
         }
 
-        // Close menus when clicking outside
-        document.addEventListener('click', function(e) {
-            if (!e.target.closest('.message-menu') && !e.target.closest('.menu-btn')) {
-                document.querySelectorAll('.message-menu.active').forEach(m => {
-                    m.classList.remove('active');
-                });
+        function flashCopiedIcon(actionBtn) {
+            if (!actionBtn) return;
+            const originalHtml = actionBtn.innerHTML;
+            actionBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
+            actionBtn.classList.add('copied');
+            setTimeout(() => {
+                actionBtn.innerHTML = originalHtml;
+                actionBtn.classList.remove('copied');
+            }, 1200);
+        }
+
+        function buildInlineActionRow(options = {}) {
+            const isUser = options.isUser === true;
+            const isFinalResponse = options.isFinalResponse === true;
+            const buttons = [];
+
+            const editIcon = '<svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75l11-11-3.75-3.75-11 11zM20.71 7.04a1.003 1.003 0 0 0 0-1.42L18.37 3.29a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.83z"/></svg>';
+            const redoIcon = '<svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6 0 1.01-.25 1.96-.69 2.8l1.46 1.46A7.93 7.93 0 0 0 20 13c0-4.42-3.58-8-8-8zm-6.77.74A7.93 7.93 0 0 0 4 13c0 4.42 3.58 8 8 8v4l5-5-5-5v4c-3.31 0-6-2.69-6-6 0-1.01.25-1.96.69-2.8L5.23 5.74z"/></svg>';
+            const copyIcon = '<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>';
+            const downloadIcon = '<svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>';
+            const deleteIcon = '<svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>';
+
+            if (isUser) {
+                buttons.push(buildInlineActionButton('edit', 'Edit message', editIcon, 'startEditUserMessage(this, event)'));
             }
-        });
+            if (isFinalResponse) {
+                buttons.push(buildInlineActionButton('redo', 'Redo from this response', redoIcon, 'redoFinalResponse(this, event)'));
+            }
+            buttons.push(buildInlineActionButton('copy', 'Copy', copyIcon, 'copyMessageContent(this, event)'));
+            buttons.push(buildInlineActionButton('download', 'Download as PNG', downloadIcon, 'downloadMessageAsPNG(this, event)'));
+            buttons.push(buildInlineActionButton('delete', 'Delete', deleteIcon, 'deleteMessage(this, event)'));
 
-        // Proximity detection: show menu-btn only when cursor is close to it
-        document.addEventListener('mousemove', function(e) {
-            const menuBtns = document.querySelectorAll('.menu-btn');
-            menuBtns.forEach(btn => {
-                // Keep visible if its menu is open
-                const messageDiv = btn.closest('.message');
-                const menu = messageDiv ? messageDiv.querySelector('.message-menu') : null;
-                if (menu && menu.classList.contains('active')) {
-                    btn.classList.add('visible');
-                    return;
-                }
+            return `<div class="message-action-row">${buttons.join('')}</div>`;
+        }
 
-                const rect = btn.getBoundingClientRect();
-                const btnCenterX = rect.left + rect.width / 2;
-                const btnCenterY = rect.top + rect.height / 2;
-                const dist = Math.sqrt(
-                    Math.pow(e.clientX - btnCenterX, 2) +
-                    Math.pow(e.clientY - btnCenterY, 2)
-                );
+        function copyMessageContent(actionBtn, evt) {
+            if (evt) evt.stopPropagation();
 
-                if (dist < 55) {
-                    btn.classList.add('visible');
-                } else {
-                    btn.classList.remove('visible');
-                }
-            });
-        });
-
-        function copyMessageContent(menuItem) {
-            // Prevent event bubbling
-            event.stopPropagation();
-            
-            const messageDiv = menuItem.closest('.message');
-            const menu = messageDiv.querySelector('.message-menu');
+            const messageDiv = actionBtn.closest('.message');
+            if (!messageDiv) return;
             
             // Get the raw content from data attribute
             let contentToCopy = messageDiv.getAttribute('data-raw-content');
@@ -3015,25 +3296,30 @@
                 // Try modern clipboard API first
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(contentToCopy).then(() => {
+                        flashCopiedIcon(actionBtn);
                         addConsoleLog('Message copied to clipboard');
-                        menu.classList.remove('active');
                     }).catch(err => {
                         console.error('Clipboard API failed: ', err);
                         // Fallback to older method
-                        copyToClipboardFallback(contentToCopy, menu);
+                        const copied = copyToClipboardFallback(contentToCopy);
+                        if (copied) {
+                            flashCopiedIcon(actionBtn);
+                        }
                     });
                 } else {
                     // Use fallback method
-                    copyToClipboardFallback(contentToCopy, menu);
+                    const copied = copyToClipboardFallback(contentToCopy);
+                    if (copied) {
+                        flashCopiedIcon(actionBtn);
+                    }
                 }
             } else {
                 console.error('No content found to copy');
                 addConsoleLog('No content to copy');
-                menu.classList.remove('active');
             }
         }
 
-        function copyToClipboardFallback(text, menu) {
+        function copyToClipboardFallback(text) {
             // Create a temporary textarea element
             const textarea = document.createElement('textarea');
             textarea.value = text;
@@ -3041,6 +3327,7 @@
             textarea.style.top = '-9999px';
             textarea.style.left = '-9999px';
             document.body.appendChild(textarea);
+            let copied = false;
             
             try {
                 textarea.select();
@@ -3048,6 +3335,7 @@
                 const successful = document.execCommand('copy');
                 
                 if (successful) {
+                    copied = true;
                     addConsoleLog('Message copied to clipboard');
                 } else {
                     addConsoleLog('Failed to copy message');
@@ -3057,24 +3345,20 @@
                 addConsoleLog('Failed to copy message');
             } finally {
                 document.body.removeChild(textarea);
-                if (menu) menu.classList.remove('active');
             }
+            return copied;
         }
 
-        function downloadMessageAsPNG(menuItem) {
-            // Prevent event bubbling
-            event.stopPropagation();
-            
-            const messageDiv = menuItem.closest('.message');
-            const menu = messageDiv.querySelector('.message-menu');
-            
-            // Close the menu
-            menu.classList.remove('active');
-            
-            // Temporarily hide the menu button and menu
-            const menuBtn = messageDiv.querySelector('.menu-btn');
-            menuBtn.style.display = 'none';
-            menu.style.display = 'none';
+        function downloadMessageAsPNG(actionBtn, evt) {
+            if (evt) evt.stopPropagation();
+
+            const messageDiv = actionBtn.closest('.message');
+            if (!messageDiv) return;
+            const actionRow = messageDiv.querySelector('.message-action-row');
+
+            if (actionRow) {
+                actionRow.style.display = 'none';
+            }
             
             // Get the sender name for the filename
             const senderHeader = messageDiv.querySelector('.message-header');
@@ -3099,15 +3383,16 @@
                     
                     // Cleanup
                     URL.revokeObjectURL(url);
-                    
-                    // Show menu button again
-                    menuBtn.style.display = 'flex';
-                    menu.style.display = 'none';
+
+                    if (actionRow) {
+                        actionRow.style.display = '';
+                    }
                 }, 'image/png');
             }).catch(error => {
                 console.error('Error generating image:', error);
-                menuBtn.style.display = 'flex';
-                menu.style.display = 'none';
+                if (actionRow) {
+                    actionRow.style.display = '';
+                }
             });
         }
 
@@ -3116,46 +3401,34 @@
             const activeChatId = getActiveChatId();
             const state = ensureConversation(activeChatId);
             const messageDiv = document.createElement('div');
+            const messageId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
             messageDiv.className = `message ${type}`;
             messageDiv.setAttribute('data-raw-content', String(content || ''));
+            messageDiv.setAttribute('data-message-id', messageId);
 
             // Format the content
             const formattedContent = formatMessage(content);
 
             if (sender) {
-                const menuUI = `
-                    <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
-                        ⋮
-                    </button>
-                    <div class="message-menu">
-                        <button class="menu-item" onclick="copyMessageContent(this)">
-                            <svg viewBox="0 0 24 24">
-                                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                            </svg>
-                            Copy
-                        </button>
-                        <button class="menu-item" onclick="downloadMessageAsPNG(this)">
-                            <svg viewBox="0 0 24 24">
-                                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-                            </svg>
-                            Download as PNG
-                        </button>
-                        <button class="menu-item" onclick="deleteMessage(this)">
-                            <svg viewBox="0 0 24 24">
-                                <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
-                            </svg>
-                            Delete
-                        </button>
-                    </div>
-                `;
+                const isUser = type === 'user';
+                const shouldShowActions = isUser;
+                const actionUI = shouldShowActions
+                    ? buildInlineActionRow({
+                        isUser: isUser,
+                        isFinalResponse: false
+                    })
+                    : '';
                 
                 messageDiv.innerHTML = `
                     <div class="message-wrapper">
                         <div class="message-header">${sender}${type === 'ai' ? '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>' : ''}</div>
                         <div class="message-content">${formattedContent}</div>
-                        ${menuUI}
+                        ${actionUI}
                     </div>
                 `;
+                if (shouldShowActions) {
+                    messageDiv.classList.add('has-inline-actions');
+                }
             } else {
                 messageDiv.innerHTML = `<div class="message-content">${formattedContent}</div>`;
             }
@@ -3164,7 +3437,7 @@
 
             if (state) {
                 state.messages.push({
-                    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    id: messageId,
                     role: type === 'user' ? 'user' : 'assistant',
                     sender: sender,
                     content: content,
@@ -3172,6 +3445,8 @@
                     timestamp: new Date().toISOString()
                 });
             }
+
+            refreshInlineActionVisibility(activeChatId);
             
             // Render LaTeX in the new message
             setTimeout(() => {
@@ -3550,35 +3825,18 @@
                     </div>
                     <div class="thinking-content">${escapeHtml(data.thinking)}</div>
                 </div>` : '';
-            const menuUI = `
-                <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
-                    ⋮
-                </button>
-                <div class="message-menu">
-                    <button class="menu-item" onclick="copyMessageContent(this)">
-                        <svg viewBox="0 0 24 24">
-                            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                        </svg>
-                        Copy
-                    </button>
-                    <button class="menu-item" onclick="downloadMessageAsPNG(this)">
-                        <svg viewBox="0 0 24 24">
-                            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-                        </svg>
-                        Download as PNG
-                    </button>
-                    <button class="menu-item" onclick="deleteMessage(this)">
-                        <svg viewBox="0 0 24 24">
-                            <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
-                        </svg>
-                        Delete
-                    </button>
-                </div>
-            `;
+            const isFinalResponse = ((typeof data.is_final_response === 'boolean') ? data.is_final_response : false);
+            const actionUI = isFinalResponse
+                ? buildInlineActionRow({
+                    isUser: false,
+                    isFinalResponse: true
+                })
+                : '';
             const mdCollapseBtn = entry.isNonFinal ? '' : '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>';
             messageDiv.setAttribute('data-raw-content', data.message);
             messageDiv.setAttribute('data-thinking', data.thinking || '');
-            messageDiv.setAttribute('data-is-final-response', ((typeof data.is_final_response === 'boolean') ? data.is_final_response : false) ? 'true' : 'false');
+            messageDiv.setAttribute('data-is-final-response', isFinalResponse ? 'true' : 'false');
+            messageDiv.setAttribute('data-message-id', messageId);
             if (data.run_group_id || entry.run_group_id) {
                 messageDiv.setAttribute('data-run-group-id', data.run_group_id || entry.run_group_id);
             }
@@ -3595,9 +3853,12 @@
                     <div class="message-header">${data.bot_name}${mdCollapseBtn}</div>
                     ${thinkingBlock}
                     <div class="message-content">${formattedContent}</div>
-                    ${menuUI}
+                    ${actionUI}
                 </div>
             `;
+            if (isFinalResponse) {
+                messageDiv.classList.add('has-inline-actions');
+            }
             setTimeout(() => {
                 renderLatex(messageDiv);
                 addCopyButtonsToCodeBlocks(messageDiv);
@@ -3632,6 +3893,7 @@
                 delete state.streaming[messageId];
             }
             refreshThinkingProcessUI(chatId);
+            refreshInlineActionVisibility(chatId);
             loadSavedChats();
             loadTempChats();
             autoSaveTempChat();
@@ -4008,6 +4270,9 @@
             messages.forEach(msg => {
                 const messageDiv = document.createElement('div');
                 messageDiv.className = `message ${msg.type}`;
+                const resolvedMessageId = msg.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                msg.id = resolvedMessageId;
+                messageDiv.setAttribute('data-message-id', resolvedMessageId);
 
                 const isNonFinal = isNonFinalSavedMessage(msg);
                 const runGroupId = msg.run_group_id || 'legacy-non-final';
@@ -4055,39 +4320,24 @@
                     const mdCollapseBtn = (msg.type === 'ai' && !isNonFinal)
                         ? '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>'
                         : '';
-                    const menuUI = `
-                        <button class="menu-btn" onclick="toggleMessageMenu(this)" title="Options">
-                            ⋮
-                        </button>
-                        <div class="message-menu">
-                            <button class="menu-item" onclick="copyMessageContent(this)">
-                                <svg viewBox="0 0 24 24">
-                                    <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                                </svg>
-                                Copy
-                            </button>
-                            <button class="menu-item" onclick="downloadMessageAsPNG(this)">
-                                <svg viewBox="0 0 24 24">
-                                    <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-                                </svg>
-                                Download as PNG
-                            </button>
-                            <button class="menu-item" onclick="deleteMessage(this)">
-                                <svg viewBox="0 0 24 24">
-                                    <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
-                                </svg>
-                                Delete
-                            </button>
-                        </div>
-                    `;
+                    const shouldShowActions = (msg.type === 'user') || (msg.type === 'ai' && msg.is_final_response === true);
+                    const actionUI = shouldShowActions
+                        ? buildInlineActionRow({
+                            isUser: msg.type === 'user',
+                            isFinalResponse: msg.is_final_response === true
+                        })
+                        : '';
 
                     messageDiv.innerHTML = `
                         <div class="message-wrapper">
                             <div class="message-header">${msg.sender}${mdCollapseBtn}</div>
                             <div class="message-content">${displayContent}</div>
-                            ${menuUI}
+                            ${actionUI}
                         </div>
                     `;
+                    if (shouldShowActions) {
+                        messageDiv.classList.add('has-inline-actions');
+                    }
                 } else {
                     messageDiv.innerHTML = `<div class="message-content">${displayContent}</div>`;
                 }
@@ -4108,6 +4358,7 @@
                 conversationWindow.querySelectorAll('.thinking-process-container').forEach(el => el.remove());
             }
             refreshThinkingProcessUI(chatId);
+            refreshInlineActionVisibility(chatId);
         }
 
         function loadChat(chatId) {
@@ -4246,6 +4497,7 @@
                 if (content) {
                     const rawContent = msg.getAttribute('data-raw-content') || recoverLegacyRawMessageContent(content.innerHTML);
                     const messageData = {
+                        id: msg.getAttribute('data-message-id') || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                         type: msg.classList.contains('user') ? 'user' : 'ai',
                         sender: senderText,
                         content: rawContent,

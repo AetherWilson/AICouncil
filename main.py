@@ -1426,7 +1426,8 @@ def _history_to_ui_messages(conversation_id):
                 'content': body,
                 'raw_content': body,
                 'raw_markdown': body,
-                'id': msg.get('id')
+                'id': msg.get('id'),
+                'run_group_id': msg.get('run_group_id')
             })
             continue
 
@@ -2151,6 +2152,7 @@ def handle_message_task(data, conversation_id):
     """Handle user message and run the council workflow"""
     user_message = data.get('message', '')
     user_system_prompt = data.get('system_prompt', '')
+    existing_user_message_id = str(data.get('existing_user_message_id') or '').strip()
     
     def emit_chat(event, payload=None):
         enriched = dict(payload or {})
@@ -2339,7 +2341,28 @@ def handle_message_task(data, conversation_id):
     conv = get_conversation(conversation_id)
     run_group_id = _build_run_group_id(conversation_id)
     conv['current_run_group_id'] = run_group_id
-    append_conversation_message(conversation_id, "user", user_message, raw_markdown=user_message)
+    current_user_index = None
+
+    if existing_user_message_id:
+        for idx, msg in enumerate(conv.get('messages', [])):
+            if msg.get('id') == existing_user_message_id and msg.get('role') == 'user':
+                current_user_index = idx
+                existing_raw = msg.get('raw_markdown')
+                user_message = existing_raw if isinstance(existing_raw, str) and existing_raw else msg.get('content', '')
+                msg['run_group_id'] = run_group_id
+                break
+
+    if current_user_index is None:
+        appended_user = append_conversation_message(
+            conversation_id,
+            "user",
+            user_message,
+            raw_markdown=user_message,
+            run_group_id=run_group_id
+        )
+        current_user_index = len(conv.get('messages', [])) - 1
+        existing_user_message_id = appended_user.get('id', '')
+
     auto_save_chat()
 
     emit_chat('run_group_start', {
@@ -2347,10 +2370,10 @@ def handle_message_task(data, conversation_id):
         'timestamp': datetime.now().strftime("%H:%M:%S")
     })
 
-    # Build chat history (exclude current message)
+    # Build chat history (exclude current user message)
     chat_history = [
         {"role": msg["role"], "content": msg["content"]}
-        for msg in conv['messages'][:-1]
+        for msg in conv['messages'][:current_user_index]
     ]
 
     # Load council config
@@ -2833,7 +2856,8 @@ def handle_load_chat_history(data):
                 role='user',
                 content=raw_user,
                 raw_markdown=raw_user,
-                id=msg.get('id', uuid.uuid4().hex)
+                id=msg.get('id', uuid.uuid4().hex),
+                run_group_id=msg.get('run_group_id')
             )
         elif msg.get('type') == 'ai':
             # AI messages in the format [Bot Name (bot-id)] message
