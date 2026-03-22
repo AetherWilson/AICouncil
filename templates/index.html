@@ -3083,6 +3083,7 @@
                 activeState.thinking_process.active_source = '';
                 activeState.thinking_process.preview_text = '';
                 activeState.thinking_process.active_run_group_id = null;
+                activeState.thinking_process.active_container_id = null;
             }
             if (activeChatId) {
                 socket.emit('join_chat', { chat_id: activeChatId });
@@ -3235,7 +3236,17 @@
             `;
             if (entry.isNonFinal) {
                 const state = ensureConversation(chatId);
-                const container = getThinkingProcessContainer(chatId, true, entry.run_group_id) || ensureThinkingProcessContainer(conversationWindow, state, chatId, {}, entry.run_group_id);
+                const forceNewContainer = !!state.thinking_process.new_run_pending;
+                let container = null;
+                if (!forceNewContainer) {
+                    container = getThinkingProcessContainer(chatId, true, entry.run_group_id);
+                }
+                if (!container) {
+                    container = ensureThinkingProcessContainer(conversationWindow, state, chatId, { forceNew: forceNewContainer }, entry.run_group_id);
+                }
+                if (forceNewContainer) {
+                    state.thinking_process.new_run_pending = false;
+                }
                 const list = container ? container.querySelector('.thinking-process-list') : null;
                 if (list) {
                     messageDiv.classList.add('thinking-process-item');
