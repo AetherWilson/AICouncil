@@ -346,6 +346,9 @@ Critical routing rules:
 - If a role is unnecessary, set that role's task to "SKIP".
 - If any non-Verifier role is assigned, Verifier should usually be assigned to check that output.
 - If the user request is simple and can be answered directly, set all role tasks to "SKIP" and place the answer in "direct_response".
+- Never provide user-facing advice in "analysis" or any *_task field.
+- "analysis" must describe routing intent only (short, internal).
+- User-facing answer text is allowed only in "direct_response", and only when all role tasks are "SKIP".
 
 Return ONLY a valid JSON object in this exact format (no markdown, no extra text):
 {
@@ -355,7 +358,13 @@ Return ONLY a valid JSON object in this exact format (no markdown, no extra text
   "analyzer_task": "Concrete task for Analyzer, or SKIP",
     "verifier_task": "Concrete verification task for Verifier, or SKIP",
     "direct_response": "Final answer to user when request is simple; otherwise empty string"
-}"""
+}
+
+Hard constraints reminder:
+- Output must be a single JSON object only.
+- Do not include markdown code fences.
+- Do not place any final answer text in "analysis".
+"""
 
 RESEARCHER_PROMPT = """You are the Researcher in an AI council. Gather only the facts directly relevant to the task — nothing more.
 
@@ -1508,7 +1517,7 @@ def _conversation_documents_to_ui(conversation_id):
         for doc in conv.get('uploaded_documents', {}).values()
     ]
 
-def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, on_stream_progress=None, _retry=False, _timeout_fallback_used=False):
+def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, on_stream_progress=None, _retry=False, _timeout_fallback_used=False, internal_orchestration=False):
     def emit_chat(event, payload=None):
         enriched = dict(payload or {})
         enriched['chat_id'] = conversation_id
@@ -1520,6 +1529,33 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
 
         # Build document context
         system_prompt, image_urls = build_document_context(conversation_id, system_prompt, support_images)
+
+        if internal_orchestration:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            emit_chat('council_status', {
+                'role': role_name,
+                'status': 'running',
+                'run_group_id': run_group_id
+            })
+
+            raw_response = completion_response(
+                model=model_id,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                chat_history=chat_history,
+                temperature=0.7,
+                image_urls=image_urls if support_images else None
+            )
+            converted_response = convert_to_traditional_chinese((raw_response or '').strip())
+
+            emit_chat('console_log', {'message': f"[{timestamp}] {role_label} completed (internal)"})
+            emit_chat('council_status', {
+                'role': role_name,
+                'status': 'done',
+                'run_group_id': run_group_id
+            })
+
+            return converted_response
 
         # Use a unique bot_id for the streaming UI
         bot_id = f"council-{role_name.lower()}-{uuid.uuid4().hex[:8]}"
@@ -1723,7 +1759,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                     support_images=support_images,
                     on_stream_progress=on_stream_progress,
                     _retry=False,
-                    _timeout_fallback_used=True
+                    _timeout_fallback_used=True,
+                    internal_orchestration=internal_orchestration
                 )
             return ''
 
@@ -1828,7 +1865,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         if not _retry:
             return run_council_role(
                 role_name, role_label, model_id, system_prompt, user_prompt,
-                chat_history, conversation_id, run_group_id, support_images, on_stream_progress, _retry=True, _timeout_fallback_used=_timeout_fallback_used
+                chat_history, conversation_id, run_group_id, support_images, on_stream_progress, _retry=True, _timeout_fallback_used=_timeout_fallback_used, internal_orchestration=internal_orchestration
             )
         # Second failure — skip this role
         notice = f"{role_label} has encountered an error and has to go without it."
@@ -2135,6 +2172,170 @@ def handle_message_task(data, conversation_id):
             return True
         return False
 
+    def run_memory_management(council_results_local=None, direct_response_text=''):
+        # Run memory extraction silently to keep long-term memory in sync.
+        try:
+            if memory_manager.is_enabled(config) and memory_manager.auto_extract_enabled(config):
+                mem_writer_model_id = config.get('MemWriter', '') or leader_model_id
+
+                # Build existing memories with IDs so the model can reference them.
+                existing_flat = memory_manager.read_flat(config)
+                if existing_flat:
+                    existing_lines = []
+                    for entry in existing_flat:
+                        existing_lines.append(f"  [ID {entry['id']}] ({entry['section']}) {entry['content']}")
+                    existing_text = '\n'.join(existing_lines)
+                else:
+                    existing_text = '(none yet)'
+
+                extract_sys = MEMORY_EXTRACT_PROMPT.replace('{existing_memories}', existing_text)
+                convo_summary = f"User: {user_message}"
+
+                if direct_response_text:
+                    convo_summary += f"\nLeader: {direct_response_text[:500]}"
+
+                if isinstance(council_results_local, dict):
+                    for key in ['Researcher', 'Creator', 'Analyzer', 'Verifier']:
+                        if key in council_results_local:
+                            convo_summary += f"\n{key}: {council_results_local[key][:500]}"
+
+                extract_raw = completion_response(
+                    model=mem_writer_model_id,
+                    system_prompt=extract_sys,
+                    user_prompt=convo_summary,
+                    temperature=0.3
+                )
+                try:
+                    extract_payload = json.loads(extract_json_from_text(extract_raw))
+                    added = 0
+                    updated = 0
+                    deleted = 0
+
+                    # Process updates first (updates don't shift indices).
+                    updated_memories = extract_payload.get('updated_memories', [])
+                    if isinstance(updated_memories, list):
+                        for item in updated_memories:
+                            if not isinstance(item, dict):
+                                continue
+                            mid = item.get('id')
+                            content = item.get('content', '').strip()
+                            if mid is None or not content:
+                                continue
+                            try:
+                                memory_manager.update_memory(int(mid), content, config)
+                                updated += 1
+                            except (ValueError, TypeError):
+                                pass
+
+                    # Process deletions (highest IDs first to avoid index shifting).
+                    deleted_ids = extract_payload.get('deleted_memory_ids', [])
+                    if isinstance(deleted_ids, list):
+                        for mid in sorted(deleted_ids, reverse=True):
+                            try:
+                                memory_manager.delete_memory(int(mid), config)
+                                deleted += 1
+                            except (ValueError, TypeError):
+                                pass
+
+                    # Process additions.
+                    new_memories = extract_payload.get('new_memories', [])
+                    if isinstance(new_memories, list) and new_memories:
+                        memory_manager.add_memories_bulk(new_memories, config)
+                        added = len(new_memories)
+
+                    # Log summary.
+                    parts = []
+                    if added:
+                        parts.append(f"+{added} added")
+                    if updated:
+                        parts.append(f"~{updated} updated")
+                    if deleted:
+                        parts.append(f"-{deleted} removed")
+                    if parts:
+                        emit_chat('console_log', {
+                            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory managed ({', '.join(parts)})"
+                        })
+                        emit_chat('memory_updated', {'added': added, 'updated': updated, 'deleted': deleted})
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"Memory extraction error: {e}")
+
+    def emit_leader_task_distribution_summary(tasks_payload, model_id):
+        if not isinstance(tasks_payload, dict):
+            return
+
+        def clean_task_value(key):
+            return str(tasks_payload.get(key, 'SKIP') or 'SKIP').strip() or 'SKIP'
+
+        analysis_text = str(tasks_payload.get('analysis', '') or '').strip() or 'Routing only'
+        researcher_task = clean_task_value('researcher_task')
+        creator_task = clean_task_value('creator_task')
+        analyzer_task = clean_task_value('analyzer_task')
+        verifier_task = clean_task_value('verifier_task')
+        direct_response_preview = str(tasks_payload.get('direct_response', '') or '').strip()
+
+        summary_lines = [
+            'Structured routing summary:',
+            f'- Analysis: {analysis_text}',
+            f'- Researcher: {researcher_task}',
+            f'- Creator: {creator_task}',
+            f'- Analyzer: {analyzer_task}',
+            f'- Verifier: {verifier_task}',
+            f"- Direct response present: {'Yes' if direct_response_preview else 'No'}"
+        ]
+        summary_text = '\n'.join(summary_lines)
+
+        message_id = uuid.uuid4().hex
+        bot_id = f"council-leader-distribution-{uuid.uuid4().hex[:8]}"
+        label = f"Leader - Task Distribution ({model_id})"
+        ts = datetime.now().strftime("%H:%M:%S")
+
+        append_conversation_message(
+            conversation_id,
+            role='assistant',
+            content=f"[{label}] {summary_text}",
+            raw_markdown=summary_text,
+            id=message_id,
+            bot_name=label,
+            bot_id=bot_id,
+            run_group_id=run_group_id,
+            run_id=message_id,
+            role_name='Leader',
+            model_id=model_id,
+            thinking='',
+            stream_status='done',
+            is_final_response=False
+        )
+
+        emit_chat('ai_response_start', {
+            'bot_name': label,
+            'bot_id': bot_id,
+            'timestamp': ts,
+            'message_id': message_id,
+            'run_id': message_id,
+            'run_group_id': run_group_id,
+            'role_name': 'Leader',
+            'model_id': model_id,
+            'is_final_response': False
+        })
+
+        emit_chat('ai_response_end', {
+            'bot_name': label,
+            'bot_id': bot_id,
+            'message': summary_text,
+            'thinking': '',
+            'timestamp': ts,
+            'message_id': message_id,
+            'run_id': message_id,
+            'run_group_id': run_group_id,
+            'role_name': 'Leader',
+            'model_id': model_id,
+            'is_final_response': False
+        })
+
+        auto_save_chat()
+
     conv = get_conversation(conversation_id)
     run_group_id = _build_run_group_id(conversation_id)
     conv['current_run_group_id'] = run_group_id
@@ -2273,7 +2474,8 @@ def handle_message_task(data, conversation_id):
         conversation_id=conversation_id,
         run_group_id=run_group_id,
         support_images=leader_info.get('support_images', False),
-        on_stream_progress=auto_save_chat
+        on_stream_progress=auto_save_chat,
+        internal_orchestration=True
     )
 
     if stop_if_aborted():
@@ -2291,17 +2493,43 @@ def handle_message_task(data, conversation_id):
     try:
         tasks = json.loads(extract_json_from_text(task_distribution_raw))
         tasks = _normalize_task_distribution(tasks)
-    except (json.JSONDecodeError, Exception) as e:
+    except (json.JSONDecodeError, Exception) as first_error:
+        retry_ts = datetime.now().strftime('%H:%M:%S')
         emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution: {str(e)}. Aborting council workflow."
+            'message': f"[{retry_ts}] Task distribution JSON parse failed once; retrying with stricter format request."
         })
-        emit_chat('all_done')
-        finalize_generation()
-        return
+
+        strict_retry_system = (
+            leader_sys
+            + "\n\nSTRICT RETRY INSTRUCTION: Return only one valid JSON object that matches the required schema exactly."
+            + " Do not include markdown, code fences, commentary, or extra keys."
+            + " If unsure, set non-applicable tasks to SKIP and direct_response to an empty string."
+        )
+
+        try:
+            retry_raw = completion_response(
+                model=leader_model_id,
+                system_prompt=strict_retry_system,
+                user_prompt=user_message,
+                chat_history=chat_history,
+                temperature=0.2
+            )
+            tasks = json.loads(extract_json_from_text(retry_raw))
+            tasks = _normalize_task_distribution(tasks)
+        except (json.JSONDecodeError, Exception) as retry_error:
+            emit_chat('console_log', {
+                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution after strict retry: {str(retry_error)} (first error: {str(first_error)}). Aborting council workflow."
+            })
+            emit_chat('all_done')
+            finalize_generation()
+            return
 
     direct_response = tasks.get('direct_response', '')
     role_task_keys = ('researcher_task', 'creator_task', 'analyzer_task', 'verifier_task')
     all_roles_skipped = all(_is_skip_task(tasks.get(task_key)) for task_key in role_task_keys)
+
+    if not all_roles_skipped:
+        emit_leader_task_distribution_summary(tasks, leader_model_id)
 
     if direct_response and all_roles_skipped:
         direct_ts = datetime.now().strftime("%H:%M:%S")
@@ -2370,6 +2598,7 @@ def handle_message_task(data, conversation_id):
         })
 
         auto_save_chat()
+        run_memory_management(council_results_local={}, direct_response_text=direct_response)
         emit_chat('all_done')
         emit_chat('run_group_end', {
             'run_group_id': run_group_id,
@@ -2527,87 +2756,7 @@ def handle_message_task(data, conversation_id):
         auto_save_chat()
 
     # ── Step 7: Silent memory management (runs in background, like ChatGPT) ──
-    try:
-        if memory_manager.is_enabled(config) and memory_manager.auto_extract_enabled(config):
-            mem_writer_model_id = config.get('MemWriter', '') or leader_model_id
-
-            # Build existing memories with IDs so the model can reference them
-            existing_flat = memory_manager.read_flat(config)
-            if existing_flat:
-                existing_lines = []
-                for entry in existing_flat:
-                    existing_lines.append(f"  [ID {entry['id']}] ({entry['section']}) {entry['content']}")
-                existing_text = '\n'.join(existing_lines)
-            else:
-                existing_text = '(none yet)'
-
-            extract_sys = MEMORY_EXTRACT_PROMPT.replace('{existing_memories}', existing_text)
-            convo_summary = f"User: {user_message}"
-            for key in ['Researcher', 'Creator', 'Analyzer', 'Verifier']:
-                if key in council_results:
-                    convo_summary += f"\n{key}: {council_results[key][:500]}"
-
-            extract_raw = completion_response(
-                model=mem_writer_model_id,
-                system_prompt=extract_sys,
-                user_prompt=convo_summary,
-                temperature=0.3
-            )
-            try:
-                extract_payload = json.loads(extract_json_from_text(extract_raw))
-                added = 0
-                updated = 0
-                deleted = 0
-
-                # Process updates first (updates don't shift indices)
-                updated_memories = extract_payload.get('updated_memories', [])
-                if isinstance(updated_memories, list):
-                    for item in updated_memories:
-                        if not isinstance(item, dict):
-                            continue
-                        mid = item.get('id')
-                        content = item.get('content', '').strip()
-                        if mid is None or not content:
-                            continue
-                        try:
-                            memory_manager.update_memory(int(mid), content, config)
-                            updated += 1
-                        except (ValueError, TypeError):
-                            pass
-
-                # Process deletions (highest IDs first to avoid index shifting)
-                deleted_ids = extract_payload.get('deleted_memory_ids', [])
-                if isinstance(deleted_ids, list):
-                    for mid in sorted(deleted_ids, reverse=True):
-                        try:
-                            memory_manager.delete_memory(int(mid), config)
-                            deleted += 1
-                        except (ValueError, TypeError):
-                            pass
-
-                # Process additions
-                new_memories = extract_payload.get('new_memories', [])
-                if isinstance(new_memories, list) and new_memories:
-                    memory_manager.add_memories_bulk(new_memories, config)
-                    added = len(new_memories)
-
-                # Log summary
-                parts = []
-                if added:
-                    parts.append(f"+{added} added")
-                if updated:
-                    parts.append(f"~{updated} updated")
-                if deleted:
-                    parts.append(f"-{deleted} removed")
-                if parts:
-                    emit_chat('console_log', {
-                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory managed ({', '.join(parts)})"
-                    })
-                    emit_chat('memory_updated', {'added': added, 'updated': updated, 'deleted': deleted})
-            except Exception:
-                pass
-    except Exception as e:
-        print(f"Memory extraction error: {e}")
+    run_memory_management(council_results_local=council_results)
 
     # Signal all done
     emit_chat('all_done')

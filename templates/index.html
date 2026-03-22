@@ -1689,6 +1689,7 @@
 
         function isNonFinalStreamData(data) {
             if (!data) return false;
+            if (data.internal_orchestration === true) return false;
             if (isFinalResponseData(data)) return false;
             const botId = (data.bot_id || '').toLowerCase();
             if (botId.startsWith('council-')) return true;
@@ -3321,6 +3322,7 @@
         const streamingMessages = {};
 
         function getStreamEntry(data) {
+            if (!data || data.internal_orchestration === true) return null;
             const chatId = data.chat_id;
             const messageId = data.message_id || data.bot_id;
             if (!chatId || !messageId) return null;
@@ -3416,6 +3418,7 @@
         }
 
         socket.on('ai_response_start', function(data) {
+            if (data && data.internal_orchestration === true) return;
             const chatId = data.chat_id;
             const state = ensureConversation(chatId);
             if (!state) return;
@@ -3445,6 +3448,7 @@
         });
 
         socket.on('ai_thinking_chunk', function(data) {
+            if (data && data.internal_orchestration === true) return;
             const chatId = data.chat_id;
             const messageId = data.message_id || data.bot_id;
             const state = ensureConversation(chatId);
@@ -3468,6 +3472,7 @@
         });
 
         socket.on('ai_response_chunk', function(data) {
+            if (data && data.internal_orchestration === true) return;
             const chatId = data.chat_id;
             const messageId = data.message_id || data.bot_id;
             const state = ensureConversation(chatId);
@@ -3489,6 +3494,7 @@
         });
 
         socket.on('ai_response_end', function(data) {
+            if (data && data.internal_orchestration === true) return;
             const chatId = data.chat_id;
             const messageId = data.message_id || data.bot_id;
             const state = ensureConversation(chatId);
