@@ -3,6 +3,7 @@ from flask_socketio import SocketIO, emit, join_room
 import json
 import time
 import threading
+import queue
 import uuid
 from datetime import datetime
 import re
@@ -253,6 +254,48 @@ def should_continue_streaming(conversation_id, pending_message_id):
         and conv.get('pending_message_id') == pending_message_id
     )
 
+
+def _extract_run_group_sequence(run_group_id):
+    if not run_group_id:
+        return None
+    match = re.search(r'-(\d{6})$', str(run_group_id))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _sync_run_group_counter(conversation_id, messages):
+    conv = get_conversation(conversation_id)
+    if not conv:
+        return 0
+
+    max_seq = int(conv.get('run_group_counter', 0) or 0)
+    for msg in (messages or []):
+        if not isinstance(msg, dict):
+            continue
+        seq = _extract_run_group_sequence(msg.get('run_group_id'))
+        if seq is not None and seq > max_seq:
+            max_seq = seq
+    conv['run_group_counter'] = max_seq
+    return max_seq
+
+
+def _build_run_group_id(conversation_id):
+    conv = get_conversation(conversation_id)
+    conv['run_group_counter'] = int(conv.get('run_group_counter', 0) or 0) + 1
+    counter = conv['run_group_counter']
+    chat_token = re.sub(r'[^a-zA-Z0-9]+', '', str(conversation_id or ''))[:8] or 'chat'
+    return f"rungrp-{int(time.time() * 1000)}-{chat_token}-{counter:06d}"
+
+
+def _build_fallback_role_label(role_label, fallback_model_id):
+    if '(' in role_label and role_label.endswith(')'):
+        return re.sub(r'\([^)]*\)$', f'({fallback_model_id})', role_label)
+    return f"{role_label} ({fallback_model_id})"
+
 # Create uploads directory if it doesn't exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 # Create chat history directory if it doesn't exist
@@ -302,6 +345,7 @@ Critical routing rules:
 - Tasks must be concrete, output-oriented, and minimal (no vague wording).
 - If a role is unnecessary, set that role's task to "SKIP".
 - If any non-Verifier role is assigned, Verifier should usually be assigned to check that output.
+- If the user request is simple and can be answered directly, set all role tasks to "SKIP" and place the answer in "direct_response".
 
 Return ONLY a valid JSON object in this exact format (no markdown, no extra text):
 {
@@ -309,7 +353,8 @@ Return ONLY a valid JSON object in this exact format (no markdown, no extra text
   "researcher_task": "Concrete task for Researcher, or SKIP",
     "creator_task": "Concrete task for Creator, or SKIP",
   "analyzer_task": "Concrete task for Analyzer, or SKIP",
-  "verifier_task": "Concrete verification task for Verifier, or SKIP"
+    "verifier_task": "Concrete verification task for Verifier, or SKIP",
+    "direct_response": "Final answer to user when request is simple; otherwise empty string"
 }"""
 
 RESEARCHER_PROMPT = """You are the Researcher in an AI council. Gather only the facts directly relevant to the task — nothing more.
@@ -730,6 +775,8 @@ def load_chat(chat_id):
             chat_data['messages'] = _history_to_ui_messages(chat_id)
             chat_data['uploadedDocuments'] = _conversation_documents_to_ui(chat_id)
 
+        _sync_run_group_counter(chat_id, chat_data.get('messages', []))
+
         chat_data['isGenerating'] = get_conversation(chat_id).get('is_generating', False)
         
         return jsonify({'success': True, 'chat': chat_data})
@@ -837,6 +884,8 @@ def load_temp_chat(chat_id):
             chat_data['messages'] = _history_to_ui_messages(chat_id)
             chat_data['uploadedDocuments'] = _conversation_documents_to_ui(chat_id)
 
+        _sync_run_group_counter(chat_id, chat_data.get('messages', []))
+
         chat_data['isGenerating'] = get_conversation(chat_id).get('is_generating', False)
         
         return jsonify({'success': True, 'chat': chat_data})
@@ -921,14 +970,38 @@ def _normalize_questioned_role(role_name):
     return mapping.get(normalized)
 
 
-def _normalize_task_distribution(tasks):
-    if not isinstance(tasks, dict):
-        return {}
+def _is_skip_task(task_value):
+    if not isinstance(task_value, str):
+        return False
+    return task_value.strip().upper() == 'SKIP'
 
-    normalized = dict(tasks)
+
+def _normalize_task_distribution(tasks):
+    normalized = dict(tasks) if isinstance(tasks, dict) else {}
+
     # Backward compatibility for older Leader outputs.
     if 'creator_task' not in normalized and 'creative_writer_task' in normalized:
         normalized['creator_task'] = normalized.get('creative_writer_task')
+
+    # Alternate field names for direct response mode.
+    if 'direct_response' not in normalized:
+        for alias in ('direct_answer', 'simple_response', 'final_response'):
+            if alias in normalized:
+                normalized['direct_response'] = normalized.get(alias)
+                break
+
+    # Ensure expected keys exist for downstream logic.
+    for key in ('researcher_task', 'creator_task', 'analyzer_task', 'verifier_task'):
+        if key not in normalized:
+            normalized[key] = 'SKIP'
+
+    direct_response = normalized.get('direct_response', '')
+    if direct_response is None:
+        direct_response = ''
+    elif not isinstance(direct_response, str):
+        direct_response = str(direct_response)
+    normalized['direct_response'] = direct_response.strip()
+
     return normalized
 
 
@@ -1435,7 +1508,7 @@ def _conversation_documents_to_ui(conversation_id):
         for doc in conv.get('uploaded_documents', {}).values()
     ]
 
-def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, on_stream_progress=None, _retry=False):
+def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, on_stream_progress=None, _retry=False, _timeout_fallback_used=False):
     def emit_chat(event, payload=None):
         enriched = dict(payload or {})
         enriched['chat_id'] = conversation_id
@@ -1495,19 +1568,59 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         full_response = ''
         full_thinking = ''
         stopped_early = False
+        timeout_before_first_chunk = False
+        first_chunk_received = False
         last_snapshot_ts = 0.0
 
-        for chunk_type, chunk in completion_response_stream(
-            model=model_id,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            chat_history=chat_history,
-            temperature=0.7,
-            image_urls=image_urls if support_images else None
-        ):
+        stream_queue = queue.Queue()
+        stream_stop_event = threading.Event()
+        stream_start_ts = time.time()
+
+        def stream_worker():
+            try:
+                for chunk_type, chunk in completion_response_stream(
+                    model=model_id,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    chat_history=chat_history,
+                    temperature=0.7,
+                    image_urls=image_urls if support_images else None
+                ):
+                    if stream_stop_event.is_set():
+                        break
+                    stream_queue.put(('chunk', chunk_type, chunk))
+                stream_queue.put(('done', None, None))
+            except Exception as exc:
+                stream_queue.put(('error', exc, None))
+
+        threading.Thread(target=stream_worker, daemon=True).start()
+
+        while True:
             if not should_continue_streaming(conversation_id, pending_message_id):
                 stopped_early = True
+                stream_stop_event.set()
                 break
+
+            try:
+                stream_event, chunk_type, chunk = stream_queue.get(timeout=0.25)
+            except queue.Empty:
+                if (
+                    not first_chunk_received
+                    and not _timeout_fallback_used
+                    and (time.time() - stream_start_ts) >= 30.0
+                ):
+                    timeout_before_first_chunk = True
+                    stopped_early = True
+                    stream_stop_event.set()
+                    break
+                continue
+
+            if stream_event == 'done':
+                break
+            if stream_event == 'error':
+                raise chunk_type
+
+            first_chunk_received = True
 
             if chunk_type == 'thinking':
                 full_thinking += chunk
@@ -1543,6 +1656,76 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 if on_stream_progress and (now - last_snapshot_ts) >= 1.0:
                     on_stream_progress()
                     last_snapshot_ts = now
+
+        if timeout_before_first_chunk:
+            timeout_ts = datetime.now().strftime("%H:%M:%S")
+            timeout_notice = "⚠️ Timed out before first stream chunk."
+            emit_chat('console_log', {
+                'message': f"[{timeout_ts}] {role_label} exceeded 30s before first stream chunk"
+            })
+
+            update_message_content(
+                conversation_id,
+                pending_message_id,
+                f"[{role_label}] {timeout_notice}"
+            )
+            update_message_fields(
+                conversation_id,
+                pending_message_id,
+                raw_markdown=timeout_notice,
+                stream_status='timed_out'
+            )
+            emit_chat('ai_response_end', {
+                'bot_name': role_label,
+                'bot_id': bot_id,
+                'message': timeout_notice,
+                'thinking': '',
+                'timestamp': timeout_ts,
+                'stopped': True,
+                'message_id': pending_message_id,
+                'run_id': pending_message_id,
+                'run_group_id': run_group_id,
+                'role_name': role_name,
+                'model_id': model_id,
+                'is_final_response': is_final_response
+            })
+            emit_chat('council_status', {
+                'role': role_name,
+                'status': 'stopped',
+                'run_group_id': run_group_id
+            })
+
+            if conv.get('pending_message_id') == pending_message_id:
+                conv['pending_message_id'] = None
+            if on_stream_progress:
+                on_stream_progress()
+
+            fallback_model_id = str(load_config().get('FallBacker', '') or '').strip()
+            can_fallback = (
+                fallback_model_id
+                and fallback_model_id != model_id
+                and not _timeout_fallback_used
+            )
+            if can_fallback:
+                fallback_label = _build_fallback_role_label(role_label, fallback_model_id)
+                emit_chat('console_log', {
+                    'message': f"[{timeout_ts}] Retrying {role_name.replace('_', ' ')} with FallBacker ({fallback_model_id})"
+                })
+                return run_council_role(
+                    role_name=role_name,
+                    role_label=fallback_label,
+                    model_id=fallback_model_id,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    chat_history=chat_history,
+                    conversation_id=conversation_id,
+                    run_group_id=run_group_id,
+                    support_images=support_images,
+                    on_stream_progress=on_stream_progress,
+                    _retry=False,
+                    _timeout_fallback_used=True
+                )
+            return ''
 
         if stopped_early:
             timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1645,7 +1828,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         if not _retry:
             return run_council_role(
                 role_name, role_label, model_id, system_prompt, user_prompt,
-                chat_history, conversation_id, run_group_id, support_images, on_stream_progress, _retry=True
+                chat_history, conversation_id, run_group_id, support_images, on_stream_progress, _retry=True, _timeout_fallback_used=_timeout_fallback_used
             )
         # Second failure — skip this role
         notice = f"{role_label} has encountered an error and has to go without it."
@@ -1665,7 +1848,7 @@ def _run_optional_council_role(role_name, task_key, base_prompt, user_message, u
                                run_group_id, auto_save_chat, emit_chat, extra_context=''):
     """Execute one optional council role with consistent skip/log/run behavior."""
     role_task = tasks.get(task_key, 'SKIP')
-    if role_task.upper().strip() == 'SKIP':
+    if _is_skip_task(role_task):
         emit_chat('council_status', {'role': role_name, 'status': 'skipped'})
         emit_chat('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] {role_name.replace('_', ' ')}: SKIPPED"
@@ -1709,7 +1892,7 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
                                  emit_chat, stop_if_aborted):
     """Run a verifier-led debate stage after the first round without changing first-round steps."""
     verifier_task = tasks.get('verifier_task', 'SKIP')
-    if verifier_task.upper().strip() == 'SKIP':
+    if _is_skip_task(verifier_task):
         return ''
 
     debate_targets = ['Researcher', 'Creator', 'Analyzer']
@@ -1953,8 +2136,7 @@ def handle_message_task(data, conversation_id):
         return False
 
     conv = get_conversation(conversation_id)
-    conv['run_group_counter'] = conv.get('run_group_counter', 0) + 1
-    run_group_id = f"rungrp-{conv['run_group_counter']:06d}"
+    run_group_id = _build_run_group_id(conversation_id)
     conv['current_run_group_id'] = run_group_id
     append_conversation_message(conversation_id, "user", user_message, raw_markdown=user_message)
     auto_save_chat()
@@ -2116,6 +2298,91 @@ def handle_message_task(data, conversation_id):
         emit_chat('all_done')
         finalize_generation()
         return
+
+    direct_response = tasks.get('direct_response', '')
+    role_task_keys = ('researcher_task', 'creator_task', 'analyzer_task', 'verifier_task')
+    all_roles_skipped = all(_is_skip_task(tasks.get(task_key)) for task_key in role_task_keys)
+
+    if direct_response and all_roles_skipped:
+        direct_ts = datetime.now().strftime("%H:%M:%S")
+        emit_chat('console_log', {
+            'message': f"[{direct_ts}] Leader direct-response mode activated (all role tasks SKIP)."
+        })
+
+        for role_name in ('Researcher', 'Creator', 'Analyzer', 'Verifier'):
+            emit_chat('council_status', {
+                'role': role_name,
+                'status': 'skipped',
+                'run_group_id': run_group_id
+            })
+
+        final_message_id = uuid.uuid4().hex
+        final_bot_id = f"council-leader-final-{uuid.uuid4().hex[:8]}"
+        final_label = f"Leader - Final Response ({leader_model_id})"
+
+        append_conversation_message(
+            conversation_id,
+            role='assistant',
+            content=f"[{final_label}] {direct_response}",
+            raw_markdown=direct_response,
+            id=final_message_id,
+            bot_name=final_label,
+            bot_id=final_bot_id,
+            run_group_id=run_group_id,
+            run_id=final_message_id,
+            role_name='Leader',
+            model_id=leader_model_id,
+            thinking='',
+            stream_status='done',
+            is_final_response=True
+        )
+
+        emit_chat('ai_response_start', {
+            'bot_name': final_label,
+            'bot_id': final_bot_id,
+            'timestamp': direct_ts,
+            'message_id': final_message_id,
+            'run_id': final_message_id,
+            'run_group_id': run_group_id,
+            'role_name': 'Leader',
+            'model_id': leader_model_id,
+            'is_final_response': True
+        })
+
+        emit_chat('ai_response_end', {
+            'bot_name': final_label,
+            'bot_id': final_bot_id,
+            'message': direct_response,
+            'thinking': '',
+            'timestamp': direct_ts,
+            'message_id': final_message_id,
+            'run_id': final_message_id,
+            'run_group_id': run_group_id,
+            'role_name': 'Leader',
+            'model_id': leader_model_id,
+            'is_final_response': True
+        })
+
+        emit_chat('council_status', {
+            'role': 'Leader',
+            'status': 'done',
+            'run_group_id': run_group_id
+        })
+
+        auto_save_chat()
+        emit_chat('all_done')
+        emit_chat('run_group_end', {
+            'run_group_id': run_group_id,
+            'timestamp': datetime.now().strftime("%H:%M:%S")
+        })
+        conv['current_run_group_id'] = None
+        finalize_generation()
+        return
+
+    if direct_response and not all_roles_skipped:
+        emit_chat('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Leader direct_response ignored because one or more role tasks were assigned."
+        })
 
     council_results = {}
 
@@ -2440,6 +2707,8 @@ def handle_load_chat_history(data):
                 stream_status=msg.get('stream_status', ''),
                 is_final_response=bool(msg.get('is_final_response', False))
             )
+
+    _sync_run_group_counter(conversation_id, messages)
     
     timestamp = datetime.now().strftime("%H:%M:%S")
     emit('console_log', {

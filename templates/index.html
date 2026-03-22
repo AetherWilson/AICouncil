@@ -1652,7 +1652,7 @@
                     uploaded_documents: [],
                     streaming: {},
                     thinking_process: {
-                        collapsed: false,
+                        collapsed: true,
                         active_source: '',
                         preview_text: '',
                         active_container_id: null,
@@ -1732,13 +1732,10 @@
 
             let container = null;
             if (!forceNew && effectiveRunGroupId) {
-                container = conversationWindow.querySelector(`[data-run-group-id="${effectiveRunGroupId}"]`);
+                container = conversationWindow.querySelector(`.thinking-process-container[data-run-group-id="${effectiveRunGroupId}"]`);
             }
             if (!forceNew && !container && !effectiveRunGroupId && tp.active_container_id) {
-                container = conversationWindow.querySelector(`[data-thinking-container-id="${tp.active_container_id}"]`);
-            }
-            if (!forceNew && !container && !effectiveRunGroupId) {
-                container = conversationWindow.querySelector('.thinking-process-container:last-of-type');
+                container = conversationWindow.querySelector(`.thinking-process-container[data-thinking-container-id="${tp.active_container_id}"]`);
             }
             if (container && !forceNew) {
                 if (!container.dataset.thinkingContainerId) {
@@ -1791,10 +1788,10 @@
 
             let container = null;
             if (runGroupId) {
-                container = conversationWindow.querySelector(`[data-run-group-id="${runGroupId}"]`);
+                container = conversationWindow.querySelector(`.thinking-process-container[data-run-group-id="${runGroupId}"]`);
             }
             if (!container && !runGroupId && tp.active_container_id) {
-                container = conversationWindow.querySelector(`[data-thinking-container-id="${tp.active_container_id}"]`);
+                container = conversationWindow.querySelector(`.thinking-process-container[data-thinking-container-id="${tp.active_container_id}"]`);
             }
             if (!createIfMissing) {
                 return container;
@@ -2125,21 +2122,82 @@
         function deleteMessage(menuItem) {
             if (confirm('Are you sure you want to delete this message?')) {
                 const messageDiv = menuItem.closest('.message');
+                if (!messageDiv) return;
                 const menu = messageDiv.querySelector('.message-menu');
+                const activeChatId = currentSessionId || tempChatId;
+                const runGroupId = messageDiv.getAttribute('data-run-group-id');
+                const isFinalResponse = messageDiv.getAttribute('data-is-final-response') === 'true';
                 
                 // Close the menu
                 if (menu) menu.classList.remove('active');
-                
-                // Remove the message from the DOM
-                messageDiv.remove();
+
+                if (isFinalResponse && runGroupId) {
+                    const safeRunGroupId = (window.CSS && typeof window.CSS.escape === 'function')
+                        ? window.CSS.escape(runGroupId)
+                        : String(runGroupId).replace(/(["\\])/g, '\\$1');
+
+                    const conversationWindow = document.getElementById('conversationWindow');
+                    conversationWindow.querySelectorAll(`.message[data-run-group-id="${safeRunGroupId}"]`).forEach(node => node.remove());
+                    conversationWindow.querySelectorAll(`.thinking-process-container[data-run-group-id="${safeRunGroupId}"]`).forEach(node => node.remove());
+
+                    const state = ensureConversation(activeChatId);
+                    if (state) {
+                        if (state.messages) {
+                            state.messages = state.messages.filter(msg => (msg.run_group_id || null) !== runGroupId);
+                        }
+                        if (state.streaming) {
+                            Object.keys(state.streaming).forEach(messageId => {
+                                const entry = state.streaming[messageId];
+                                if (entry && entry.run_group_id === runGroupId) {
+                                    delete state.streaming[messageId];
+                                }
+                            });
+                        }
+                        if (state.thinking_process && state.thinking_process.group_container_ids) {
+                            delete state.thinking_process.group_container_ids[runGroupId];
+                        }
+                        if (state.thinking_process && state.thinking_process.active_run_group_id === runGroupId) {
+                            state.thinking_process.active_run_group_id = null;
+                            state.thinking_process.active_container_id = null;
+                            state.thinking_process.active_source = '';
+                            state.thinking_process.preview_text = '';
+                        }
+                    }
+                    if (activeChatId && streamingMessages[activeChatId]) {
+                        Object.keys(streamingMessages[activeChatId]).forEach(messageId => {
+                            const entry = streamingMessages[activeChatId][messageId];
+                            if (entry && entry.run_group_id === runGroupId) {
+                                delete streamingMessages[activeChatId][messageId];
+                            }
+                        });
+                    }
+                    refreshThinkingProcessUI(activeChatId);
+                    addConsoleLog(`Final response and linked thinking process removed (${runGroupId})`);
+                } else {
+                    // Remove only this message from the DOM
+                    const parentThinkingContainer = messageDiv.closest('.thinking-process-container');
+                    messageDiv.remove();
+
+                    if (parentThinkingContainer && !parentThinkingContainer.querySelector('.message')) {
+                        const emptyGroupId = parentThinkingContainer.getAttribute('data-run-group-id');
+                        parentThinkingContainer.remove();
+                        const state = ensureConversation(activeChatId);
+                        if (state && state.thinking_process && state.thinking_process.group_container_ids && emptyGroupId) {
+                            delete state.thinking_process.group_container_ids[emptyGroupId];
+                            if (state.thinking_process.active_run_group_id === emptyGroupId) {
+                                state.thinking_process.active_run_group_id = null;
+                                state.thinking_process.active_container_id = null;
+                            }
+                        }
+                    }
+
+                    addConsoleLog('Message deleted from chat');
+                }
                 
                 // Sync with backend history
                 const messages = getCurrentMessages();
-                const activeChatId = currentSessionId || tempChatId;
-                        if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
-                        socket.emit('load_chat_history', { chat_id: activeChatId, messages: messages });
-                
-                addConsoleLog('Message deleted from chat');
+                if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
+                socket.emit('load_chat_history', { chat_id: activeChatId, messages: messages });
                 
                 // Trigger auto-save to update temp chat if needed
                 autoSaveTempChat();
@@ -3935,6 +3993,8 @@
         function renderLoadedMessages(conversationWindow, messages, chatId) {
             const state = ensureConversation(chatId);
             if (!state) return;
+            resetThinkingProcessState(state, false);
+            state.thinking_process.collapsed = true;
 
             const thinkingListsByGroup = {};
             let hasNonFinal = false;
@@ -4058,7 +4118,8 @@
                         if (loadedState) {
                             loadedState.streaming = {};
                             loadedState.pending_message_id = null;
-                            resetThinkingProcessState(loadedState);
+                            resetThinkingProcessState(loadedState, false);
+                            loadedState.thinking_process.collapsed = true;
                         }
                         if (streamingMessages[currentSessionId]) {
                             delete streamingMessages[currentSessionId];
@@ -4314,7 +4375,8 @@
                         if (tempState) {
                             tempState.streaming = {};
                             tempState.pending_message_id = null;
-                            resetThinkingProcessState(tempState);
+                            resetThinkingProcessState(tempState, false);
+                            tempState.thinking_process.collapsed = true;
                         }
                         if (streamingMessages[tempChatId]) {
                             delete streamingMessages[tempChatId];
