@@ -2452,13 +2452,57 @@
         function looksLikeStandaloneHtmlDocument(text) {
             const source = String(text || '').trim();
             if (!source) return false;
-            return /<!DOCTYPE\s+html/i.test(source) || /<html\b[\s\S]*<\/html>/i.test(source);
+
+            // Strong signals for full HTML documents.
+            if (/<!DOCTYPE\s+html/i.test(source) || /<html\b[\s\S]*<\/html>/i.test(source)) {
+                return true;
+            }
+
+            // Strong signals for entity-encoded full HTML documents.
+            if (/&lt;!DOCTYPE\s+html/i.test(source) || /&lt;html\b[\s\S]*&lt;\/html&gt;/i.test(source)) {
+                return true;
+            }
+
+            const htmlTagMatches = source.match(/<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s+[^>\n]*)?>/g) || [];
+            const encodedTagMatches = source.match(/&lt;\/?[A-Za-z][A-Za-z0-9:-]*(?:\s+[^&\n]*?)?&gt;/g) || [];
+            const totalTagMatches = htmlTagMatches.length + encodedTagMatches.length;
+
+            if (totalTagMatches < 2) {
+                return false;
+            }
+
+            const hasStructuralTag = /<(?:head|body|main|section|article|nav|header|footer|table|form|script|style)\b/i.test(source)
+                || /&lt;(?:head|body|main|section|article|nav|header|footer|table|form|script|style)\b/i.test(source);
+
+            const startsWithTag = /^\s*(?:<|&lt;)[A-Za-z!][\s\S]*$/i.test(source);
+            const hasClosingTag = /<\/[A-Za-z][A-Za-z0-9:-]*>|&lt;\/[A-Za-z][A-Za-z0-9:-]*&gt;/i.test(source);
+            const hasMultilineMarkup = totalTagMatches >= 3 && source.includes('\n');
+
+            return hasStructuralTag || (startsWithTag && hasClosingTag) || hasMultilineMarkup;
         }
 
         function wrapStandaloneHtmlAsCodeBlock(text) {
             const normalized = String(text || '').trim();
             if (!normalized) return '';
             return '```html\n' + normalized + '\n```';
+        }
+
+        function normalizeEncodedHtmlTagDelimiters(text) {
+            return String(text || '')
+                .replace(/&lt;/gi, '<')
+                .replace(/&gt;/gi, '>');
+        }
+
+        function normalizeHtmlIntentForDisplay(text) {
+            const source = String(text || '');
+            if (!source) return source;
+
+            // If the content is HTML-intent but tags are entity-encoded,
+            // normalize delimiters so users can copy/paste directly as HTML.
+            if (looksLikeStandaloneHtmlDocument(source) && /&lt;\/?[A-Za-z!]/i.test(source)) {
+                return normalizeEncodedHtmlTagDelimiters(source);
+            }
+            return source;
         }
 
         function recoverLegacyRawMessageContent(content) {
@@ -2532,6 +2576,28 @@
             }
 
             return body.trim();
+        }
+
+        function extractTopLevelFencedCode(text) {
+            const source = String(text || '');
+            const trimmed = source.trim();
+            const match = trimmed.match(/^```([^\n`]*)\n([\s\S]*?)\n```$/);
+            if (!match) return null;
+
+            return {
+                lang: (match[1] || '').trim().toLowerCase(),
+                body: match[2] || ''
+            };
+        }
+
+        function isHtmlFenceLanguage(lang) {
+            const value = String(lang || '').toLowerCase();
+            return ['html', 'htm', 'xhtml', 'xml'].includes(value);
+        }
+
+        function renderRawHtmlCodeBlock(rawHtml) {
+            const escaped = escapeHtml(String(rawHtml || ''));
+            return `<pre data-language="html"><code class="language-html">${escaped}</code></pre>`;
         }
 
         function protectCodeSegments(text) {
@@ -2726,24 +2792,31 @@
         }
 
         function formatMessage(content) {
-            content = String(content || '');
-            content = unwrapTopLevelMarkdownFence(content);
-
-            if (looksLikeStandaloneHtmlDocument(content)) {
-                content = wrapStandaloneHtmlAsCodeBlock(content);
+            const rawSource = String(content || '');
+            const topFence = extractTopLevelFencedCode(rawSource);
+            if (topFence && isHtmlFenceLanguage(topFence.lang)) {
+                const normalizedBody = normalizeHtmlIntentForDisplay(topFence.body.trim());
+                return renderRawHtmlCodeBlock(normalizedBody);
             }
 
-            const protectedCode = protectCodeSegments(content);
-            content = protectedCode.content;
+            let processed = unwrapTopLevelMarkdownFence(rawSource);
 
-            content = normalizeLegacySingleDollarLineMath(content);
-            content = normalizeInlineDollarMath(content);
-            content = escapeRawHtmlOutsideCode(content);
+            if (looksLikeStandaloneHtmlDocument(processed)) {
+                const normalizedStandalone = normalizeHtmlIntentForDisplay(processed);
+                return renderRawHtmlCodeBlock(normalizedStandalone);
+            }
 
-            content = restoreCodeSegments(content, protectedCode);
+            const protectedCode = protectCodeSegments(processed);
+            processed = protectedCode.content;
 
-            const protectedLatex = protectLatexSegments(content);
-            content = protectedLatex.content;
+            processed = normalizeLegacySingleDollarLineMath(processed);
+            processed = normalizeInlineDollarMath(processed);
+            processed = escapeRawHtmlOutsideCode(processed);
+
+            processed = restoreCodeSegments(processed, protectedCode);
+
+            const protectedLatex = protectLatexSegments(processed);
+            processed = protectedLatex.content;
             
             // Configure marked.js options
             marked.setOptions({
@@ -2762,7 +2835,7 @@
             });
             
             // Parse markdown
-            let html = marked.parse(content);
+            let html = marked.parse(processed);
             
             // Add language attribute to code blocks for display
             html = html.replace(/<pre><code class="language-(\w+)">/g, (match, lang) => {
@@ -2873,6 +2946,13 @@
             console.log('Copy button clicked. Content length:', contentToCopy ? contentToCopy.length : 0);
             
             if (contentToCopy && contentToCopy.trim()) {
+                const topFence = extractTopLevelFencedCode(contentToCopy);
+                if (topFence && isHtmlFenceLanguage(topFence.lang)) {
+                    contentToCopy = normalizeHtmlIntentForDisplay(topFence.body.trim());
+                } else if (looksLikeStandaloneHtmlDocument(contentToCopy)) {
+                    contentToCopy = normalizeHtmlIntentForDisplay(contentToCopy);
+                }
+
                 // Try modern clipboard API first
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(contentToCopy).then(() => {
