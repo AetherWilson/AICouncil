@@ -2137,6 +2137,26 @@
             return role.replace(/_/g, ' ');
         }
 
+        function escapeForAttributeSelector(value) {
+            if (window.CSS && typeof window.CSS.escape === 'function') {
+                return window.CSS.escape(String(value));
+            }
+            return String(value).replace(/(["\\])/g, '\\$1');
+        }
+
+        function getMessageRole(msg) {
+            const raw = String((msg && (msg.role || msg.type)) || '').toLowerCase();
+            return raw === 'ai' ? 'assistant' : raw;
+        }
+
+        function isUserMessage(msg) {
+            return getMessageRole(msg) === 'user';
+        }
+
+        function isAssistantMessage(msg) {
+            return getMessageRole(msg) === 'assistant';
+        }
+
         function isFinalResponseName(name) {
             const sender = (name || '').toLowerCase();
             return sender.includes('leader') && sender.includes('final response');
@@ -2219,7 +2239,7 @@
             container = document.createElement('div');
             container.className = 'thinking-process-container';
             container.dataset.thinkingContainerId = buildThinkingContainerId();
-            container.dataset.runGroupId = effectiveRunGroupId || `legacy-${Date.now()}`;
+            container.dataset.runGroupId = effectiveRunGroupId || `rungrp-${Date.now()}`;
             tp.active_container_id = container.dataset.thinkingContainerId;
             tp.active_run_group_id = container.dataset.runGroupId;
             tp.group_container_ids[tp.active_run_group_id] = tp.active_container_id;
@@ -2593,9 +2613,7 @@
                 const isFinalResponse = messageDiv.getAttribute('data-is-final-response') === 'true';
 
                 if (isFinalResponse && runGroupId) {
-                    const safeRunGroupId = (window.CSS && typeof window.CSS.escape === 'function')
-                        ? window.CSS.escape(runGroupId)
-                        : String(runGroupId).replace(/(["\\])/g, '\\$1');
+                    const safeRunGroupId = escapeForAttributeSelector(runGroupId);
 
                     const conversationWindow = document.getElementById('conversationWindow');
                     conversationWindow.querySelectorAll(`.message[data-run-group-id="${safeRunGroupId}"]`).forEach(node => node.remove());
@@ -2781,12 +2799,6 @@
         function findFinalMessageIndex(state, messageId, runGroupId) {
             if (!state || !Array.isArray(state.messages)) return -1;
 
-            const getRole = (msg) => {
-                const raw = String((msg && (msg.role || msg.type)) || '').toLowerCase();
-                if (raw === 'ai') return 'assistant';
-                return raw;
-            };
-
             if (messageId) {
                 const byId = state.messages.findIndex(msg => msg.id === messageId);
                 if (byId >= 0) return byId;
@@ -2795,7 +2807,7 @@
             if (runGroupId) {
                 for (let i = state.messages.length - 1; i >= 0; i--) {
                     const msg = state.messages[i];
-                    if ((msg.run_group_id || null) === runGroupId && getRole(msg) === 'assistant' && msg.is_final_response) {
+                    if ((msg.run_group_id || null) === runGroupId && isAssistantMessage(msg) && msg.is_final_response) {
                         return i;
                     }
                 }
@@ -2805,12 +2817,6 @@
 
         function findSourceUserIndexForFinal(state, finalIdx, runGroupId) {
             if (!state || !Array.isArray(state.messages) || finalIdx < 0) return -1;
-
-            const getRole = (msg) => {
-                const raw = String((msg && (msg.role || msg.type)) || '').toLowerCase();
-                if (raw === 'ai') return 'assistant';
-                return raw;
-            };
 
             let runStartIdx = finalIdx;
             if (runGroupId) {
@@ -2823,13 +2829,13 @@
             }
 
             for (let i = runStartIdx - 1; i >= 0; i--) {
-                if (getRole(state.messages[i]) === 'user') {
+                if (isUserMessage(state.messages[i])) {
                     return i;
                 }
             }
 
             for (let i = finalIdx - 1; i >= 0; i--) {
-                if (getRole(state.messages[i]) === 'user') {
+                if (isUserMessage(state.messages[i])) {
                     return i;
                 }
             }
@@ -2865,8 +2871,7 @@
             }
 
             const sourceUser = state.messages[sourceUserIdx];
-            const sourceUserRole = String((sourceUser && (sourceUser.role || sourceUser.type)) || '').toLowerCase();
-            const isSourceUser = sourceUserRole === 'user';
+            const isSourceUser = isUserMessage(sourceUser);
             if (!sourceUser || !isSourceUser) {
                 addConsoleLog('Redo source is not a user message.');
                 return;
@@ -2964,7 +2969,6 @@
 
             state.messages[targetIdx].content = newContent;
             state.messages[targetIdx].raw_markdown = newContent;
-            state.messages[targetIdx].raw_content = newContent;
 
             truncateStateAfterIndex(activeChatId, targetIdx);
             rerenderConversationFromState(activeChatId);
@@ -2986,8 +2990,7 @@
             let latestFinalId = null;
             for (let i = state.messages.length - 1; i >= 0; i--) {
                 const msg = state.messages[i];
-                const role = String((msg && (msg.role || msg.type)) || '').toLowerCase();
-                const isAssistant = role === 'assistant' || role === 'ai';
+                const isAssistant = isAssistantMessage(msg);
                 if (isAssistant && msg.is_final_response) {
                     latestFinalId = msg.id;
                     break;
@@ -2996,9 +2999,7 @@
 
             if (!latestFinalId) return;
 
-            const escapedId = (window.CSS && typeof window.CSS.escape === 'function')
-                ? window.CSS.escape(latestFinalId)
-                : String(latestFinalId).replace(/(["\\])/g, '\\$1');
+            const escapedId = escapeForAttributeSelector(latestFinalId);
             const latestNode = conversationWindow.querySelector(`.message[data-message-id="${escapedId}"]`);
             if (latestNode) {
                 latestNode.classList.add('latest-final-response');
@@ -3045,7 +3046,7 @@
             let skippedCount = 0;
 
             for (const { key, label } of roleConfig) {
-                const task = (tasks[key] || tasks.creative_writer_task || 'SKIP');
+                const task = tasks[key] || 'SKIP';
                 const isSkip = task.trim().toUpperCase() === 'SKIP';
                 if (isSkip) skippedCount += 1;
                 else activeCount += 1;
@@ -3128,9 +3129,6 @@
             const mapping = {
                 researcher: 'RESEARCHER',
                 creator: 'CREATOR',
-                creative_writer: 'CREATOR',
-                'creative-writer': 'CREATOR',
-                'creative writer': 'CREATOR',
                 analyzer: 'ANALYZER',
                 verifier: 'VERIFIER'
             };
@@ -3150,7 +3148,7 @@
 
         function isTaskDistributionPayload(payload) {
             if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
-            const keys = ['analysis', 'researcher_task', 'creator_task', 'creative_writer_task', 'analyzer_task', 'verifier_task'];
+            const keys = ['analysis', 'researcher_task', 'creator_task', 'analyzer_task', 'verifier_task'];
             return keys.some(k => Object.prototype.hasOwnProperty.call(payload, k));
         }
 
@@ -3367,60 +3365,14 @@
             return source;
         }
 
-        function recoverLegacyRawMessageContent(content) {
-            if (typeof content !== 'string') {
-                return String(content || '');
-            }
-            if (!/[<>]/.test(content)) {
-                return content;
-            }
-
-            const temp = document.createElement('div');
-            temp.innerHTML = content;
-
-            temp.querySelectorAll('.code-controls, .code-copy-btn, .code-wrap-btn, .code-hide-btn, .message-action-row, .message-action-btn, .katex-html').forEach(el => el.remove());
-
-            temp.querySelectorAll('.katex').forEach(el => {
-                const annotation = el.querySelector('annotation');
-                const latexSource = annotation ? annotation.textContent : (el.textContent || '');
-                el.replaceWith(document.createTextNode(latexSource));
-            });
-
-            temp.querySelectorAll('pre').forEach(pre => {
-                const code = pre.querySelector('code');
-                const text = code ? code.textContent : pre.textContent;
-                pre.replaceWith(document.createTextNode(`\n\`\`\`\n${text}\n\`\`\`\n`));
-            });
-
-            temp.querySelectorAll('br').forEach(br => br.replaceWith(document.createTextNode('\n')));
-            temp.querySelectorAll('li').forEach(li => {
-                if (!li.textContent.trim().startsWith('- ')) {
-                    li.insertBefore(document.createTextNode('- '), li.firstChild);
-                }
-                li.appendChild(document.createTextNode('\n'));
-            });
-            temp.querySelectorAll('p, div, blockquote, h1, h2, h3, h4, h5, h6').forEach(el => {
-                el.appendChild(document.createTextNode('\n\n'));
-            });
-
-            const recovered = temp.textContent || temp.innerText || '';
-            return decodeHtmlEntities(recovered).replace(/\n{3,}/g, '\n\n').trim();
-        }
-
         function getStoredMessageRawContent(msg) {
             if (!msg) return '';
 
             if (typeof msg.raw_markdown === 'string' && msg.raw_markdown.length > 0) {
                 return msg.raw_markdown;
             }
-            if (typeof msg.raw_content === 'string' && msg.raw_content.length > 0) {
-                return msg.raw_content;
-            }
-            if (typeof msg.content_raw === 'string' && msg.content_raw.length > 0) {
-                return msg.content_raw;
-            }
             if (typeof msg.content === 'string') {
-                return recoverLegacyRawMessageContent(msg.content);
+                return msg.content;
             }
             return '';
         }
@@ -3794,7 +3746,7 @@
                 if (messageContent) {
                     // Try to get plain text content
                     contentToCopy = messageContent.innerText || messageContent.textContent;
-                    console.log('Using extracted text content (no raw_content found)');
+                    console.log('Using extracted text content (no raw markdown found)');
                 }
             }
             
@@ -4209,6 +4161,64 @@
             scrollToBottomIfNeeded(conversationWindow);
         }
 
+        function appendStreamingChunk(data, options = {}) {
+            if (data && data.internal_orchestration === true) return;
+            const chatId = data.chat_id;
+            const messageId = data.message_id || data.bot_id;
+            const state = ensureConversation(chatId);
+            if (state && state.pending_message_id && state.pending_message_id !== messageId) {
+                return;
+            }
+
+            const entry = getStreamEntry(data);
+            if (!entry) return;
+
+            const chunkValue = data.chunk || '';
+            if (options.targetField === 'thinkingText') {
+                entry.thinkingText += chunkValue;
+            } else {
+                entry.rawText += chunkValue;
+            }
+
+            ensureStreamDiv(chatId, data, entry);
+            if (entry.isNonFinal) {
+                updateThinkingPreviewFromEntry(chatId, entry);
+            }
+
+            if (chatId !== getActiveChatId() || !entry.div) return;
+
+            if (options.targetField === 'thinkingText') {
+                const block = entry.div.querySelector('.thinking-block');
+                const content = entry.div.querySelector('.thinking-content');
+                if (block) block.style.display = '';
+                if (content) content.textContent = entry.thinkingText;
+            } else {
+                const streamSpan = entry.div.querySelector('.stream-text');
+                if (streamSpan) streamSpan.textContent = entry.rawText;
+            }
+
+            const conversationWindow = document.getElementById('conversationWindow');
+            scrollToBottomIfNeeded(conversationWindow);
+        }
+
+        function buildAssistantStateMessage(data, entry, messageId) {
+            return {
+                id: messageId,
+                role: 'assistant',
+                sender: data.bot_name,
+                content: data.message,
+                raw_markdown: data.message,
+                timestamp: data.timestamp || new Date().toISOString(),
+                run_group_id: data.run_group_id || entry.run_group_id || null,
+                run_id: data.run_id || entry.run_id || messageId,
+                model_id: data.model_id || null,
+                role_name: data.role_name || null,
+                thinking: data.thinking || '',
+                is_final_response: (typeof data.is_final_response === 'boolean') ? data.is_final_response : false,
+                stream_status: data.stopped ? 'stopped' : 'done'
+            };
+        }
+
         socket.on('ai_response_start', function(data) {
             if (data && data.internal_orchestration === true) return;
             const chatId = data.chat_id;
@@ -4240,49 +4250,11 @@
         });
 
         socket.on('ai_thinking_chunk', function(data) {
-            if (data && data.internal_orchestration === true) return;
-            const chatId = data.chat_id;
-            const messageId = data.message_id || data.bot_id;
-            const state = ensureConversation(chatId);
-            if (state && state.pending_message_id && state.pending_message_id !== messageId) {
-                return;
-            }
-            const entry = getStreamEntry(data);
-            if (!entry) return;
-            entry.thinkingText += data.chunk;
-            ensureStreamDiv(chatId, data, entry);
-            if (entry.isNonFinal) {
-                updateThinkingPreviewFromEntry(chatId, entry);
-            }
-            if (chatId !== getActiveChatId() || !entry.div) return;
-            const block = entry.div.querySelector('.thinking-block');
-            const content = entry.div.querySelector('.thinking-content');
-            if (block) block.style.display = '';
-            if (content) content.textContent = entry.thinkingText;
-            const conversationWindow = document.getElementById('conversationWindow');
-            scrollToBottomIfNeeded(conversationWindow);
+            appendStreamingChunk(data, { targetField: 'thinkingText' });
         });
 
         socket.on('ai_response_chunk', function(data) {
-            if (data && data.internal_orchestration === true) return;
-            const chatId = data.chat_id;
-            const messageId = data.message_id || data.bot_id;
-            const state = ensureConversation(chatId);
-            if (state && state.pending_message_id && state.pending_message_id !== messageId) {
-                return;
-            }
-            const entry = getStreamEntry(data);
-            if (!entry) return;
-            entry.rawText += data.chunk;
-            ensureStreamDiv(chatId, data, entry);
-            if (entry.isNonFinal) {
-                updateThinkingPreviewFromEntry(chatId, entry);
-            }
-            if (chatId !== getActiveChatId() || !entry.div) return;
-            const streamSpan = entry.div.querySelector('.stream-text');
-            if (streamSpan) streamSpan.textContent = entry.rawText;
-            const conversationWindow = document.getElementById('conversationWindow');
-            scrollToBottomIfNeeded(conversationWindow);
+            appendStreamingChunk(data, { targetField: 'rawText' });
         });
 
         socket.on('ai_response_end', function(data) {
@@ -4303,21 +4275,7 @@
             ensureStreamDiv(chatId, data, entry);
             if (chatId !== getActiveChatId() || !entry.div) {
                 if (state) {
-                    state.messages.push({
-                        id: messageId,
-                        role: 'assistant',
-                        sender: data.bot_name,
-                        content: data.message,
-                        raw_markdown: data.message,
-                        timestamp: data.timestamp || new Date().toISOString(),
-                        run_group_id: data.run_group_id || entry.run_group_id || null,
-                        run_id: data.run_id || entry.run_id || messageId,
-                        model_id: data.model_id || null,
-                        role_name: data.role_name || null,
-                        thinking: data.thinking || '',
-                        is_final_response: (typeof data.is_final_response === 'boolean') ? data.is_final_response : false,
-                        stream_status: data.stopped ? 'stopped' : 'done'
-                    });
+                    state.messages.push(buildAssistantStateMessage(data, entry, messageId));
                 }
                 if (streamingMessages[chatId]) {
                     delete streamingMessages[chatId][messageId];
@@ -4383,21 +4341,7 @@
             const conversationWindow = document.getElementById('conversationWindow');
             scrollToBottomIfNeeded(conversationWindow);
             if (state) {
-                state.messages.push({
-                    id: messageId,
-                    role: 'assistant',
-                    sender: data.bot_name,
-                    content: data.message,
-                    raw_markdown: data.message,
-                    timestamp: data.timestamp || new Date().toISOString(),
-                    run_group_id: data.run_group_id || entry.run_group_id || null,
-                    run_id: data.run_id || entry.run_id || messageId,
-                    model_id: data.model_id || null,
-                    role_name: data.role_name || null,
-                    thinking: data.thinking || '',
-                    is_final_response: (typeof data.is_final_response === 'boolean') ? data.is_final_response : false,
-                    stream_status: data.stopped ? 'stopped' : 'done'
-                });
+                state.messages.push(buildAssistantStateMessage(data, entry, messageId));
             }
             if (entry.isNonFinal) {
                 updateThinkingPreviewFromEntry(chatId, entry);
@@ -4804,7 +4748,7 @@
                 messageDiv.setAttribute('data-message-id', resolvedMessageId);
 
                 const isNonFinal = isNonFinalSavedMessage(msg);
-                const runGroupId = msg.run_group_id || 'legacy-non-final';
+                const runGroupId = msg.run_group_id || 'non-final';
                 if (isNonFinal) {
                     hasNonFinal = true;
                     if (!thinkingListsByGroup[runGroupId]) {
@@ -4890,6 +4834,59 @@
             refreshInlineActionVisibility(chatId);
         }
 
+        function prepareConversationForLoad(chatId) {
+            const conversationWindow = document.getElementById('conversationWindow');
+            if (!conversationWindow) return null;
+            conversationWindow.innerHTML = '';
+
+            const state = ensureConversation(chatId);
+            if (state) {
+                state.streaming = {};
+                state.pending_message_id = null;
+                resetThinkingProcessState(state, false);
+                state.thinking_process.collapsed = true;
+            }
+
+            if (streamingMessages[chatId]) {
+                delete streamingMessages[chatId];
+            }
+
+            return { conversationWindow, state };
+        }
+
+        function restoreLoadedDocuments(chat) {
+            uploadedPDFs = [];
+            displayPDFs();
+            if (!chat || !chat.uploadedDocuments || chat.uploadedDocuments.length === 0) {
+                return;
+            }
+
+            fetch('/api/restore_documents', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({documents: chat.uploadedDocuments, chat_id: chat.id})
+            })
+            .then(response => response.json())
+            .then(restoreData => {
+                if (restoreData.success) {
+                    uploadedPDFs = restoreData.documents;
+                    displayPDFs();
+                    addConsoleLog(`Restored ${uploadedPDFs.length} document(s)`);
+                }
+            })
+            .catch(error => {
+                console.error('Error restoring documents:', error);
+            });
+        }
+
+        function setActiveHistoryItemByChatId(chatId) {
+            document.querySelectorAll('.history-item').forEach(item => {
+                const onclickValue = item.getAttribute('onclick');
+                const isMatch = onclickValue && onclickValue.includes(chatId);
+                item.classList.toggle('active', !!isMatch);
+            });
+        }
+
         function loadChat(chatId) {
             fetch(`/api/load_chat/${chatId}`)
                 .then(response => response.json())
@@ -4897,19 +4894,9 @@
                     if (data.success && data.chat) {
                         currentSessionId = data.chat.id;
                         currentSessionName = data.chat.name;
-                        // Clear current conversation
-                        const conversationWindow = document.getElementById('conversationWindow');
-                        conversationWindow.innerHTML = '';
-                        const loadedState = ensureConversation(currentSessionId);
-                        if (loadedState) {
-                            loadedState.streaming = {};
-                            loadedState.pending_message_id = null;
-                            resetThinkingProcessState(loadedState, false);
-                            loadedState.thinking_process.collapsed = true;
-                        }
-                        if (streamingMessages[currentSessionId]) {
-                            delete streamingMessages[currentSessionId];
-                        }
+                        const prepared = prepareConversationForLoad(currentSessionId);
+                        if (!prepared) return;
+                        const { conversationWindow, state: loadedState } = prepared;
                         
                         // Load messages with unified non-final grouping
                         renderLoadedMessages(conversationWindow, data.chat.messages || [], currentSessionId);
@@ -4920,27 +4907,7 @@
                             sysPromptEl.value = data.chat.systemPrompt;
                         }
 
-                        // Restore uploaded documents if available
-                        uploadedPDFs = [];
-                        displayPDFs();
-                        if (data.chat.uploadedDocuments && data.chat.uploadedDocuments.length > 0) {
-                            fetch('/api/restore_documents', {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({documents: data.chat.uploadedDocuments, chat_id: data.chat.id})
-                            })
-                            .then(response => response.json())
-                            .then(restoreData => {
-                                if (restoreData.success) {
-                                    uploadedPDFs = restoreData.documents;
-                                    displayPDFs();
-                                    addConsoleLog(`Restored ${uploadedPDFs.length} document(s)`);
-                                }
-                            })
-                            .catch(error => {
-                                console.error('Error restoring documents:', error);
-                            });
-                        }
+                        restoreLoadedDocuments(data.chat);
 
                         // Update current session info
                         document.getElementById('currentSessionName').innerHTML = `<span>${currentSessionName}</span>`;
@@ -4951,13 +4918,7 @@
                         setProcessingState(!!data.chat.isGenerating);
                         
                         // Update active state in history list
-                        document.querySelectorAll('.history-item').forEach(item => {
-                            if (item.getAttribute('onclick').includes(chatId)) {
-                                item.classList.add('active');
-                            } else {
-                                item.classList.remove('active');
-                            }
-                        });
+                        setActiveHistoryItemByChatId(chatId);
                         
                         const activeChatId = currentSessionId || tempChatId;
                         if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
@@ -5024,13 +4985,12 @@
                 }
                 
                 if (content) {
-                    const rawContent = msg.getAttribute('data-raw-content') || recoverLegacyRawMessageContent(content.innerHTML);
+                    const rawContent = msg.getAttribute('data-raw-content') || content.innerText || content.textContent || '';
                     const messageData = {
                         id: msg.getAttribute('data-message-id') || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                         type: msg.classList.contains('user') ? 'user' : 'ai',
                         sender: senderText,
                         content: rawContent,
-                        raw_content: rawContent,
                         raw_markdown: rawContent,
                         is_council_intermediate: msg.getAttribute('data-council-intermediate') === 'true',
                         is_collapsed: msg.classList.contains('collapsed'),
@@ -5155,19 +5115,9 @@
                         tempChatId = data.chat.id;
                         currentSessionId = null;
                         currentSessionName = 'Temporary Chat';
-                        // Clear current conversation
-                        const conversationWindow = document.getElementById('conversationWindow');
-                        conversationWindow.innerHTML = '';
-                        const tempState = ensureConversation(tempChatId);
-                        if (tempState) {
-                            tempState.streaming = {};
-                            tempState.pending_message_id = null;
-                            resetThinkingProcessState(tempState, false);
-                            tempState.thinking_process.collapsed = true;
-                        }
-                        if (streamingMessages[tempChatId]) {
-                            delete streamingMessages[tempChatId];
-                        }
+                        const prepared = prepareConversationForLoad(tempChatId);
+                        if (!prepared) return;
+                        const { conversationWindow, state: tempState } = prepared;
                         
                         // Load messages with unified non-final grouping
                         renderLoadedMessages(conversationWindow, data.chat.messages || [], tempChatId);
@@ -5186,37 +5136,10 @@
                             sysPromptElTemp.value = data.chat.systemPrompt;
                         }
 
-                        // Restore uploaded documents if available
-                        uploadedPDFs = [];
-                        displayPDFs();
-                        if (data.chat.uploadedDocuments && data.chat.uploadedDocuments.length > 0) {
-                            fetch('/api/restore_documents', {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({documents: data.chat.uploadedDocuments, chat_id: data.chat.id})
-                            })
-                            .then(response => response.json())
-                            .then(restoreData => {
-                                if (restoreData.success) {
-                                    uploadedPDFs = restoreData.documents;
-                                    displayPDFs();
-                                    addConsoleLog(`Restored ${uploadedPDFs.length} document(s)`);
-                                }
-                            })
-                            .catch(error => {
-                                console.error('Error restoring documents:', error);
-                            });
-                        }
+                        restoreLoadedDocuments(data.chat);
                         
                         // Update active state in history list
-                        document.querySelectorAll('.history-item').forEach(item => {
-                            item.classList.remove('active');
-                        });
-                        document.querySelectorAll('.history-item').forEach(item => {
-                            if (item.getAttribute('onclick') && item.getAttribute('onclick').includes(chatId)) {
-                                item.classList.add('active');
-                            }
-                        });
+                        setActiveHistoryItemByChatId(chatId);
                         
                         const activeChatId = currentSessionId || tempChatId;
                         if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }

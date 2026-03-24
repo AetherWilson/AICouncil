@@ -137,7 +137,7 @@ def _extract_raw_markdown_from_ui_message(message):
     if not isinstance(message, dict):
         return str(message or '')
 
-    for key in ('raw_markdown', 'raw_content', 'content_raw', 'content'):
+    for key in ('raw_markdown', 'content'):
         value = message.get(key)
         if isinstance(value, str) and value:
             return value
@@ -150,15 +150,12 @@ def _normalize_ui_message_for_storage(message):
         return {
             'type': 'ai',
             'content': raw,
-            'raw_content': raw,
             'raw_markdown': raw
         }
 
     normalized = dict(message)
     raw_markdown = _extract_raw_markdown_from_ui_message(normalized)
     normalized['raw_markdown'] = raw_markdown
-    if not isinstance(normalized.get('raw_content'), str) or not normalized.get('raw_content'):
-        normalized['raw_content'] = raw_markdown
     return normalized
 
 
@@ -173,7 +170,7 @@ def _get_last_preview(messages):
 
 
 def _is_final_response_ui_message(message):
-    """Identify final-response UI messages, including legacy records."""
+    """Identify final-response UI messages."""
     if not isinstance(message, dict):
         return False
 
@@ -1044,9 +1041,6 @@ def _normalize_questioned_role(role_name):
     mapping = {
         'researcher': 'Researcher',
         'creator': 'Creator',
-        'creative_writer': 'Creator',
-        'creative-writer': 'Creator',
-        'creative writer': 'Creator',
         'analyzer': 'Analyzer'
     }
     return mapping.get(normalized)
@@ -1067,17 +1061,6 @@ def _normalize_workflow_mode(value):
 
 def _normalize_task_distribution(tasks):
     normalized = dict(tasks) if isinstance(tasks, dict) else {}
-
-    # Backward compatibility for older Leader outputs.
-    if 'creator_task' not in normalized and 'creative_writer_task' in normalized:
-        normalized['creator_task'] = normalized.get('creative_writer_task')
-
-    # Alternate field names for direct response mode.
-    if 'direct_response' not in normalized:
-        for alias in ('direct_answer', 'simple_response', 'final_response'):
-            if alias in normalized:
-                normalized['direct_response'] = normalized.get(alias)
-                break
 
     # Ensure expected keys exist for downstream logic.
     for key in ('researcher_task', 'creator_task', 'analyzer_task', 'verifier_task'):
@@ -1503,8 +1486,6 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
 
 def _history_to_ui_messages(conversation_id):
     """Convert backend conversation history to UI-friendly message objects."""
-    import re
-
     ui_messages = []
     conv = get_conversation(conversation_id)
     for msg in conv.get('messages', []):
@@ -1518,7 +1499,6 @@ def _history_to_ui_messages(conversation_id):
                 'type': 'user',
                 'sender': 'You',
                 'content': body,
-                'raw_content': body,
                 'raw_markdown': body,
                 'id': msg.get('id'),
                 'run_group_id': msg.get('run_group_id')
@@ -1528,18 +1508,10 @@ def _history_to_ui_messages(conversation_id):
         sender = msg.get('bot_name', 'AI')
         body = raw_markdown if isinstance(raw_markdown, str) and raw_markdown else content
 
-        if body == content:
-            # Parse legacy format: [Sender (id)] content
-            match = re.match(r'^\[(.+?)\]\s*(.*)$', content, re.DOTALL)
-            if match:
-                sender = match.group(1).strip() or sender
-                body = match.group(2)
-
         ui_messages.append({
             'type': 'ai',
             'sender': sender,
             'content': body,
-            'raw_content': body,
             'raw_markdown': body,
             'id': msg.get('id'),
             'run_group_id': msg.get('run_group_id'),
@@ -2313,10 +2285,19 @@ def handle_message_task(data, conversation_id):
         conv['active_stream_task'] = None
         conv['pending_message_id'] = None
 
+    def complete_workflow(include_run_group_end=True):
+        emit_chat('all_done')
+        if include_run_group_end:
+            emit_chat('run_group_end', {
+                'run_group_id': run_group_id,
+                'timestamp': datetime.now().strftime("%H:%M:%S")
+            })
+        conv['current_run_group_id'] = None
+        finalize_generation()
+
     def stop_if_aborted():
         if conv['abort_event'].is_set():
-            emit_chat('all_done')
-            finalize_generation()
+            complete_workflow(include_run_group_end=False)
             return True
         return False
 
@@ -2593,13 +2574,7 @@ def handle_message_task(data, conversation_id):
 
         auto_save_chat()
         run_memory_management(council_results_local={}, direct_response_text=fast_response or '')
-        emit_chat('all_done')
-        emit_chat('run_group_end', {
-            'run_group_id': run_group_id,
-            'timestamp': datetime.now().strftime("%H:%M:%S")
-        })
-        conv['current_run_group_id'] = None
-        finalize_generation()
+        complete_workflow(include_run_group_end=True)
         return
 
     # Set all roles to waiting
@@ -2721,8 +2696,7 @@ def handle_message_task(data, conversation_id):
         emit_chat('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Leader failed to respond. Aborting council workflow."
         })
-        emit_chat('all_done')
-        finalize_generation()
+        complete_workflow(include_run_group_end=False)
         return
 
     try:
@@ -2755,8 +2729,7 @@ def handle_message_task(data, conversation_id):
             emit_chat('console_log', {
                 'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution after strict retry: {str(retry_error)} (first error: {str(first_error)}). Aborting council workflow."
             })
-            emit_chat('all_done')
-            finalize_generation()
+            complete_workflow(include_run_group_end=False)
             return
 
     direct_response = tasks.get('direct_response', '')
@@ -2848,13 +2821,7 @@ def handle_message_task(data, conversation_id):
 
         auto_save_chat()
         run_memory_management(council_results_local={}, direct_response_text=direct_response)
-        emit_chat('all_done')
-        emit_chat('run_group_end', {
-            'run_group_id': run_group_id,
-            'timestamp': datetime.now().strftime("%H:%M:%S")
-        })
-        conv['current_run_group_id'] = None
-        finalize_generation()
+        complete_workflow(include_run_group_end=True)
         return
 
     if direct_response and not all_roles_skipped:
@@ -3009,13 +2976,7 @@ def handle_message_task(data, conversation_id):
     run_memory_management(council_results_local=council_results)
 
     # Signal all done
-    emit_chat('all_done')
-    emit_chat('run_group_end', {
-        'run_group_id': run_group_id,
-        'timestamp': datetime.now().strftime("%H:%M:%S")
-    })
-    conv['current_run_group_id'] = None
-    finalize_generation()
+    complete_workflow(include_run_group_end=True)
 
 @socketio.on('stop_generation')
 def handle_stop(data):
