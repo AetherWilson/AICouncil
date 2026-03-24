@@ -1133,6 +1133,160 @@
             align-items: center;
         }
 
+        #workflowModeButton {
+            width: 30px;
+            height: 30px;
+            background: transparent;
+            border: none;
+            border-radius: 999px;
+            color: #e0e0e0;
+            font-size: 21px;
+            font-weight: 600;
+            outline: none;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            line-height: 1;
+        }
+
+        #workflowModeButton:focus,
+        #workflowModeButton:hover {
+            color: #4ec9b0;
+            background: transparent;
+            border: none;
+        }
+
+        .workflow-mode-overlay {
+            position: fixed;
+            inset: 0;
+            background: transparent;
+            display: none;
+            z-index: 1200;
+        }
+
+        .workflow-mode-overlay.open {
+            display: block;
+        }
+
+        .workflow-mode-dialog {
+            position: absolute;
+            width: min(360px, calc(100vw - 20px));
+            background: #33353a;
+            border: 1px solid rgba(255, 255, 255, 0.11);
+            border-radius: 18px;
+            box-shadow: 0 16px 30px rgba(0, 0, 0, 0.5);
+            padding: 8px 8px 6px;
+        }
+
+        .workflow-mode-title {
+            color: #ebeff6;
+            font-size: 10px;
+            font-weight: 700;
+            margin-bottom: 5px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            opacity: 0.75;
+            padding: 0 10px;
+        }
+
+        .workflow-mode-option {
+            width: 100%;
+            text-align: left;
+            padding: 8px 10px;
+            margin-bottom: 2px;
+            border-radius: 12px;
+            border: 1px solid transparent;
+            background: transparent;
+            color: #f2f4f8;
+            cursor: pointer;
+            display: grid;
+            grid-template-columns: 22px 1fr auto;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .workflow-mode-option:last-child {
+            margin-bottom: 0;
+        }
+
+        .workflow-mode-option:hover,
+        .workflow-mode-option:focus {
+            border-color: rgba(255, 255, 255, 0.16);
+            background: rgba(255, 255, 255, 0.06);
+            outline: none;
+        }
+
+        .workflow-mode-option.active {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.22);
+        }
+
+        .workflow-mode-option-icon {
+            width: 22px;
+            height: 22px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            color: #f5f7fb;
+            opacity: 0.9;
+        }
+
+        .workflow-mode-option-copy {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+        }
+
+        .workflow-mode-option-name {
+            font-size: 21px;
+            font-weight: 700;
+            line-height: 1;
+            letter-spacing: -0.01em;
+        }
+
+        .workflow-mode-option-desc {
+            color: rgba(241, 244, 250, 0.62);
+            font-size: 12px;
+            line-height: 1.15;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .workflow-mode-option-check {
+            font-size: 20px;
+            font-weight: 700;
+            color: #f2f4f8;
+            opacity: 0;
+            transform: translateY(-1px);
+            width: 18px;
+            text-align: center;
+        }
+
+        .workflow-mode-option.active .workflow-mode-option-check {
+            opacity: 1;
+        }
+
+        @media (max-width: 640px) {
+            .workflow-mode-dialog {
+                width: calc(100vw - 16px);
+                border-radius: 15px;
+            }
+
+            .workflow-mode-option-name {
+                font-size: 18px;
+            }
+
+            .workflow-mode-option-desc {
+                font-size: 11px;
+            }
+        }
+
         #messageInput {
             flex: 1;
             padding: 12px 15px;
@@ -1579,8 +1733,39 @@
                 <div class="input-area">
                     <div class="input-container">
                         <textarea id="messageInput" placeholder="Type your message here... (Shift+Enter for new line)" autocomplete="off" rows="1"></textarea>
+                        <button id="workflowModeButton" type="button" data-mode="auto" aria-label="Open workflow mode selector" title="Mode: Auto">🚀</button>
                         <button id="sendButton">Send</button>
                     </div>
+                </div>
+            </div>
+
+            <div class="workflow-mode-overlay" id="workflowModeOverlay" role="dialog" aria-modal="true" aria-labelledby="workflowModeTitle">
+                <div class="workflow-mode-dialog">
+                    <div class="workflow-mode-title" id="workflowModeTitle">Choose Workflow Mode</div>
+                    <button class="workflow-mode-option" data-mode="auto" type="button" aria-label="Auto mode">
+                        <span class="workflow-mode-option-icon" aria-hidden="true">🚀</span>
+                        <span class="workflow-mode-option-copy">
+                            <span class="workflow-mode-option-name">Auto</span>
+                            <span class="workflow-mode-option-desc">Leader decides between quick and council flow</span>
+                        </span>
+                        <span class="workflow-mode-option-check" aria-hidden="true">✓</span>
+                    </button>
+                    <button class="workflow-mode-option" data-mode="fast" type="button" aria-label="Fast mode">
+                        <span class="workflow-mode-option-icon" aria-hidden="true">⚡</span>
+                        <span class="workflow-mode-option-copy">
+                            <span class="workflow-mode-option-name">Fast</span>
+                            <span class="workflow-mode-option-desc">Leader outputs directly for lowest latency</span>
+                        </span>
+                        <span class="workflow-mode-option-check" aria-hidden="true">✓</span>
+                    </button>
+                    <button class="workflow-mode-option" data-mode="heavy" type="button" aria-label="Heavy mode">
+                        <span class="workflow-mode-option-icon" aria-hidden="true">💡</span>
+                        <span class="workflow-mode-option-copy">
+                            <span class="workflow-mode-option-name">Heavy</span>
+                            <span class="workflow-mode-option-desc">Force full council analysis and verification</span>
+                        </span>
+                        <span class="workflow-mode-option-check" aria-hidden="true">✓</span>
+                    </button>
                 </div>
             </div>
 
@@ -1634,10 +1819,132 @@
 
     <script>
         const socket = io();
+        const WORKFLOW_MODES = ['auto', 'fast', 'heavy'];
+        const WORKFLOW_MODE_ICONS = {
+            auto: '🚀',
+            fast: '⚡',
+            heavy: '💡'
+        };
         let uploadedPDFs = [];
         let isAIProcessing = false;
         let councilRoles = {};
         const conversations = {};
+
+        function getWorkflowMode() {
+            const modeButton = document.getElementById('workflowModeButton');
+            const mode = modeButton ? (modeButton.dataset.mode || '').toLowerCase() : 'auto';
+            return WORKFLOW_MODES.includes(mode) ? mode : 'auto';
+        }
+
+        function refreshWorkflowModeUI() {
+            const modeButton = document.getElementById('workflowModeButton');
+            const modeOverlay = document.getElementById('workflowModeOverlay');
+            const current = getWorkflowMode();
+            const currentTitle = current.charAt(0).toUpperCase() + current.slice(1);
+            const currentIcon = WORKFLOW_MODE_ICONS[current] || WORKFLOW_MODE_ICONS.auto;
+
+            if (modeButton) {
+                modeButton.title = `Mode: ${currentTitle}`;
+                modeButton.textContent = currentIcon;
+                modeButton.setAttribute('aria-label', `Open workflow mode selector. Current mode: ${currentTitle}`);
+            }
+
+            if (modeOverlay) {
+                modeOverlay.querySelectorAll('.workflow-mode-option').forEach((btn) => {
+                    const isActive = (btn.dataset.mode || '').toLowerCase() === current;
+                    btn.classList.toggle('active', isActive);
+                    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+                });
+            }
+        }
+
+        function openWorkflowModeOverlay() {
+            const modeOverlay = document.getElementById('workflowModeOverlay');
+            if (!modeOverlay) return;
+            refreshWorkflowModeUI();
+            modeOverlay.classList.add('open');
+            requestAnimationFrame(positionWorkflowModeOverlay);
+        }
+
+        function closeWorkflowModeOverlay() {
+            const modeOverlay = document.getElementById('workflowModeOverlay');
+            if (!modeOverlay) return;
+            modeOverlay.classList.remove('open');
+        }
+
+        function selectWorkflowMode(mode, shouldLog = true) {
+            const modeButton = document.getElementById('workflowModeButton');
+            if (!modeButton) return;
+
+            const normalized = String(mode || '').toLowerCase();
+            const safeMode = WORKFLOW_MODES.includes(normalized) ? normalized : 'auto';
+            modeButton.dataset.mode = safeMode;
+
+            refreshWorkflowModeUI();
+            if (shouldLog) {
+                addConsoleLog(`Workflow mode set to ${safeMode}`);
+            }
+            closeWorkflowModeOverlay();
+        }
+
+        function onWorkflowModeOptionClick(evt) {
+            const target = evt.target && evt.target.closest ? evt.target.closest('.workflow-mode-option') : null;
+            if (!target) {
+                return;
+            }
+
+            selectWorkflowMode(target.dataset.mode);
+        }
+
+        function positionWorkflowModeOverlay() {
+            const modeButton = document.getElementById('workflowModeButton');
+            const modeOverlay = document.getElementById('workflowModeOverlay');
+            if (!modeButton || !modeOverlay || !modeOverlay.classList.contains('open')) return;
+
+            const dialog = modeOverlay.querySelector('.workflow-mode-dialog');
+            if (!dialog) return;
+
+            const safePadding = 12;
+            const anchorRect = modeButton.getBoundingClientRect();
+
+            dialog.style.left = `${safePadding}px`;
+            dialog.style.top = `${safePadding}px`;
+
+            const dialogWidth = dialog.offsetWidth;
+            const dialogHeight = dialog.offsetHeight;
+
+            let left = anchorRect.right - dialogWidth;
+            if (left < safePadding) left = safePadding;
+            if (left + dialogWidth > window.innerWidth - safePadding) {
+                left = window.innerWidth - dialogWidth - safePadding;
+            }
+
+            let top = anchorRect.top - dialogHeight - 10;
+            if (top < safePadding) {
+                top = anchorRect.bottom + 10;
+            }
+            if (top + dialogHeight > window.innerHeight - safePadding) {
+                top = window.innerHeight - dialogHeight - safePadding;
+            }
+            if (top < safePadding) top = safePadding;
+
+            dialog.style.left = `${left}px`;
+            dialog.style.top = `${top}px`;
+        }
+
+        function handleWorkflowOverlayClick(evt) {
+            const modeOverlay = document.getElementById('workflowModeOverlay');
+            if (!modeOverlay) return;
+            if (evt.target === modeOverlay) {
+                closeWorkflowModeOverlay();
+            }
+        }
+
+        function handleWorkflowOverlayEscape(evt) {
+            if (evt.key === 'Escape') {
+                closeWorkflowModeOverlay();
+            }
+        }
 
         function ensureConversation(chatId) {
             if (!chatId) return null;
@@ -3508,6 +3815,7 @@
             // Send to server
             const systemPromptInput = document.getElementById('systemPromptInput');
             const userSystemPrompt = systemPromptInput ? systemPromptInput.value.trim() : '';
+            const workflowMode = getWorkflowMode();
             const activeChatId = currentSessionId || tempChatId;
             const activeState = ensureConversation(activeChatId);
             if (activeState) {
@@ -3524,7 +3832,8 @@
             socket.emit('send_message', {
                 message: message,
                 system_prompt: userSystemPrompt,
-                chat_id: activeChatId
+                chat_id: activeChatId,
+                workflow_mode: workflowMode
             });
 
             // Clear input
@@ -4111,6 +4420,18 @@
 
         // Event listeners
         document.getElementById('sendButton').addEventListener('click', sendMessage);
+        const workflowModeButton = document.getElementById('workflowModeButton');
+        if (workflowModeButton) {
+            workflowModeButton.addEventListener('click', openWorkflowModeOverlay);
+        }
+        const workflowModeOverlay = document.getElementById('workflowModeOverlay');
+        if (workflowModeOverlay) {
+            workflowModeOverlay.addEventListener('click', handleWorkflowOverlayClick);
+            workflowModeOverlay.addEventListener('click', onWorkflowModeOptionClick);
+        }
+        window.addEventListener('resize', positionWorkflowModeOverlay);
+        document.addEventListener('keydown', handleWorkflowOverlayEscape);
+        refreshWorkflowModeUI();
         
         const messageInput = document.getElementById('messageInput');
         

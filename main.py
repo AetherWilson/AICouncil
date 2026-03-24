@@ -434,6 +434,18 @@ Synthesize into a single cohesive final response:
 
 Respond directly — do NOT mention the council, team members, or that you are combining results. Do NOT prefix with your role name."""
 
+LEADER_FAST_PROMPT = """You are the Leader of an AI council operating in FAST mode.
+
+Return a direct answer to the user in a single pass.
+
+Rules:
+- Do not delegate to other roles
+- Be concise but complete
+- Use markdown formatting only (no raw HTML tags)
+- If uncertainty is material, state assumptions clearly
+
+Respond directly. Do NOT prefix with your role name."""
+
 MARK_READER_PROMPT = """You are the MarkReader in an AI council. Your only job is to choose which markdown skill files are relevant for the Leader.
 
 Rules:
@@ -1044,6 +1056,13 @@ def _is_skip_task(task_value):
     if not isinstance(task_value, str):
         return False
     return task_value.strip().upper() == 'SKIP'
+
+
+def _normalize_workflow_mode(value):
+    normalized = str(value or '').strip().lower()
+    if normalized in {'auto', 'fast', 'heavy'}:
+        return normalized
+    return 'auto'
 
 
 def _normalize_task_distribution(tasks):
@@ -2279,6 +2298,7 @@ def handle_message_task(data, conversation_id):
     user_message = data.get('message', '')
     user_system_prompt = data.get('system_prompt', '')
     existing_user_message_id = str(data.get('existing_user_message_id') or '').strip()
+    workflow_mode = _normalize_workflow_mode(data.get('workflow_mode'))
     
     def emit_chat(event, payload=None):
         enriched = dict(payload or {})
@@ -2526,7 +2546,7 @@ def handle_message_task(data, conversation_id):
     config = load_config()
     timestamp = datetime.now().strftime("%H:%M:%S")
     emit_chat('console_log', {
-        'message': f"[{timestamp}] Council workflow started"
+        'message': f"[{timestamp}] Council workflow started (mode: {workflow_mode})"
     })
     leader_skills_context = ''
 
@@ -2537,6 +2557,50 @@ def handle_message_task(data, conversation_id):
         emit_chat('console_log', {
             'message': f"[{timestamp}] Cross-chat memory injected ({len(memory_manager.read_flat(config))} memories)"
         })
+
+    # FAST mode: Leader-only direct response path.
+    if workflow_mode == 'fast':
+        for role in ('MarkReader', 'Researcher', 'Creator', 'Analyzer', 'Verifier'):
+            emit_chat('council_status', {'role': role, 'status': 'skipped'})
+        emit_chat('council_status', {'role': 'Leader', 'status': 'waiting'})
+
+        leader_model_id = config.get('Leader', '')
+        leader_info = get_model_info(leader_model_id)
+        leader_fast_sys = LEADER_FAST_PROMPT
+        if user_system_prompt:
+            leader_fast_sys = user_system_prompt + "\n\n" + leader_fast_sys
+
+        emit_chat('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Fast mode active: Leader-only response."
+        })
+
+        fast_response = run_council_role(
+            role_name='Leader',
+            role_label=f'Leader - Final Response ({leader_model_id})',
+            model_id=leader_model_id,
+            system_prompt=leader_fast_sys,
+            user_prompt=user_message,
+            chat_history=chat_history,
+            conversation_id=conversation_id,
+            run_group_id=run_group_id,
+            support_images=leader_info.get('support_images', False),
+            support_pdf_input=leader_info.get('support_pdf_input', False),
+            on_stream_progress=auto_save_chat
+        )
+
+        if stop_if_aborted():
+            return
+
+        auto_save_chat()
+        run_memory_management(council_results_local={}, direct_response_text=fast_response or '')
+        emit_chat('all_done')
+        emit_chat('run_group_end', {
+            'run_group_id': run_group_id,
+            'timestamp': datetime.now().strftime("%H:%M:%S")
+        })
+        conv['current_run_group_id'] = None
+        finalize_generation()
+        return
 
     # Set all roles to waiting
     for role in COUNCIL_ROLES:
@@ -2699,10 +2763,24 @@ def handle_message_task(data, conversation_id):
     role_task_keys = ('researcher_task', 'creator_task', 'analyzer_task', 'verifier_task')
     all_roles_skipped = all(_is_skip_task(tasks.get(task_key)) for task_key in role_task_keys)
 
+    if workflow_mode == 'heavy' and all_roles_skipped:
+        emit_chat('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Heavy mode override: forcing council path instead of direct response."
+        })
+        tasks['direct_response'] = ''
+        tasks['creator_task'] = (
+            'Create the primary answer that fully addresses the user request in clear markdown.'
+        )
+        tasks['verifier_task'] = (
+            'Audit the Creator output for factual/logical issues and report only concrete problems.'
+        )
+        all_roles_skipped = False
+        direct_response = ''
+
     if not all_roles_skipped:
         emit_leader_task_distribution_summary(tasks, leader_model_id)
 
-    if direct_response and all_roles_skipped:
+    if direct_response and all_roles_skipped and workflow_mode != 'heavy':
         direct_ts = datetime.now().strftime("%H:%M:%S")
         emit_chat('console_log', {
             'message': f"[{direct_ts}] Leader direct-response mode activated (all role tasks SKIP)."
