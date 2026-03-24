@@ -12,7 +12,8 @@
     *   **Google**: Gemini 1.5/2.0 (Pro, Flash).
     *   **OpenAI**: GPT-4o, o1, o3-mini.
 *   **Document & Image Analysis**: 
-    *   **PDF Support**: Upload and analyze PDF documents.
+    *   **PDF Support**: Upload PDF documents and pass them directly to PDF-capable models.
+    *   **Model Fallback Notice**: If a selected model is not PDF-capable, the system adds a prompt notice that PDFs were attached but cannot be read by that model.
     *   **OCR Capability**: Extract text from uploaded images (JPG, PNG) using `easyocr`.
 *   **Web Search Integration**: Dedicated autonomous web search capabilities (defaulting to Grok 3 DeepSearch).
 *   **Flexible Configuration**: Easily manage available bots, pricing tiers, and capabilities via `config.json`.
@@ -24,7 +25,7 @@
 *   **Backend**: Python (Flask, Flask-SocketIO)
 *   **Frontend**: HTML5, CSS3, JavaScript (Socket.IO client, Markdown rendering, KaTeX for math)
 *   **AI Integration**: OpenAI-compatible client (supporting various endpoints)
-*   **Utilities**: `PyPDF2`, `easyocr`, `Pillow`
+*   **Utilities**: `easyocr`, `Pillow`
 
 ## 🚀 Getting Started
 

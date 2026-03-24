@@ -4,7 +4,6 @@ python-socketio==5.10.0
 openai
 httpx
 python-dotenv
-PyPDF2
 Pillow
 easyocr
 opencc

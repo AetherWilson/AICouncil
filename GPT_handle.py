@@ -4,14 +4,18 @@ import os
 import dotenv
 from datetime import datetime
 import opencc
+import base64
+import logging
 
 # Load environment variables
 dotenv.load_dotenv()
+logger = logging.getLogger(__name__)
 
 # Initialize OpenCC converter for Simplified to Traditional Chinese
 try:
     converter = opencc.OpenCC('s2t.json')  # s2t: simplified to traditional
-except:
+except Exception as exc:
+    logger.warning("OpenCC converter unavailable: %s", exc)
     converter = None
 
 redirect_url = os.getenv('gpt_redirect_url')
@@ -61,7 +65,66 @@ def log_info(folder, file_name, file_content):
     
     return file_path
 
-def completion_response(model, system_prompt, user_prompt, chat_history = None, prefix = None, temperature=1.0, image_urls=None):
+def _build_user_content(user_prompt, image_urls=None, pdf_inputs=None):
+    """Build multi-modal user content blocks for the OpenAI-compatible API."""
+    content = [{"type": "text", "text": user_prompt}]
+
+    if image_urls:
+        for img_url in image_urls:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": img_url}
+            })
+
+    if pdf_inputs:
+        for pdf_info in pdf_inputs:
+            file_path = pdf_info.get('filepath')
+            if not file_path:
+                continue
+            try:
+                with open(file_path, 'rb') as pdf_file:
+                    encoded = base64.b64encode(pdf_file.read()).decode('utf-8')
+                filename = pdf_info.get('filename') or os.path.basename(file_path)
+                content.append({
+                    "type": "file",
+                    "file": {
+                        "filename": filename,
+                        "file_data": f"data:application/pdf;base64,{encoded}"
+                    }
+                })
+            except FileNotFoundError:
+                logger.warning("Skipping missing PDF file: %s", file_path)
+                continue
+            except OSError as exc:
+                logger.warning("Skipping unreadable PDF file %s: %s", file_path, exc)
+                continue
+
+    return content
+
+
+def _build_messages(system_prompt, user_prompt, chat_history=None, prefix=None, image_urls=None, pdf_inputs=None):
+    """Build the message array used by both streaming and non-streaming calls."""
+    messages = [
+        {"role": "system", "content": system_prompt}
+    ]
+
+    if chat_history:
+        for message in chat_history:
+            messages.append({"role": message["role"], "content": message["content"]})
+
+    user_content = _build_user_content(user_prompt, image_urls=image_urls, pdf_inputs=pdf_inputs)
+    if len(user_content) == 1 and not image_urls and not pdf_inputs:
+        messages.append({"role": "user", "content": user_prompt})
+    else:
+        messages.append({"role": "user", "content": user_content})
+
+    if prefix:
+        messages.append({"role": "assistant", "content": prefix})
+
+    return messages
+
+
+def completion_response(model, system_prompt, user_prompt, chat_history = None, prefix = None, temperature=1.0, image_urls=None, pdf_inputs=None):
     """
     使用OpenAI API生成聊天回應。
     :param model: 使用的模型名稱。
@@ -73,40 +136,30 @@ def completion_response(model, system_prompt, user_prompt, chat_history = None, 
     :param image_urls: 可選的圖片URL列表或base64編碼的圖片列表。
     :return: 生成的回應內容。
     """
-    # Build messages list without empty dictionaries
-    messages = [
-        {"role": "system", "content": system_prompt}
-    ]
-    
-    # If chat history is provided, append it to the messages
-    if chat_history:
-        for message in chat_history:
-            messages.append({"role": message["role"], "content": message["content"]})
-
-    # Append user prompt with images if provided
-    if image_urls and len(image_urls) > 0:
-        # Multi-modal content with text and images
-        content = [{"type": "text", "text": user_prompt}]
-        for img_url in image_urls:
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": img_url}
-            })
-        messages.append({"role": "user", "content": content})
-    else:
-        # Text-only content
-        messages.append({"role": "user", "content": user_prompt})
-
-    # If prefix is provided, append it to the messages
-    if prefix:
-        messages.append({"role": "assistant", "content": prefix})
-    
-    # Create chat completion
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature
+    messages = _build_messages(
+        system_prompt,
+        user_prompt,
+        chat_history=chat_history,
+        prefix=prefix,
+        image_urls=image_urls,
+        pdf_inputs=pdf_inputs
     )
+    
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature
+        )
+    except httpx.TimeoutException as exc:
+        logger.exception("Model request timed out for %s", model)
+        raise RuntimeError(f"Model request timed out for {model}") from exc
+    except httpx.HTTPError as exc:
+        logger.exception("Network error during model request for %s", model)
+        raise RuntimeError(f"Network error during model request for {model}") from exc
+    except Exception as exc:
+        logger.exception("Unexpected model request failure for %s", model)
+        raise RuntimeError(f"Model request failed for {model}") from exc
 
     # Get response content and add prefix if needed
     content = response.choices[0].message.content
@@ -133,7 +186,7 @@ OUTPUT
     log_info("gpt_responses", f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{model}.txt", log_content)
     return f"{prefix or ''}{content}"
 
-def completion_response_stream(model, system_prompt, user_prompt, chat_history=None, prefix=None, temperature=1.0, image_urls=None):
+def completion_response_stream(model, system_prompt, user_prompt, chat_history=None, prefix=None, temperature=1.0, image_urls=None, pdf_inputs=None):
     """
     使用OpenAI API以串流模式生成聊天回應，逐塊產出文字。
     :param model: 使用的模型名稱。
@@ -145,34 +198,31 @@ def completion_response_stream(model, system_prompt, user_prompt, chat_history=N
     :param image_urls: 可選的圖片URL列表或base64編碼的圖片列表。
     :return: 逐塊產出文字的生成器。
     """
-    messages = [
-        {"role": "system", "content": system_prompt}
-    ]
-
-    if chat_history:
-        for message in chat_history:
-            messages.append({"role": message["role"], "content": message["content"]})
-
-    if image_urls and len(image_urls) > 0:
-        content = [{"type": "text", "text": user_prompt}]
-        for img_url in image_urls:
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": img_url}
-            })
-        messages.append({"role": "user", "content": content})
-    else:
-        messages.append({"role": "user", "content": user_prompt})
-
-    if prefix:
-        messages.append({"role": "assistant", "content": prefix})
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        stream=True
+    messages = _build_messages(
+        system_prompt,
+        user_prompt,
+        chat_history=chat_history,
+        prefix=prefix,
+        image_urls=image_urls,
+        pdf_inputs=pdf_inputs
     )
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            stream=True
+        )
+    except httpx.TimeoutException as exc:
+        logger.exception("Stream start timed out for %s", model)
+        raise RuntimeError(f"Model stream timed out for {model}") from exc
+    except httpx.HTTPError as exc:
+        logger.exception("Network error starting stream for %s", model)
+        raise RuntimeError(f"Network error starting stream for {model}") from exc
+    except Exception as exc:
+        logger.exception("Unexpected stream start failure for %s", model)
+        raise RuntimeError(f"Model stream failed for {model}") from exc
 
     full_content = prefix or ''
     full_thinking = ''
@@ -237,8 +287,8 @@ def completion_response_stream(model, system_prompt, user_prompt, chat_history=N
         # (e.g. when the stop button is pressed and the caller breaks out of the loop)
         try:
             response.close()
-        except Exception:
-            pass
+        except (RuntimeError, OSError) as exc:
+            logger.debug("Failed to close stream response cleanly: %s", exc)
 
     # Only log when the stream finished naturally (not when stopped early)
     if completed:

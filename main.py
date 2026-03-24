@@ -10,10 +10,10 @@ import re
 from GPT_handle import completion_response, completion_response_stream, convert_to_traditional_chinese
 import os
 from werkzeug.utils import secure_filename
-import PyPDF2
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import base64
-from services.config_store import ConfigStore, get_model_info as resolve_model_info, infer_model_support_images
+import logging
+from services.config_store import ConfigStore, get_model_info as resolve_model_info
 from services import memory_manager
 
 app = Flask(__name__)
@@ -22,6 +22,7 @@ app.config['CHAT_HISTORY_FOLDER'] = 'chat_history'
 app.config['TEMP_CHAT_HISTORY_FOLDER'] = 'temp_chat_history'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 socketio = SocketIO(app, cors_allowed_origins="*")
+logger = logging.getLogger(__name__)
 
 COUNCIL_ROLES = ['MarkReader', 'Leader', 'Researcher', 'Creator', 'Analyzer', 'Verifier']
 DEFAULT_SKILLS_CONFIG = {
@@ -55,6 +56,7 @@ CURRENT_CHAT_SCHEMA_VERSION = 3
 
 # Prevent concurrent writes from overlapping background tasks.
 persistence_lock = threading.Lock()
+CHAT_ID_PATTERN = re.compile(r'^[A-Za-z0-9_-]+$')
 
 
 def _new_conversation_state():
@@ -68,6 +70,26 @@ def _new_conversation_state():
         'run_group_counter': 0,
         'current_run_group_id': None
     }
+
+
+def _log_internal_error(context, exc):
+    logger.exception("%s: %s", context, exc)
+
+
+def _is_valid_chat_id(chat_id):
+    return bool(chat_id) and bool(CHAT_ID_PATTERN.fullmatch(chat_id))
+
+
+def _resolve_chat_file_path(base_folder, chat_id):
+    normalized_chat_id = str(chat_id or '').strip()
+    if not _is_valid_chat_id(normalized_chat_id):
+        raise ValueError('Invalid chat ID')
+
+    base_path = os.path.abspath(base_folder)
+    resolved_path = os.path.abspath(os.path.join(base_path, f'{normalized_chat_id}.json'))
+    if os.path.commonpath([base_path, resolved_path]) != base_path:
+        raise ValueError('Invalid chat ID path')
+    return normalized_chat_id, resolved_path
 
 
 def get_conversation(conversation_id):
@@ -492,13 +514,24 @@ DEBATE_MAX_CYCLES = 3
 MEMORY_EXTRACT_PROMPT = """You are a memory management system. Your job is to analyze the conversation and manage the user's persistent cross-chat memory: adding new facts, updating outdated ones, and removing entries that are no longer relevant.
 
 Rules for ADDING new memories:
-- Extract ONLY facts that would be useful in future unrelated conversations
-- Focus on: user identity, profession, location, preferences, communication style, technical level, recurring topics, stated goals
-- Store memories by topic, so they are grouped together.
-- Do NOT extract ephemeral information (what the user asked about today, task-specific details)
-- Do NOT duplicate information that already exists in memory
-- Each fact should be a short, standalone statement. If the user mentions a new fact about an existing topic, prefer updating the existing memory for that topic rather than creating a new one.
+- Extract ONLY facts that would be useful in future UNRELATED conversations.
+- Focus on: 
+  * User Identity/Role (e.g., "Student", "Developer")
+  * Domain Preferences (e.g., "Prefers Python over Java", "Interested in AI ethics")
+  * Fixed Facts (e.g., "Lives in Taipei", "Has a cat")
+  * Stated Long-term Goals (e.g., "Wants to build a local agent")
 
+- **CRITICAL: Distinguish between "Task Instructions" and "Persistent Traits":**
+  * Do NOT record formatting instructions or tone requests for the CURRENT task (e.g., "be brief", "include links", "use a professional tone") as persistent memories.
+  * ONLY record a communication preference if the user explicitly states it as a permanent rule (e.g., "I ALWAYS prefer brief answers" or "NEVER include links in your responses").
+  * If the user says "For this question, be professional", do NOT save it.
+
+- **Strict Exclusions (Do NOT save these as memories):**
+  * Requests for specific output formats (Markdown tables, lists, code blocks).
+  * Requests for links, citations, or references for a specific query.
+  * Transient emotional states or one-off situational context.
+  * Meta-talk about the current chat session.
+  
 Rules for UPDATING existing memories:
 - Update a memory if the conversation reveals it is now outdated or inaccurate (e.g., user changed jobs, updated a preference, corrected a fact)
 - Merge and store new information to one point based on topic so that it's easier to catch up instead of having a long list of fragmented entries.
@@ -548,20 +581,17 @@ def cleanup_old_temp_chats():
         print(f"Error cleaning up temporary chats: {e}")
 
 
-def _extract_document_payload(filepath, filename):
+def _extract_document_payload(filepath, filename, pages_hint=None):
     """Extract normalized metadata/content for a stored document file."""
     file_size = os.path.getsize(filepath)
     file_ext = filename.lower().split('.')[-1]
 
     if file_ext == 'pdf':
-        text_content = extract_pdf_text(filepath)
-        with open(filepath, 'rb') as f:
-            pdf_reader = PyPDF2.PdfReader(f)
-            page_count = len(pdf_reader.pages)
         return {
             'filename': filename,
-            'content': text_content,
-            'pages': page_count,
+            'content': '[PDF uploaded]',
+            'filepath': filepath,
+            'pages': pages_hint,
             'size': file_size,
             'type': 'pdf'
         }
@@ -607,7 +637,8 @@ def get_council():
         roles[role_name] = {
             'model_id': model_id,
             'model_name': model_info.get('name', model_id),
-            'support_images': model_info.get('support_images', False)
+            'support_images': model_info.get('support_images', False),
+            'support_pdf_input': model_info.get('support_pdf_input', False)
         }
     return jsonify(roles)
 
@@ -620,315 +651,344 @@ def get_models():
 
 @app.route('/api/upload_document', methods=['POST'])
 def upload_document():
-    """Handle PDF and image upload and extract text"""
+    """Handle PDF and image upload and store normalized metadata"""
+    conversation_id = request.form.get('chat_id')
+    if not conversation_id:
+        return jsonify({'success': False, 'error': 'chat_id is required'})
+    conv = get_conversation(conversation_id)
+
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file provided'})
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'No file selected'})
+
+    filename = secure_filename(file.filename)
+    if not filename:
+        return jsonify({'success': False, 'error': 'Invalid file name'})
+
+    file_ext = filename.lower().split('.')[-1]
+    if file_ext not in ['pdf', 'jpg', 'jpeg', 'png']:
+        return jsonify({'success': False, 'error': 'Only PDF, JPG, and PNG files are allowed'})
+
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     try:
-        conversation_id = request.form.get('chat_id')
-        if not conversation_id:
-            return jsonify({'success': False, 'error': 'chat_id is required'})
-        conv = get_conversation(conversation_id)
-
-        if 'file' not in request.files:
-            return jsonify({'success': False, 'error': 'No file provided'})
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'success': False, 'error': 'No file selected'})
-        
-        filename = secure_filename(file.filename)
-        file_ext = filename.lower().split('.')[-1]
-        
-        if file_ext not in ['pdf', 'jpg', 'jpeg', 'png']:
-            return jsonify({'success': False, 'error': 'Only PDF, JPG, and PNG files are allowed'})
-        
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
-        
         doc_payload = _extract_document_payload(filepath, filename)
-        conv['uploaded_documents'][filename] = doc_payload
+    except (OSError, UnidentifiedImageError, ValueError) as exc:
+        _log_internal_error('upload_document failed', exc)
+        return jsonify({'success': False, 'error': 'Failed to process uploaded file'})
+    except Exception as exc:
+        _log_internal_error('upload_document unexpected failure', exc)
+        return jsonify({'success': False, 'error': 'Failed to process uploaded file'})
 
-        return jsonify({
-            'success': True,
-            'document': _build_document_response(doc_payload)
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    conv['uploaded_documents'][filename] = doc_payload
+    return jsonify({
+        'success': True,
+        'document': _build_document_response(doc_payload)
+    })
 
 @app.route('/api/restore_documents', methods=['POST'])
 def restore_documents():
     """Re-register previously uploaded documents from a saved chat"""
-    try:
-        data = request.json
-        conversation_id = data.get('chat_id')
-        if not conversation_id:
-            return jsonify({'success': False, 'error': 'chat_id is required'})
-        conv = get_conversation(conversation_id)
-        documents = data.get('documents', [])
-        restored = []
+    data = request.get_json(silent=True) or {}
+    conversation_id = data.get('chat_id')
+    if not conversation_id:
+        return jsonify({'success': False, 'error': 'chat_id is required'})
+    conv = get_conversation(conversation_id)
+    documents = data.get('documents', [])
+    restored = []
 
-        for doc_meta in documents:
-            filename = doc_meta.get('filename')
-            if not filename:
-                continue
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            if not os.path.exists(filepath):
-                continue
+    for doc_meta in documents:
+        filename = doc_meta.get('filename')
+        if not filename:
+            continue
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if not os.path.exists(filepath):
+            continue
 
-            doc_payload = _extract_document_payload(filepath, filename)
-            conv['uploaded_documents'][filename] = doc_payload
-            restored.append(_build_document_response(doc_payload))
+        try:
+            doc_payload = _extract_document_payload(
+                filepath,
+                filename,
+                pages_hint=doc_meta.get('pages')
+            )
+        except (OSError, UnidentifiedImageError, ValueError) as exc:
+            _log_internal_error(f'restore_documents skipped {filename}', exc)
+            continue
 
-        return jsonify({'success': True, 'documents': restored})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        conv['uploaded_documents'][filename] = doc_payload
+        restored.append(_build_document_response(doc_payload))
+
+    return jsonify({'success': True, 'documents': restored})
 
 @app.route('/api/remove_document', methods=['POST'])
 def remove_document():
     """Remove uploaded document"""
-    try:
-        data = request.json
-        conversation_id = data.get('chat_id')
-        if not conversation_id:
-            return jsonify({'success': False, 'error': 'chat_id is required'})
-        conv = get_conversation(conversation_id)
-        filename = data.get('filename')
-        
-        if filename in conv['uploaded_documents']:
-            del conv['uploaded_documents'][filename]
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            if os.path.exists(filepath):
+    data = request.get_json(silent=True) or {}
+    conversation_id = data.get('chat_id')
+    if not conversation_id:
+        return jsonify({'success': False, 'error': 'chat_id is required'})
+    conv = get_conversation(conversation_id)
+    filename = data.get('filename')
+
+    if filename in conv['uploaded_documents']:
+        del conv['uploaded_documents'][filename]
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if os.path.exists(filepath):
+            try:
                 os.remove(filepath)
-            return jsonify({'success': True})
-        
-        return jsonify({'success': False, 'error': 'File not found'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+            except OSError as exc:
+                _log_internal_error(f'remove_document failed to delete {filename}', exc)
+                return jsonify({'success': False, 'error': 'Failed to remove file'})
+        return jsonify({'success': True})
+
+    return jsonify({'success': False, 'error': 'File not found'})
 
 @app.route('/api/save_chat', methods=['POST'])
 def save_chat():
     """Save a chat session to disk"""
+    data = request.get_json(silent=True) or {}
     try:
-        data = request.json
-        chat_id = data.get('id')
-        chat_name = data.get('name')
-        messages = _normalize_messages_for_storage(data.get('messages', []))
-        selected_bots = data.get('selectedBots', [])
-        
-        chat_data = {
-            'id': chat_id,
-            'name': chat_name,
-            'schema_version': CURRENT_CHAT_SCHEMA_VERSION,
-            'messages': messages,
-            'selectedBots': selected_bots,
-            'systemPrompt': data.get('systemPrompt', ''),
-            'timestamp': data.get('timestamp', datetime.now().isoformat()),
-            'uploadedDocuments': data.get('uploadedDocuments', [])
-        }
-        
-        # Save to file
-        filepath = os.path.join(app.config['CHAT_HISTORY_FOLDER'], f'{chat_id}.json')
+        chat_id, filepath = _resolve_chat_file_path(app.config['CHAT_HISTORY_FOLDER'], data.get('id'))
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid chat ID'})
+
+    chat_data = {
+        'id': chat_id,
+        'name': data.get('name'),
+        'schema_version': CURRENT_CHAT_SCHEMA_VERSION,
+        'messages': _normalize_messages_for_storage(data.get('messages', [])),
+        'selectedBots': data.get('selectedBots', []),
+        'systemPrompt': data.get('systemPrompt', ''),
+        'timestamp': data.get('timestamp', datetime.now().isoformat()),
+        'uploadedDocuments': data.get('uploadedDocuments', [])
+    }
+
+    try:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(chat_data, f, ensure_ascii=False, indent=2)
-        
-        return jsonify({'success': True, 'id': chat_id})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    except (OSError, TypeError, ValueError) as exc:
+        _log_internal_error('save_chat failed', exc)
+        return jsonify({'success': False, 'error': 'Failed to save chat'})
+
+    return jsonify({'success': True, 'id': chat_id})
 
 @app.route('/api/list_chats', methods=['GET'])
 def list_chats():
     """List all saved chat sessions"""
     try:
         chat_files = [f for f in os.listdir(app.config['CHAT_HISTORY_FOLDER']) if f.endswith('.json')]
-        chats = []
-        
-        for filename in chat_files:
-            filepath = os.path.join(app.config['CHAT_HISTORY_FOLDER'], filename)
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    chat_data = json.load(f)
-                    chats.append({
-                        'id': chat_data.get('id'),
-                        'name': chat_data.get('name'),
-                        'timestamp': chat_data.get('timestamp'),
-                        'messageCount': _count_primary_chat_messages(chat_data.get('messages', [])),
-                        'lastPreview': _get_last_preview(chat_data.get('messages', [])),
-                        'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
-                    })
-            except Exception as e:
-                print(f"Error loading chat file {filename}: {e}")
-                continue
-        
-        # Sort by timestamp (newest first)
-        chats.sort(key=lambda x: x['timestamp'], reverse=True)
-        
-        return jsonify({'success': True, 'chats': chats})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e), 'chats': []})
+    except OSError as exc:
+        _log_internal_error('list_chats failed to list directory', exc)
+        return jsonify({'success': False, 'error': 'Failed to load chat list', 'chats': []})
+
+    chats = []
+    for filename in chat_files:
+        filepath = os.path.join(app.config['CHAT_HISTORY_FOLDER'], filename)
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                chat_data = json.load(f)
+        except FileNotFoundError:
+            continue
+        except json.JSONDecodeError as exc:
+            _log_internal_error(f'list_chats invalid JSON in {filename}', exc)
+            continue
+        except OSError as exc:
+            _log_internal_error(f'list_chats cannot read {filename}', exc)
+            continue
+
+        chats.append({
+            'id': chat_data.get('id'),
+            'name': chat_data.get('name'),
+            'timestamp': chat_data.get('timestamp'),
+            'messageCount': _count_primary_chat_messages(chat_data.get('messages', [])),
+            'lastPreview': _get_last_preview(chat_data.get('messages', [])),
+            'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
+        })
+
+    chats.sort(key=lambda x: x.get('timestamp') or '', reverse=True)
+    return jsonify({'success': True, 'chats': chats})
 
 @app.route('/api/load_chat/<chat_id>', methods=['GET'])
 def load_chat(chat_id):
     """Load a specific chat session"""
     try:
-        filepath = os.path.join(app.config['CHAT_HISTORY_FOLDER'], f'{chat_id}.json')
-        
-        if not os.path.exists(filepath):
-            return jsonify({'success': False, 'error': 'Chat not found'})
-        
+        normalized_chat_id, filepath = _resolve_chat_file_path(app.config['CHAT_HISTORY_FOLDER'], chat_id)
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid chat ID'})
+
+    if not os.path.exists(filepath):
+        return jsonify({'success': False, 'error': 'Chat not found'})
+
+    try:
         with open(filepath, 'r', encoding='utf-8') as f:
             chat_data = json.load(f)
-        if migrate_chat_payload(chat_data):
+    except json.JSONDecodeError as exc:
+        _log_internal_error(f'load_chat invalid JSON for {normalized_chat_id}', exc)
+        return jsonify({'success': False, 'error': 'Failed to load chat'})
+    except OSError as exc:
+        _log_internal_error(f'load_chat read failed for {normalized_chat_id}', exc)
+        return jsonify({'success': False, 'error': 'Failed to load chat'})
+
+    if migrate_chat_payload(chat_data):
+        try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(chat_data, f, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            _log_internal_error(f'load_chat migration write failed for {normalized_chat_id}', exc)
 
-        live_conv = conversations.get(chat_id)
-        if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
-            chat_data['messages'] = _history_to_ui_messages(chat_id)
-            chat_data['uploadedDocuments'] = _conversation_documents_to_ui(chat_id)
+    live_conv = conversations.get(normalized_chat_id)
+    if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
+        chat_data['messages'] = _history_to_ui_messages(normalized_chat_id)
+        chat_data['uploadedDocuments'] = _conversation_documents_to_ui(normalized_chat_id)
 
-        _sync_run_group_counter(chat_id, chat_data.get('messages', []))
-
-        chat_data['isGenerating'] = get_conversation(chat_id).get('is_generating', False)
-        
-        return jsonify({'success': True, 'chat': chat_data})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    _sync_run_group_counter(normalized_chat_id, chat_data.get('messages', []))
+    chat_data['isGenerating'] = get_conversation(normalized_chat_id).get('is_generating', False)
+    return jsonify({'success': True, 'chat': chat_data})
 
 @app.route('/api/delete_chat', methods=['POST'])
 def delete_chat():
     """Delete a saved chat session"""
+    data = request.get_json(silent=True) or {}
     try:
-        data = request.json
-        chat_id = data.get('id')
-        
-        filepath = os.path.join(app.config['CHAT_HISTORY_FOLDER'], f'{chat_id}.json')
-        
-        if os.path.exists(filepath):
+        _, filepath = _resolve_chat_file_path(app.config['CHAT_HISTORY_FOLDER'], data.get('id'))
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid chat ID'})
+
+    if os.path.exists(filepath):
+        try:
             os.remove(filepath)
-            return jsonify({'success': True})
-        else:
-            return jsonify({'success': False, 'error': 'Chat not found'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        except OSError as exc:
+            _log_internal_error('delete_chat failed', exc)
+            return jsonify({'success': False, 'error': 'Failed to delete chat'})
+        return jsonify({'success': True})
+    return jsonify({'success': False, 'error': 'Chat not found'})
 
 @app.route('/api/save_temp_chat', methods=['POST'])
 def save_temp_chat():
     """Save a temporary chat session that will be auto-deleted next day"""
+    data = request.get_json(silent=True) or {}
+    requested_chat_id = data.get('id') or ('temp_' + str(int(time.time() * 1000)))
     try:
-        data = request.json
-        chat_id = data.get('id', 'temp_' + str(int(time.time() * 1000)))
-        messages = _normalize_messages_for_storage(data.get('messages', []))
-        selected_bots = data.get('selectedBots', [])
-        uploaded_documents = data.get('uploadedDocuments', [])
-        
-        chat_data = {
-            'id': chat_id,
-            'name': 'Temporary Chat',
-            'schema_version': CURRENT_CHAT_SCHEMA_VERSION,
-            'messages': messages,
-            'selectedBots': selected_bots,
-            'systemPrompt': data.get('systemPrompt', ''),
-            'timestamp': datetime.now().isoformat(),
-            'isTemporary': True,
-            'uploadedDocuments': uploaded_documents
-        }
-        
-        # Save to temp folder
-        filepath = os.path.join(app.config['TEMP_CHAT_HISTORY_FOLDER'], f'{chat_id}.json')
+        chat_id, filepath = _resolve_chat_file_path(app.config['TEMP_CHAT_HISTORY_FOLDER'], requested_chat_id)
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid chat ID'})
+
+    chat_data = {
+        'id': chat_id,
+        'name': 'Temporary Chat',
+        'schema_version': CURRENT_CHAT_SCHEMA_VERSION,
+        'messages': _normalize_messages_for_storage(data.get('messages', [])),
+        'selectedBots': data.get('selectedBots', []),
+        'systemPrompt': data.get('systemPrompt', ''),
+        'timestamp': datetime.now().isoformat(),
+        'isTemporary': True,
+        'uploadedDocuments': data.get('uploadedDocuments', [])
+    }
+
+    try:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(chat_data, f, ensure_ascii=False, indent=2)
-        
-        return jsonify({'success': True, 'id': chat_id})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    except (OSError, TypeError, ValueError) as exc:
+        _log_internal_error('save_temp_chat failed', exc)
+        return jsonify({'success': False, 'error': 'Failed to save chat'})
+
+    return jsonify({'success': True, 'id': chat_id})
 
 @app.route('/api/list_temp_chats', methods=['GET'])
 def list_temp_chats():
     """List all temporary chat sessions from today"""
+    temp_folder = app.config['TEMP_CHAT_HISTORY_FOLDER']
     try:
-        temp_folder = app.config['TEMP_CHAT_HISTORY_FOLDER']
         chat_files = [f for f in os.listdir(temp_folder) if f.endswith('.json')]
-        chats = []
-        
-        for filename in chat_files:
-            filepath = os.path.join(temp_folder, filename)
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    chat_data = json.load(f)
-                    chats.append({
-                        'id': chat_data.get('id'),
-                        'name': 'Temp Chat',
-                        'timestamp': chat_data.get('timestamp'),
-                        'messageCount': _count_primary_chat_messages(chat_data.get('messages', [])),
-                        'isTemporary': True,
-                        'lastPreview': _get_last_preview(chat_data.get('messages', [])),
-                        'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
-                    })
-            except Exception as e:
-                print(f"Error loading temp chat file {filename}: {e}")
-                continue
-        
-        # Sort by timestamp (newest first)
-        chats.sort(key=lambda x: x['timestamp'], reverse=True)
-        
-        return jsonify({'success': True, 'chats': chats})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e), 'chats': []})
+    except OSError as exc:
+        _log_internal_error('list_temp_chats failed to list directory', exc)
+        return jsonify({'success': False, 'error': 'Failed to load chat list', 'chats': []})
+
+    chats = []
+    for filename in chat_files:
+        filepath = os.path.join(temp_folder, filename)
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                chat_data = json.load(f)
+        except FileNotFoundError:
+            continue
+        except json.JSONDecodeError as exc:
+            _log_internal_error(f'list_temp_chats invalid JSON in {filename}', exc)
+            continue
+        except OSError as exc:
+            _log_internal_error(f'list_temp_chats cannot read {filename}', exc)
+            continue
+
+        chats.append({
+            'id': chat_data.get('id'),
+            'name': 'Temp Chat',
+            'timestamp': chat_data.get('timestamp'),
+            'messageCount': _count_primary_chat_messages(chat_data.get('messages', [])),
+            'isTemporary': True,
+            'lastPreview': _get_last_preview(chat_data.get('messages', [])),
+            'isGenerating': get_conversation(chat_data.get('id')).get('is_generating', False)
+        })
+
+    chats.sort(key=lambda x: x.get('timestamp') or '', reverse=True)
+    return jsonify({'success': True, 'chats': chats})
 
 @app.route('/api/load_temp_chat/<chat_id>', methods=['GET'])
 def load_temp_chat(chat_id):
     """Load a specific temporary chat session"""
     try:
-        filepath = os.path.join(app.config['TEMP_CHAT_HISTORY_FOLDER'], f'{chat_id}.json')
-        
-        if not os.path.exists(filepath):
-            return jsonify({'success': False, 'error': 'Temporary chat not found'})
-        
+        normalized_chat_id, filepath = _resolve_chat_file_path(app.config['TEMP_CHAT_HISTORY_FOLDER'], chat_id)
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid chat ID'})
+
+    if not os.path.exists(filepath):
+        return jsonify({'success': False, 'error': 'Temporary chat not found'})
+
+    try:
         with open(filepath, 'r', encoding='utf-8') as f:
             chat_data = json.load(f)
-        if migrate_chat_payload(chat_data):
+    except json.JSONDecodeError as exc:
+        _log_internal_error(f'load_temp_chat invalid JSON for {normalized_chat_id}', exc)
+        return jsonify({'success': False, 'error': 'Failed to load chat'})
+    except OSError as exc:
+        _log_internal_error(f'load_temp_chat read failed for {normalized_chat_id}', exc)
+        return jsonify({'success': False, 'error': 'Failed to load chat'})
+
+    if migrate_chat_payload(chat_data):
+        try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(chat_data, f, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            _log_internal_error(f'load_temp_chat migration write failed for {normalized_chat_id}', exc)
 
-        live_conv = conversations.get(chat_id)
-        if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
-            chat_data['messages'] = _history_to_ui_messages(chat_id)
-            chat_data['uploadedDocuments'] = _conversation_documents_to_ui(chat_id)
+    live_conv = conversations.get(normalized_chat_id)
+    if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
+        chat_data['messages'] = _history_to_ui_messages(normalized_chat_id)
+        chat_data['uploadedDocuments'] = _conversation_documents_to_ui(normalized_chat_id)
 
-        _sync_run_group_counter(chat_id, chat_data.get('messages', []))
-
-        chat_data['isGenerating'] = get_conversation(chat_id).get('is_generating', False)
-        
-        return jsonify({'success': True, 'chat': chat_data})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+    _sync_run_group_counter(normalized_chat_id, chat_data.get('messages', []))
+    chat_data['isGenerating'] = get_conversation(normalized_chat_id).get('is_generating', False)
+    return jsonify({'success': True, 'chat': chat_data})
 
 @app.route('/api/delete_temp_chat', methods=['POST'])
 def delete_temp_chat():
     """Delete a temporary chat session"""
+    data = request.get_json(silent=True) or {}
     try:
-        data = request.json
-        chat_id = data.get('id')
-        
-        filepath = os.path.join(app.config['TEMP_CHAT_HISTORY_FOLDER'], f'{chat_id}.json')
-        
-        if os.path.exists(filepath):
-            os.remove(filepath)
-            return jsonify({'success': True})
-        else:
-            return jsonify({'success': False, 'error': 'Temporary chat not found'})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        _, filepath = _resolve_chat_file_path(app.config['TEMP_CHAT_HISTORY_FOLDER'], data.get('id'))
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid chat ID'})
 
-def extract_pdf_text(filepath):
-    """Extract text from PDF file"""
-    text = ""
-    try:
-        with open(filepath, 'rb') as f:
-            pdf_reader = PyPDF2.PdfReader(f)
-            for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
-    except Exception as e:
-        text = f"Error extracting text: {str(e)}"
-    return text
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+        except OSError as exc:
+            _log_internal_error('delete_temp_chat failed', exc)
+            return jsonify({'success': False, 'error': 'Failed to delete chat'})
+        return jsonify({'success': True})
+    return jsonify({'success': False, 'error': 'Temporary chat not found'})
 
 def encode_image_to_base64(filepath):
     """Convert image file to base64 data URL"""
@@ -941,7 +1001,8 @@ def encode_image_to_base64(filepath):
             if ext == 'jpg':
                 mime_type = "image/jpeg"
             return f"data:{mime_type};base64,{encoded}"
-    except Exception as e:
+    except OSError as exc:
+        _log_internal_error(f'encode_image_to_base64 failed for {filepath}', exc)
         return None
 
 def extract_json_from_text(text):
@@ -1372,40 +1433,54 @@ def build_leader_skills_context_from_selected(config, selected_files):
         'loaded_files': loaded_files
     }
 
-def build_document_context(conversation_id, system_prompt, support_images):
-    """Build document context and image URLs for a council role"""
+def build_document_context(conversation_id, system_prompt, support_images, support_pdf_input=False):
+    """Build document context, image URLs, and PDF inputs for a council role."""
     conv = get_conversation(conversation_id)
     documents = conv.get('uploaded_documents', {})
     image_urls = []
+    pdf_inputs = []
     if documents:
-        if support_images:
-            pdf_context = ""
-            for filename, doc_info in documents.items():
-                if doc_info['type'] == 'image':
+        context_text = ""
+        unsupported_pdf_filenames = []
+        for filename, doc_info in documents.items():
+            if doc_info['type'] == 'image':
+                if support_images:
                     img_base64 = encode_image_to_base64(doc_info['filepath'])
                     if img_base64:
                         image_urls.append(img_base64)
-                else:
-                    if not pdf_context:
-                        pdf_context = "\n\n===== AVAILABLE DOCUMENTS =====\n"
-                    pdf_context += f"\n--- PDF Document: {filename} ---\n"
-                    pdf_context += doc_info['content'][:5000]
-                    if len(doc_info['content']) > 5000:
-                        pdf_context += "\n[... content truncated ...]"
-                    pdf_context += "\n"
-            if pdf_context:
-                system_prompt += pdf_context
-        else:
-            pdf_context = "\n\n===== AVAILABLE DOCUMENTS =====\n"
-            for filename, doc_info in documents.items():
-                doc_type = "PDF Document" if doc_info['type'] == 'pdf' else "Image"
-                pdf_context += f"\n--- {doc_type}: {filename} ---\n"
-                pdf_context += doc_info['content'][:5000]
-                if len(doc_info['content']) > 5000:
-                    pdf_context += "\n[... content truncated ...]"
-                pdf_context += "\n"
-            system_prompt += pdf_context
-    return system_prompt, image_urls
+                    continue
+
+                if not context_text:
+                    context_text = "\n\n===== AVAILABLE DOCUMENTS =====\n"
+                context_text += f"\n--- Image: {filename} ---\n"
+                context_text += doc_info.get('content', '[Image uploaded]')[:5000]
+                if len(doc_info.get('content', '')) > 5000:
+                    context_text += "\n[... content truncated ...]"
+                context_text += "\n"
+                continue
+
+            if support_pdf_input and doc_info.get('filepath'):
+                pdf_inputs.append({
+                    'filename': filename,
+                    'filepath': doc_info['filepath']
+                })
+                continue
+
+            unsupported_pdf_filenames.append(filename)
+
+        if context_text:
+            system_prompt += context_text
+
+        if unsupported_pdf_filenames:
+            joined = ', '.join(unsupported_pdf_filenames)
+            system_prompt += (
+                "\n\n===== PDF ACCESS LIMITATION =====\n"
+                "The user attached PDF files, but this model cannot read PDF inputs directly.\n"
+                f"Attached PDF filenames: {joined}\n"
+                "Do not claim to have read the PDF contents. Ask the user to switch to a PDF-capable model if needed.\n"
+            )
+
+    return system_prompt, image_urls, pdf_inputs
 
 def _history_to_ui_messages(conversation_id):
     """Convert backend conversation history to UI-friendly message objects."""
@@ -1518,7 +1593,7 @@ def _conversation_documents_to_ui(conversation_id):
         for doc in conv.get('uploaded_documents', {}).values()
     ]
 
-def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, on_stream_progress=None, _retry=False, _timeout_fallback_used=False, internal_orchestration=False):
+def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, support_pdf_input=False, on_stream_progress=None, _retry=False, _timeout_fallback_used=False, _fallback_used=False, internal_orchestration=False):
     def emit_chat(event, payload=None):
         enriched = dict(payload or {})
         enriched['chat_id'] = conversation_id
@@ -1529,7 +1604,12 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         conv = get_conversation(conversation_id)
 
         # Build document context
-        system_prompt, image_urls = build_document_context(conversation_id, system_prompt, support_images)
+        system_prompt, image_urls, pdf_inputs = build_document_context(
+            conversation_id,
+            system_prompt,
+            support_images,
+            support_pdf_input=support_pdf_input
+        )
 
         if internal_orchestration:
             timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1545,7 +1625,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 user_prompt=user_prompt,
                 chat_history=chat_history,
                 temperature=0.7,
-                image_urls=image_urls if support_images else None
+                image_urls=image_urls if support_images else None,
+                pdf_inputs=pdf_inputs if support_pdf_input else None
             )
             converted_response = convert_to_traditional_chinese((raw_response or '').strip())
 
@@ -1621,7 +1702,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                     user_prompt=user_prompt,
                     chat_history=chat_history,
                     temperature=0.7,
-                    image_urls=image_urls if support_images else None
+                    image_urls=image_urls if support_images else None,
+                    pdf_inputs=pdf_inputs if support_pdf_input else None
                 ):
                     if stream_stop_event.is_set():
                         break
@@ -1742,6 +1824,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 fallback_model_id
                 and fallback_model_id != model_id
                 and not _timeout_fallback_used
+                and not _fallback_used
             )
             if can_fallback:
                 fallback_label = _build_fallback_role_label(role_label, fallback_model_id)
@@ -1758,9 +1841,11 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                     conversation_id=conversation_id,
                     run_group_id=run_group_id,
                     support_images=support_images,
+                    support_pdf_input=support_pdf_input,
                     on_stream_progress=on_stream_progress,
                     _retry=False,
                     _timeout_fallback_used=True,
+                    _fallback_used=True,
                     internal_orchestration=internal_orchestration
                 )
             return ''
@@ -1866,8 +1951,45 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         if not _retry:
             return run_council_role(
                 role_name, role_label, model_id, system_prompt, user_prompt,
-                chat_history, conversation_id, run_group_id, support_images, on_stream_progress, _retry=True, _timeout_fallback_used=_timeout_fallback_used, internal_orchestration=internal_orchestration
+                chat_history, conversation_id, run_group_id,
+                support_images=support_images,
+                support_pdf_input=support_pdf_input,
+                on_stream_progress=on_stream_progress,
+                _retry=True,
+                _timeout_fallback_used=_timeout_fallback_used,
+                _fallback_used=_fallback_used,
+                internal_orchestration=internal_orchestration
             )
+
+        fallback_model_id = str(load_config().get('FallBacker', '') or '').strip()
+        can_fallback = (
+            fallback_model_id
+            and fallback_model_id != model_id
+            and not _fallback_used
+        )
+        if can_fallback:
+            fallback_label = _build_fallback_role_label(role_label, fallback_model_id)
+            emit_chat('console_log', {
+                'message': f"[{timestamp}] {role_name.replace('_', ' ')} switching to FallBacker ({fallback_model_id}) after failed response"
+            })
+            return run_council_role(
+                role_name=role_name,
+                role_label=fallback_label,
+                model_id=fallback_model_id,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                chat_history=chat_history,
+                conversation_id=conversation_id,
+                run_group_id=run_group_id,
+                support_images=support_images,
+                support_pdf_input=support_pdf_input,
+                on_stream_progress=on_stream_progress,
+                _retry=False,
+                _timeout_fallback_used=_timeout_fallback_used,
+                _fallback_used=True,
+                internal_orchestration=internal_orchestration
+            )
+
         # Second failure — skip this role
         notice = f"{role_label} has encountered an error and has to go without it."
         emit_chat('council_status', {'role': role_name, 'status': 'error'})
@@ -1917,6 +2039,7 @@ def _run_optional_council_role(role_name, task_key, base_prompt, user_message, u
         conversation_id=conversation_id,
         run_group_id=run_group_id,
         support_images=role_info.get('support_images', False),
+        support_pdf_input=role_info.get('support_pdf_input', False),
         on_stream_progress=auto_save_chat
     )
     if role_response is not None:
@@ -1986,6 +2109,7 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
             conversation_id=conversation_id,
             run_group_id=run_group_id,
             support_images=verifier_info.get('support_images', False),
+            support_pdf_input=verifier_info.get('support_pdf_input', False),
             on_stream_progress=auto_save_chat
         )
         if stop_if_aborted():
@@ -2039,6 +2163,7 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
                 conversation_id=conversation_id,
                 run_group_id=run_group_id,
                 support_images=role_info.get('support_images', False),
+                support_pdf_input=role_info.get('support_pdf_input', False),
                 on_stream_progress=auto_save_chat
             )
             if rebuttal_response is None:
@@ -2080,6 +2205,7 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
                 conversation_id=conversation_id,
                 run_group_id=run_group_id,
                 support_images=verifier_info.get('support_images', False),
+                support_pdf_input=verifier_info.get('support_pdf_input', False),
                 on_stream_progress=auto_save_chat
             )
             verdict = _parse_step_c_payload(step_c_raw)
@@ -2175,7 +2301,7 @@ def handle_message_task(data, conversation_id):
         return False
 
     def run_memory_management(council_results_local=None, direct_response_text=''):
-        # Run memory extraction silently to keep long-term memory in sync.
+        # Keep requests non-blocking, but emit diagnostics when memory sync fails.
         try:
             if memory_manager.is_enabled(config) and memory_manager.auto_extract_enabled(config):
                 mem_writer_model_id = config.get('MemWriter', '') or leader_model_id
@@ -2201,14 +2327,28 @@ def handle_message_task(data, conversation_id):
                         if key in council_results_local:
                             convo_summary += f"\n{key}: {council_results_local[key][:500]}"
 
-                extract_raw = completion_response(
-                    model=mem_writer_model_id,
-                    system_prompt=extract_sys,
-                    user_prompt=convo_summary,
-                    temperature=0.3
-                )
                 try:
+                    extract_raw = completion_response(
+                        model=mem_writer_model_id,
+                        system_prompt=extract_sys,
+                        user_prompt=convo_summary,
+                        temperature=0.3
+                    )
                     extract_payload = json.loads(extract_json_from_text(extract_raw))
+                except json.JSONDecodeError as exc:
+                    _log_internal_error('run_memory_management invalid extractor JSON', exc)
+                    emit_chat('console_log', {
+                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: invalid extractor output"
+                    })
+                    return
+                except Exception as exc:
+                    _log_internal_error('run_memory_management extractor request failed', exc)
+                    emit_chat('console_log', {
+                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: extractor unavailable"
+                    })
+                    return
+
+                try:
                     added = 0
                     updated = 0
                     deleted = 0
@@ -2226,8 +2366,8 @@ def handle_message_task(data, conversation_id):
                             try:
                                 memory_manager.update_memory(int(mid), content, config)
                                 updated += 1
-                            except (ValueError, TypeError):
-                                pass
+                            except (ValueError, TypeError, memory_manager.MemoryStoreError) as exc:
+                                _log_internal_error('run_memory_management update skipped', exc)
 
                     # Process deletions (highest IDs first to avoid index shifting).
                     deleted_ids = extract_payload.get('deleted_memory_ids', [])
@@ -2236,8 +2376,8 @@ def handle_message_task(data, conversation_id):
                             try:
                                 memory_manager.delete_memory(int(mid), config)
                                 deleted += 1
-                            except (ValueError, TypeError):
-                                pass
+                            except (ValueError, TypeError, memory_manager.MemoryStoreError) as exc:
+                                _log_internal_error('run_memory_management delete skipped', exc)
 
                     # Process additions.
                     new_memories = extract_payload.get('new_memories', [])
@@ -2258,10 +2398,16 @@ def handle_message_task(data, conversation_id):
                             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory managed ({', '.join(parts)})"
                         })
                         emit_chat('memory_updated', {'added': added, 'updated': updated, 'deleted': deleted})
-                except Exception:
-                    pass
+                except memory_manager.MemoryStoreError as exc:
+                    _log_internal_error('run_memory_management storage error', exc)
+                    emit_chat('console_log', {
+                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: storage unavailable"
+                    })
         except Exception as e:
-            print(f"Memory extraction error: {e}")
+            _log_internal_error('run_memory_management unexpected error', e)
+            emit_chat('console_log', {
+                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped due to an internal error"
+            })
 
     def emit_leader_task_distribution_summary(tasks_payload, model_id):
         if not isinstance(tasks_payload, dict):
@@ -2440,6 +2586,7 @@ def handle_message_task(data, conversation_id):
             conversation_id=conversation_id,
             run_group_id=run_group_id,
             support_images=md_reader_info.get('support_images', False),
+            support_pdf_input=md_reader_info.get('support_pdf_input', False),
             on_stream_progress=auto_save_chat
         )
 
@@ -2497,6 +2644,7 @@ def handle_message_task(data, conversation_id):
         conversation_id=conversation_id,
         run_group_id=run_group_id,
         support_images=leader_info.get('support_images', False),
+        support_pdf_input=leader_info.get('support_pdf_input', False),
         on_stream_progress=auto_save_chat,
         internal_orchestration=True
     )
@@ -2774,6 +2922,7 @@ def handle_message_task(data, conversation_id):
             conversation_id=conversation_id,
             run_group_id=run_group_id,
             support_images=leader_info.get('support_images', False),
+            support_pdf_input=leader_info.get('support_pdf_input', False),
             on_stream_progress=auto_save_chat
         )
         auto_save_chat()

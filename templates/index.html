@@ -2317,6 +2317,12 @@
         function findFinalMessageIndex(state, messageId, runGroupId) {
             if (!state || !Array.isArray(state.messages)) return -1;
 
+            const getRole = (msg) => {
+                const raw = String((msg && (msg.role || msg.type)) || '').toLowerCase();
+                if (raw === 'ai') return 'assistant';
+                return raw;
+            };
+
             if (messageId) {
                 const byId = state.messages.findIndex(msg => msg.id === messageId);
                 if (byId >= 0) return byId;
@@ -2325,7 +2331,7 @@
             if (runGroupId) {
                 for (let i = state.messages.length - 1; i >= 0; i--) {
                     const msg = state.messages[i];
-                    if ((msg.run_group_id || null) === runGroupId && msg.role === 'assistant' && msg.is_final_response) {
+                    if ((msg.run_group_id || null) === runGroupId && getRole(msg) === 'assistant' && msg.is_final_response) {
                         return i;
                     }
                 }
@@ -2335,6 +2341,12 @@
 
         function findSourceUserIndexForFinal(state, finalIdx, runGroupId) {
             if (!state || !Array.isArray(state.messages) || finalIdx < 0) return -1;
+
+            const getRole = (msg) => {
+                const raw = String((msg && (msg.role || msg.type)) || '').toLowerCase();
+                if (raw === 'ai') return 'assistant';
+                return raw;
+            };
 
             let runStartIdx = finalIdx;
             if (runGroupId) {
@@ -2347,13 +2359,13 @@
             }
 
             for (let i = runStartIdx - 1; i >= 0; i--) {
-                if (state.messages[i].role === 'user') {
+                if (getRole(state.messages[i]) === 'user') {
                     return i;
                 }
             }
 
             for (let i = finalIdx - 1; i >= 0; i--) {
-                if (state.messages[i].role === 'user') {
+                if (getRole(state.messages[i]) === 'user') {
                     return i;
                 }
             }
@@ -2389,7 +2401,9 @@
             }
 
             const sourceUser = state.messages[sourceUserIdx];
-            if (!sourceUser || sourceUser.role !== 'user') {
+            const sourceUserRole = String((sourceUser && (sourceUser.role || sourceUser.type)) || '').toLowerCase();
+            const isSourceUser = sourceUserRole === 'user';
+            if (!sourceUser || !isSourceUser) {
                 addConsoleLog('Redo source is not a user message.');
                 return;
             }
@@ -2469,7 +2483,10 @@
             if (!state || !Array.isArray(state.messages)) return;
 
             const messageId = messageDiv.getAttribute('data-message-id');
-            const targetIdx = state.messages.findIndex(msg => msg.id === messageId && msg.role === 'user');
+            const targetIdx = state.messages.findIndex(msg => {
+                const role = String((msg && (msg.role || msg.type)) || '').toLowerCase();
+                return msg.id === messageId && role === 'user';
+            });
             if (targetIdx < 0) {
                 addConsoleLog('Edited message was not found in chat state.');
                 return;
@@ -2505,7 +2522,9 @@
             let latestFinalId = null;
             for (let i = state.messages.length - 1; i >= 0; i--) {
                 const msg = state.messages[i];
-                if (msg.role === 'assistant' && msg.is_final_response) {
+                const role = String((msg && (msg.role || msg.type)) || '').toLowerCase();
+                const isAssistant = role === 'assistant' || role === 'ai';
+                if (isAssistant && msg.is_final_response) {
                     latestFinalId = msg.id;
                     break;
                 }

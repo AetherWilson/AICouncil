@@ -1,7 +1,10 @@
 import json
 import os
 import time
+import logging
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_COUNCIL_CONFIG = {
     'MarkReader': 'gpt-4o',
@@ -36,9 +39,19 @@ class ConfigStore:
             return entry['value']
 
         try:
-            with open(path, 'r', encoding='utf-8') as f:
+            # Use utf-8-sig to tolerate BOM-prefixed JSON files produced by some editors/tools.
+            with open(path, 'r', encoding='utf-8-sig') as f:
                 value = json.load(f)
         except FileNotFoundError:
+            value = fallback
+        except json.JSONDecodeError as exc:
+            logger.warning("Invalid JSON in %s: %s", path, exc)
+            value = fallback
+        except UnicodeDecodeError as exc:
+            logger.warning("Invalid encoding in %s: %s", path, exc)
+            value = fallback
+        except OSError as exc:
+            logger.warning("Unable to read %s: %s", path, exc)
             value = fallback
 
         self._cache[path] = {
@@ -84,14 +97,16 @@ def infer_model_support_images(model_id: str) -> bool:
 def get_model_info(models: List[Dict[str, Any]], model_id: str) -> Dict[str, Any]:
     for model in models:
         if model.get('id') == model_id:
-            if 'support_images' not in model:
-                normalized = dict(model)
+            normalized = dict(model)
+            if 'support_images' not in normalized:
                 normalized['support_images'] = infer_model_support_images(model_id)
-                return normalized
-            return model
+            if 'support_pdf_input' not in normalized:
+                normalized['support_pdf_input'] = False
+            return normalized
 
     return {
         'id': model_id,
         'name': model_id,
-        'support_images': infer_model_support_images(model_id)
+        'support_images': infer_model_support_images(model_id),
+        'support_pdf_input': False
     }

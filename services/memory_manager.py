@@ -19,7 +19,10 @@ Memory file structure:
 import os
 import re
 import threading
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # Known sections in the memory file (in display order).
 SECTIONS = ['User Profile', 'Preferences', 'Key Facts', 'Project Context']
@@ -28,6 +31,10 @@ DEFAULT_MEMORY_PATH = os.path.join('skills', 'memories', 'memory.md')
 DEFAULT_MAX_MEMORIES = 50
 
 _lock = threading.Lock()
+
+
+class MemoryStoreError(Exception):
+    """Raised when persistent memory storage cannot be accessed safely."""
 
 # ─── Low-level helpers ───────────────────────────────────────────────
 
@@ -41,10 +48,41 @@ def _memory_path(config=None):
 
 def _ensure_file(path):
     """Create the memory file + parent dirs if missing."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if not os.path.exists(path):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not os.path.exists(path):
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(_blank_template())
+    except OSError as exc:
+        raise MemoryStoreError(f'Failed to initialize memory file at {path}') from exc
+
+
+def _read_file_text(path):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except OSError as exc:
+        raise MemoryStoreError(f'Failed to read memory file at {path}') from exc
+    except UnicodeDecodeError as exc:
+        raise MemoryStoreError(f'Memory file is not valid UTF-8: {path}') from exc
+
+
+def _write_file_text(path, text):
+    try:
         with open(path, 'w', encoding='utf-8') as f:
-            f.write(_blank_template())
+            f.write(text)
+    except OSError as exc:
+        raise MemoryStoreError(f'Failed to write memory file at {path}') from exc
+    except UnicodeEncodeError as exc:
+        raise MemoryStoreError(f'Failed to encode memory file as UTF-8: {path}') from exc
+
+
+def _read_sections(path):
+    text = _read_file_text(path)
+    try:
+        return _parse_sections(text)
+    except Exception as exc:
+        raise MemoryStoreError(f'Failed to parse memory file at {path}') from exc
 
 
 def _blank_template():
@@ -156,9 +194,7 @@ def read_all(config=None):
     path = _memory_path(config)
     _ensure_file(path)
     with _lock:
-        with open(path, 'r', encoding='utf-8') as f:
-            text = f.read()
-    return _parse_sections(text)
+        return _read_sections(path)
 
 
 def read_flat(config=None):
@@ -218,9 +254,7 @@ def add_memory(section, content, config=None):
     cap = max_memories(config)
 
     with _lock:
-        with open(path, 'r', encoding='utf-8') as f:
-            text = f.read()
-        sections = _parse_sections(text)
+        sections = _read_sections(path)
 
         # Dedup: skip if identical entry already exists
         if content not in sections[section]:
@@ -236,8 +270,7 @@ def add_memory(section, content, config=None):
                     total -= 1
                     break
 
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(_serialize_sections(sections))
+        _write_file_text(path, _serialize_sections(sections))
 
     return read_flat(config)
 
@@ -252,9 +285,7 @@ def add_memories_bulk(entries, config=None):
     cap = max_memories(config)
 
     with _lock:
-        with open(path, 'r', encoding='utf-8') as f:
-            text = f.read()
-        sections = _parse_sections(text)
+        sections = _read_sections(path)
 
         for entry in entries:
             section = entry.get('section', 'Key Facts')
@@ -276,8 +307,7 @@ def add_memories_bulk(entries, config=None):
                     total -= 1
                     break
 
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(_serialize_sections(sections))
+        _write_file_text(path, _serialize_sections(sections))
 
 
 def update_memory(memory_id, new_content, config=None):
@@ -286,9 +316,7 @@ def update_memory(memory_id, new_content, config=None):
     _ensure_file(path)
 
     with _lock:
-        with open(path, 'r', encoding='utf-8') as f:
-            text = f.read()
-        sections = _parse_sections(text)
+        sections = _read_sections(path)
 
         idx = 0
         found = False
@@ -305,8 +333,7 @@ def update_memory(memory_id, new_content, config=None):
         if not found:
             raise ValueError(f'Memory id {memory_id} not found')
 
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(_serialize_sections(sections))
+        _write_file_text(path, _serialize_sections(sections))
 
     return read_flat(config)
 
@@ -317,9 +344,7 @@ def delete_memory(memory_id, config=None):
     _ensure_file(path)
 
     with _lock:
-        with open(path, 'r', encoding='utf-8') as f:
-            text = f.read()
-        sections = _parse_sections(text)
+        sections = _read_sections(path)
 
         idx = 0
         found = False
@@ -336,8 +361,7 @@ def delete_memory(memory_id, config=None):
         if not found:
             raise ValueError(f'Memory id {memory_id} not found')
 
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(_serialize_sections(sections))
+        _write_file_text(path, _serialize_sections(sections))
 
     return read_flat(config)
 
@@ -345,6 +369,6 @@ def delete_memory(memory_id, config=None):
 def clear_all(config=None):
     """Wipe all memory entries (keeps the file structure)."""
     path = _memory_path(config)
+    _ensure_file(path)
     with _lock:
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(_blank_template())
+        _write_file_text(path, _blank_template())
