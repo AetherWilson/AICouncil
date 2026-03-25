@@ -6,6 +6,7 @@ from datetime import datetime
 import opencc
 import base64
 import logging
+import json
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -64,6 +65,58 @@ def log_info(folder, file_name, file_content):
         f.write(file_content)
     
     return file_path
+
+
+def _stringify_history_content(content):
+    """Render chat content into a readable multiline string for debug logs."""
+    if content is None:
+        return ''
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (dict, list)):
+        try:
+            return json.dumps(content, ensure_ascii=False, indent=2)
+        except Exception:
+            return str(content)
+    return str(content)
+
+
+def _indent_block(text, spaces=4):
+    indent = ' ' * spaces
+    lines = str(text).splitlines() or ['']
+    return '\n'.join(f"{indent}{line}" for line in lines)
+
+
+def _format_chat_history_for_log(chat_history):
+    """Format chat history into a numbered, readable block for troubleshooting."""
+    if not chat_history:
+        return 'None'
+
+    if not isinstance(chat_history, list):
+        return _stringify_history_content(chat_history)
+
+    blocks = []
+    for idx, message in enumerate(chat_history, start=1):
+        if isinstance(message, dict):
+            role = str(message.get('role', 'unknown'))
+            sender = str(message.get('sender') or message.get('bot_name') or '').strip()
+            model_id = str(message.get('model_id') or '').strip()
+            content = _stringify_history_content(message.get('content', ''))
+            raw_markdown = message.get('raw_markdown')
+            parts = [f"[{idx}] role={role}"]
+            if sender:
+                parts.append(f"sender={sender}")
+            if model_id:
+                parts.append(f"model={model_id}")
+
+            block = [', '.join(parts), _indent_block(content)]
+            if isinstance(raw_markdown, str) and raw_markdown.strip() and raw_markdown != content:
+                block.extend(['  raw_markdown:', _indent_block(raw_markdown)])
+            blocks.append('\n'.join(block))
+        else:
+            blocks.append(f"[{idx}]\n{_indent_block(_stringify_history_content(message))}")
+
+    return '\n\n'.join(blocks)
 
 def _build_user_content(user_prompt, image_urls=None, pdf_inputs=None):
     """Build multi-modal user content blocks for the OpenAI-compatible API."""
@@ -164,6 +217,8 @@ def completion_response(model, system_prompt, user_prompt, chat_history = None, 
     # Get response content and add prefix if needed
     content = response.choices[0].message.content
     
+    formatted_history = _format_chat_history_for_log(chat_history)
+
     # Prepare log content with input and output clearly labeled
     log_content = f"""{'='*80}
 INPUT
@@ -175,7 +230,7 @@ User Prompt:
 {user_prompt}
 
 Chat History:
-{chat_history if chat_history else 'None'}
+{formatted_history}
 
 {'='*80}
 OUTPUT
@@ -292,6 +347,7 @@ def completion_response_stream(model, system_prompt, user_prompt, chat_history=N
 
     # Only log when the stream finished naturally (not when stopped early)
     if completed:
+        formatted_history = _format_chat_history_for_log(chat_history)
         log_content = f"""{'='*80}
 INPUT
 {'='*80}
@@ -302,7 +358,7 @@ User Prompt:
 {user_prompt}
 
 Chat History:
-{chat_history if chat_history else 'None'}
+{formatted_history}
 
 {'='*80}
 THINKING

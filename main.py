@@ -1150,16 +1150,47 @@ def encode_image_to_base64(filepath):
 
 def extract_json_from_text(text):
     """Extract JSON object from text that might contain markdown code blocks or extra text"""
-    import re
-    # Try to find JSON in code blocks first
-    match = re.search(r'```(?:json)?\s*\n?(\{.*?\})\n?\s*```', text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # Try to find raw JSON object
-    match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
-    if match:
-        return match.group(0)
-    return text
+    if not isinstance(text, str):
+        return ''
+
+    stripped = text.strip()
+    if not stripped:
+        return ''
+
+    # Try to find JSON in fenced code blocks first.
+    codeblock_match = re.search(r'```(?:json)?\s*\n?(\{[\s\S]*?\})\s*```', stripped, re.IGNORECASE)
+    if codeblock_match:
+        return codeblock_match.group(1).strip()
+
+    # Extract first balanced {...} object while respecting quoted strings.
+    start = stripped.find('{')
+    if start == -1:
+        return stripped
+
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(stripped)):
+        ch = stripped[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                return stripped[start:idx + 1]
+
+    return stripped
 
 
 def _clamp_confidence(value, default=0.5):
@@ -1209,6 +1240,36 @@ def _normalize_task_distribution(tasks):
     normalized['direct_response'] = direct_response.strip()
 
     return normalized
+
+
+def _build_safe_default_task_distribution():
+    return _normalize_task_distribution({
+        'analysis': 'Fallback route: leader task JSON unavailable.',
+        'researcher_task': 'SKIP',
+        'creator_task': 'Create the primary answer that directly solves the user request in concise markdown.',
+        'analyzer_task': 'SKIP',
+        'verifier_task': 'Audit the Creator output for factual/logical issues and report only concrete problems.',
+        'direct_response': ''
+    })
+
+
+def _parse_task_distribution_payload(raw_text):
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        raise ValueError('Task distribution response is empty')
+
+    json_text = extract_json_from_text(raw_text)
+    if not isinstance(json_text, str) or not json_text.strip():
+        raise ValueError('No JSON content found in task distribution response')
+
+    trimmed = json_text.strip()
+    if not trimmed.startswith('{'):
+        raise ValueError('Task distribution response did not contain a JSON object')
+
+    payload = json.loads(trimmed)
+    if not isinstance(payload, dict):
+        raise ValueError('Task distribution payload must be a JSON object')
+
+    return _normalize_task_distribution(payload)
 
 
 def _parse_step_a_payload(raw_text):
@@ -1754,6 +1815,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 pdf_inputs=pdf_inputs if support_pdf_input else None
             )
             converted_response = convert_to_traditional_chinese((raw_response or '').strip())
+            if not converted_response:
+                raise RuntimeError(f"{role_label} returned empty internal response")
 
             emit_chat('console_log', {'message': f"[{timestamp}] {role_label} completed (internal)"})
             emit_chat('council_status', {
@@ -2825,46 +2888,43 @@ def handle_message_task(data, conversation_id):
     if stop_if_aborted():
         return
 
-    # Parse task distribution — abort if leader failed or returned invalid JSON
+    # Parse task distribution with resilient fallback plan.
     if task_distribution_raw is None:
         emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Leader failed to respond. Aborting council workflow."
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Leader failed to return task distribution. Falling back to safe default task plan."
         })
-        complete_workflow(include_run_group_end=False)
-        return
-
-    try:
-        tasks = json.loads(extract_json_from_text(task_distribution_raw))
-        tasks = _normalize_task_distribution(tasks)
-    except (json.JSONDecodeError, Exception) as first_error:
-        retry_ts = datetime.now().strftime('%H:%M:%S')
-        emit_chat('console_log', {
-            'message': f"[{retry_ts}] Task distribution JSON parse failed once; retrying with stricter format request."
-        })
-
-        strict_retry_system = (
-            leader_sys
-            + "\n\nSTRICT RETRY INSTRUCTION: Return only one valid JSON object that matches the required schema exactly."
-            + " Do not include markdown, code fences, commentary, or extra keys."
-            + " If unsure, set non-applicable tasks to SKIP and direct_response to an empty string."
-        )
-
+        tasks = _build_safe_default_task_distribution()
+    else:
         try:
-            retry_raw = completion_response(
-                model=leader_model_id,
-                system_prompt=strict_retry_system,
-                user_prompt=user_message,
-                chat_history=chat_history,
-                temperature=0.2
-            )
-            tasks = json.loads(extract_json_from_text(retry_raw))
-            tasks = _normalize_task_distribution(tasks)
-        except (json.JSONDecodeError, Exception) as retry_error:
+            tasks = _parse_task_distribution_payload(task_distribution_raw)
+        except (json.JSONDecodeError, Exception) as first_error:
+            retry_ts = datetime.now().strftime('%H:%M:%S')
             emit_chat('console_log', {
-                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution after strict retry: {str(retry_error)} (first error: {str(first_error)}). Aborting council workflow."
+                'message': f"[{retry_ts}] Task distribution JSON parse failed once; retrying with stricter format request."
             })
-            complete_workflow(include_run_group_end=False)
-            return
+
+            strict_retry_system = (
+                leader_sys
+                + "\n\nSTRICT RETRY INSTRUCTION: Return only one valid JSON object that matches the required schema exactly."
+                + " Do not include markdown, code fences, commentary, or extra keys."
+                + " If unsure, set non-applicable tasks to SKIP and direct_response to an empty string."
+                + "\nRequired keys: analysis, researcher_task, creator_task, analyzer_task, verifier_task, direct_response."
+            )
+
+            try:
+                retry_raw = completion_response(
+                    model=leader_model_id,
+                    system_prompt=strict_retry_system,
+                    user_prompt=user_message,
+                    chat_history=chat_history,
+                    temperature=0.2
+                )
+                tasks = _parse_task_distribution_payload(retry_raw)
+            except (json.JSONDecodeError, Exception) as retry_error:
+                emit_chat('console_log', {
+                    'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution after strict retry: {str(retry_error)} (first error: {str(first_error)}). Falling back to safe default task plan."
+                })
+                tasks = _build_safe_default_task_distribution()
 
     direct_response = tasks.get('direct_response', '')
     role_task_keys = ('researcher_task', 'creator_task', 'analyzer_task', 'verifier_task')
