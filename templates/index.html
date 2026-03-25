@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Council - Multi-AI Chat Interface</title>
+    <title>AI Council</title>
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
@@ -23,7 +23,7 @@
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #1e1e1e;
+            background: #0a0a0b;
             color: #e0e0e0;
             height: 100vh;
             overflow: hidden;
@@ -31,8 +31,8 @@
 
         .container {
             display: grid;
-            grid-template-columns: auto 1fr 350px;
-            grid-template-rows: auto 1fr;
+            grid-template-columns: auto 1fr;
+            grid-template-rows: 1fr;
             height: 100vh;
             gap: 10px;
             padding: 10px;
@@ -40,20 +40,12 @@
         }
 
         .container.sidebar-collapsed {
-            grid-template-columns: 50px 1fr 350px;
-        }
-
-        .header {
-            grid-column: 2 / 4;
-            background: #252526;
-            padding: 15px 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            grid-template-columns: 50px 1fr;
         }
 
         .chat-history-sidebar {
             grid-row: 1 / -1;
-            background: #252526;
+            background: #121315;
             border-radius: 8px;
             padding: 15px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.3);
@@ -129,7 +121,7 @@
         }
 
         .current-session {
-            background: #2d2d30;
+            background: #181a1f;
             padding: 10px;
             border-radius: 5px;
             margin-bottom: 15px;
@@ -151,8 +143,8 @@
         }
 
         .save-session-btn {
-            background: #3c3c3c;
-            border: 1px solid #555;
+            background: #23252b;
+            border: 1px solid #3a3d45;
             border-radius: 3px;
             color: #4ec9b0;
             padding: 4px 8px;
@@ -163,7 +155,7 @@
         }
 
         .save-session-btn:hover {
-            background: #4a4a4a;
+            background: #2b2e36;
             border-color: #4ec9b0;
         }
 
@@ -171,6 +163,15 @@
             flex: 1;
             overflow-y: auto;
             margin-top: 10px;
+        }
+
+        .sidebar-tab-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #262a31;
         }
 
         .history-section-title {
@@ -182,7 +183,7 @@
         }
 
         .history-item {
-            background: #2d2d30;
+            background: #17191d;
             padding: 10px;
             border-radius: 5px;
             margin-bottom: 8px;
@@ -193,12 +194,12 @@
         }
 
         .history-item:hover {
-            background: #333333;
+            background: #1e2127;
             border-color: #4ec9b0;
         }
 
         .history-item.active {
-            background: #2a4a44;
+            background: #1b3148;
             border-color: #4ec9b0;
         }
 
@@ -250,37 +251,27 @@
             color: white;
         }
 
-        .header h1 {
-            color: #4ec9b0;
-            font-size: 24px;
-        }
-
-        .tabs {
-            display: flex;
-            gap: 5px;
-            margin-top: 10px;
-        }
-
         .tab {
-            padding: 8px 20px;
-            background: #1e1e1e;
+            width: 100%;
+            padding: 10px 12px;
+            background: #121316;
             border: none;
-            border-radius: 5px 5px 0 0;
+            border-radius: 999px;
             color: #858585;
             cursor: pointer;
             font-weight: 500;
             transition: all 0.2s;
+            text-align: left;
         }
 
         .tab:hover {
-            background: #2d2d30;
+            background: #1c2026;
             color: #e0e0e0;
         }
 
         .tab.active {
-            background: #252526;
-            color: #4ec9b0;
-            border-bottom: 2px solid #4ec9b0;
+            background: #1f4f87;
+            color: #e8f1ff;
         }
 
         .tab-content {
@@ -291,6 +282,10 @@
 
         .tab-content.active {
             display: flex;
+        }
+
+        #chatTab {
+            background: #0b0c10;
         }
 
         .pdf-section {
@@ -365,83 +360,23 @@
 
         .main-content {
             grid-column: 2;
-            grid-row: 2;
+            grid-row: 1;
             display: flex;
             flex-direction: column;
-            background: #252526;
+            background: #111215;
             border-radius: 8px;
             overflow: hidden;
             box-shadow: 0 2px 8px rgba(0,0,0,0.3);
             min-height: 0;
             height: 100%;
-        }
-
-        .sidebar {
-            grid-column: 3;
-            grid-row: 2;
-            display: flex;
-            min-height: 0;
-            height: 100%;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .ai-status {
-            background: #252526;
-            border-radius: 8px;
-            padding: 15px;
-            flex: 1;
-            overflow-y: auto;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-            transition: flex 0.3s ease-out, min-height 0.3s ease-out;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .ai-status.collapsed {
-            flex: 0;
-            min-height: 56px;
-            overflow: hidden;
-        }
-
-        .ai-status h2 {
-            color: #4ec9b0;
-            font-size: 18px;
-            margin-bottom: 15px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #3c3c3c;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-            user-select: none;
-        }
-
-        .panel-toggle {
-            color: #858585;
-            font-size: 14px;
-            transition: transform 0.2s;
-            display: inline-block;
-        }
-
-        .panel-toggle.collapsed {
-            transform: rotate(-90deg);
-        }
-
-        .panel-content {
-            flex: 1;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .ai-status.collapsed .panel-content {
-            display: none;
         }
 
         .console-section {
             padding: 20px;
             overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
         }
 
         .console-section h2 {
@@ -452,15 +387,156 @@
             border-bottom: 2px solid #3c3c3c;
         }
 
+        .backend-grid {
+            display: grid;
+            grid-template-columns: minmax(260px, 36%) 1fr;
+            gap: 14px;
+            min-height: 0;
+        }
+
+        .backend-panel {
+            background: #14161b;
+            border: 1px solid #232730;
+            border-radius: 8px;
+            padding: 12px;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .backend-panel h3 {
+            color: #9cc9ff;
+            font-size: 13px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .backend-uptest-panel {
+            margin-top: 14px;
+            align-self: flex-start;
+            width: fit-content;
+            max-width: 100%;
+            min-width: 540px;
+        }
+
+        #councilRolesList {
+            overflow-y: auto;
+            min-height: 0;
+            padding-right: 4px;
+        }
+
         .console-content {
             font-family: 'Consolas', 'Monaco', monospace;
             font-size: 12px;
             color: #cccccc;
-            background: #1e1e1e;
-            padding: 15px;
+            background: #0b0c0f;
+            padding: 12px;
             border-radius: 5px;
             overflow-y: auto;
-            max-height: calc(100vh - 200px);
+            min-height: 220px;
+            max-height: 45vh;
+        }
+
+        .uptest-run {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .uptest-run-btn {
+            background: #1f4f87;
+            color: #e8f1ff;
+            border: 1px solid #2d6aac;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .uptest-run-btn:hover {
+            background: #2863a3;
+        }
+
+        .uptest-run-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .uptest-note {
+            color: #7f8a9d;
+            font-size: 12px;
+        }
+
+        .uptest-results {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            overflow-y: auto;
+            min-height: 120px;
+            max-height: 35vh;
+            padding-right: 4px;
+        }
+
+        .uptest-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #17191e;
+            border: 1px solid #262b34;
+            border-radius: 6px;
+            padding: 10px 12px;
+            gap: 12px;
+        }
+
+        .uptest-role {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        .uptest-role-name {
+            color: #dce4f1;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .uptest-role-model {
+            color: #7f8a9d;
+            font-size: 11px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .uptest-status {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        .uptest-status.ok {
+            color: #3ddc84;
+        }
+
+        .uptest-status.timeout {
+            color: #ff5a5f;
+            text-transform: lowercase;
+        }
+
+        .uptest-status.pending {
+            color: #9aa5b5;
+            font-weight: 600;
+        }
+
+        .uptest-empty {
+            color: #7f8a9d;
+            font-size: 12px;
+            padding: 10px 2px;
         }
 
         .log-entry {
@@ -473,7 +549,7 @@
             overflow-y: auto;
             overflow-x: hidden;
             padding: 20px;
-            background: #1e1e1e;
+            background: #0b0c10;
             min-height: 0;
         }
 
@@ -1265,7 +1341,7 @@
 
         /* Hide code block content when active */
         .code-block-shell.hidden pre code {
-            display: none !important;
+            display: none;
         }
 
         .code-block-shell.hidden pre::after {
@@ -1280,14 +1356,15 @@
 
         .input-area {
             padding: 15px;
-            background: #252526;
-            border-top: 1px solid #3c3c3c;
+            background: transparent;
+            border-top: none;
         }
 
         .input-container {
             display: flex;
             gap: 10px;
             align-items: center;
+            background: transparent;
         }
 
         #workflowModeButton {
@@ -1447,8 +1524,8 @@
         #messageInput {
             flex: 1;
             padding: 12px 15px;
-            background: #3c3c3c;
-            border: 1px solid #555;
+            background: transparent;
+            border: 1px solid #2b2f38;
             border-radius: 5px;
             color: #e0e0e0;
             font-size: 14px;
@@ -1494,43 +1571,12 @@
             background: #c9302c;
         }
 
-        #systemPromptPanel {
-            flex: 0 0 auto !important;
-            overflow: hidden;
-            max-height: 500px;
-            transition: max-height 0.3s ease-out !important;
-        }
-
-        #systemPromptPanel.collapsed {
-            max-height: 56px;
-        }
-
-        .system-prompt-input {
-            width: 100%;
-            padding: 8px 12px;
-            background: #2d2d30;
-            border: 1px solid #4ec9b0;
-            border-radius: 5px;
-            color: #e0e0e0;
-            font-size: 13px;
-            outline: none;
-            resize: vertical;
-            min-height: 80px;
-            max-height: 300px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            box-sizing: border-box;
-        }
-
-        .system-prompt-input:focus {
-            border-color: #5fd9c0;
-        }
-
         ::-webkit-scrollbar {
             width: 8px;
         }
 
         ::-webkit-scrollbar-track {
-            background: #1e1e1e;
+            background: #101217;
         }
 
         ::-webkit-scrollbar-thumb {
@@ -1563,7 +1609,7 @@
             align-items: center;
             justify-content: space-between;
             gap: 8px;
-            background: #2d2d30;
+            background: #17191e;
             border-radius: 5px;
             margin-bottom: 6px;
             border: 1px solid transparent;
@@ -1571,7 +1617,18 @@
         }
 
         .council-role-item:hover {
-            background: #333333;
+            background: #20242b;
+        }
+
+        @media (max-width: 1100px) {
+            .backend-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .backend-uptest-panel {
+                width: 100%;
+                min-width: 0;
+            }
         }
 
         .council-role-info {
@@ -1827,7 +1884,7 @@
 
         .message.md-collapsed .message-content,
         .message.md-collapsed .thinking-block {
-            display: none !important;
+            display: none;
         }
 
         .message.md-collapsed {
@@ -1868,14 +1925,11 @@
                         <!-- Temporary chats will be loaded here -->
                     </div>
                 </div>
-            </div>
-        </div>
-        <div class="header">
-            <h1>🤖 AI Council - Multi-AI Chat Interface <span class="status-indicator"></span></h1>
-            <div class="tabs">
-                <button class="tab active" data-tab="chat">💬 Chat</button>
-                <button class="tab" data-tab="pdf">📄 Sources</button>
-                <button class="tab" data-tab="console">📋 Console Log</button>
+                <div class="sidebar-tab-controls">
+                    <button class="tab active" data-tab="chat">💬 Chat</button>
+                    <button class="tab" data-tab="pdf">📄 Source</button>
+                    <button class="tab" data-tab="console">🖥 Backend</button>
+                </div>
             </div>
         </div>
 
@@ -1884,7 +1938,7 @@
                 <div class="conversation-window" id="conversationWindow">
                     <div class="message ai">
                         <div class="message-header">System</div>
-                        <div class="message-content">Welcome to AI Council! Select one or more AIs from the status panel and start chatting.</div>
+                        <div class="message-content">Welcome to AI Council! Open Backend to monitor council roles and logs while you chat.</div>
                     </div>
                 </div>
                 <div class="input-area">
@@ -1944,30 +1998,28 @@
 
             <div class="tab-content" id="consoleTab">
                 <div class="console-section">
-                    <h2>📋 Console Log</h2>
-                    <div class="console-content" id="consoleContent"></div>
-                </div>
-            </div>
-        </div>
-
-        <div class="sidebar">
-            <div class="ai-status collapsed" id="systemPromptPanel">
-                <h2 onclick="togglePanel('systemPromptPanel')">
-                    ⚙️ System Prompt
-                    <span class="panel-toggle collapsed">▼</span>
-                </h2>
-                <div class="panel-content">
-                    <textarea id="systemPromptInput" class="system-prompt-input" placeholder="Enter a custom system prompt to prepend to all AI instructions… (optional)"></textarea>
-                </div>
-            </div>
-            <div class="ai-status" id="councilRolesPanel">
-                <h2 onclick="togglePanel('councilRolesPanel')">
-                    👑 Council Roles
-                    <span class="panel-toggle">▼</span>
-                </h2>
-                <div class="panel-content">
-                    <div id="councilRolesList">
-                        <div style="color: #858585; font-style: italic;">Loading council...</div>
+                    <h2>🖥 Backend</h2>
+                    <div class="backend-grid">
+                        <div class="backend-panel">
+                            <h3>Council Roles</h3>
+                            <div id="councilRolesList">
+                                <div style="color: #858585; font-style: italic;">Loading council...</div>
+                            </div>
+                        </div>
+                        <div class="backend-panel">
+                            <h3>Logs</h3>
+                            <div class="console-content" id="consoleContent"></div>
+                        </div>
+                    </div>
+                    <div class="backend-panel backend-uptest-panel">
+                        <h3>Uptest</h3>
+                        <div class="uptest-run">
+                            <button id="uptestRunButton" class="uptest-run-btn" onclick="runUptest()">Run Uptest</button>
+                            <div class="uptest-note">Sends "hello" to each AI and measures response time.</div>
+                        </div>
+                        <div class="uptest-results" id="uptestResults">
+                            <div class="uptest-empty">No uptime test run yet.</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2711,11 +2763,6 @@
             }
         }
 
-        function getSystemPromptValue() {
-            const systemPromptInput = document.getElementById('systemPromptInput');
-            return systemPromptInput ? systemPromptInput.value.trim() : '';
-        }
-
         function setRunPendingState(chatId) {
             const state = ensureConversation(chatId);
             if (!state) return;
@@ -2790,7 +2837,6 @@
 
             socket.emit('send_message', {
                 message: userMessageText,
-                system_prompt: getSystemPromptValue(),
                 chat_id: chatId,
                 existing_user_message_id: userMessageId
             });
@@ -3013,6 +3059,182 @@
             logEntry.textContent = message;
             consoleContent.appendChild(logEntry);
             consoleContent.scrollTop = consoleContent.scrollHeight;
+        }
+
+        function renderUptestResults(results) {
+            const container = document.getElementById('uptestResults');
+            if (!container) return;
+
+            if (!Array.isArray(results) || results.length === 0) {
+                container.innerHTML = '<div class="uptest-empty">No AI entries returned.</div>';
+                return;
+            }
+
+            const html = results.map(item => {
+                const roleLabel = item.role_label || item.role || 'Unknown';
+                const modelName = item.model_name || item.model_id || 'Unknown model';
+                const isOk = item.status === 'ok' && typeof item.elapsed_ms === 'number';
+                const statusText = isOk ? `${(item.elapsed_ms / 1000).toFixed(2)}s` : 'timeout';
+                const statusClass = isOk ? 'ok' : 'timeout';
+
+                return `
+                    <div class="uptest-row">
+                        <div class="uptest-role">
+                            <div class="uptest-role-name">${escapeHtml(roleLabel)}</div>
+                            <div class="uptest-role-model">${escapeHtml(modelName)}</div>
+                        </div>
+                        <div class="uptest-status ${statusClass}">${statusText}</div>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = html;
+        }
+
+        function upsertUptestResult(item) {
+            const container = document.getElementById('uptestResults');
+            if (!container) return;
+
+            const role = String(item.role || item.role_label || 'Unknown');
+            const roleLabel = item.role_label || role;
+            const modelName = item.model_name || item.model_id || 'Unknown model';
+            const isOk = item.status === 'ok' && typeof item.elapsed_ms === 'number';
+            const statusText = isOk ? `${(item.elapsed_ms / 1000).toFixed(2)}s` : 'timeout';
+            const statusClass = isOk ? 'ok' : 'timeout';
+
+            const existingRow = Array.from(container.querySelectorAll('.uptest-row')).find(row => row.dataset.role === role);
+
+            const nextRow = document.createElement('div');
+            nextRow.className = 'uptest-row';
+            nextRow.dataset.role = role;
+            nextRow.innerHTML = `
+                <div class="uptest-role">
+                    <div class="uptest-role-name">${escapeHtml(roleLabel)}</div>
+                    <div class="uptest-role-model">${escapeHtml(modelName)}</div>
+                </div>
+                <div class="uptest-status ${statusClass}">${statusText}</div>
+            `;
+
+            if (existingRow) {
+                existingRow.replaceWith(nextRow);
+            } else {
+                container.appendChild(nextRow);
+            }
+        }
+
+        function renderUptestPendingRows() {
+            const container = document.getElementById('uptestResults');
+            if (!container) return;
+
+            const roleOrder = ['Leader', 'MarkReader', 'Researcher', 'Creator', 'Analyzer', 'Verifier'];
+            const knownRoles = Object.keys(councilRoles || {});
+            const orderedRoles = [
+                ...roleOrder.filter(role => knownRoles.includes(role)),
+                ...knownRoles.filter(role => !roleOrder.includes(role))
+            ];
+
+            if (orderedRoles.length === 0) {
+                container.innerHTML = '<div class="uptest-empty">Testing AI availability...</div>';
+                return;
+            }
+
+            container.innerHTML = orderedRoles.map(role => {
+                const info = (councilRoles && councilRoles[role]) || {};
+                const modelName = info.model_name || info.model_id || 'Unknown model';
+                return `
+                    <div class="uptest-row" data-role="${escapeHtml(role)}">
+                        <div class="uptest-role">
+                            <div class="uptest-role-name">${escapeHtml(role.replace(/_/g, ' '))}</div>
+                            <div class="uptest-role-model">${escapeHtml(modelName)}</div>
+                        </div>
+                        <div class="uptest-status pending">waiting...</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function processUptestStreamLines(rawChunk, processPayload) {
+            const lines = rawChunk.split('\n');
+            lines.forEach(line => {
+                const trimmed = line.trim();
+                if (!trimmed) return;
+                try {
+                    const payload = JSON.parse(trimmed);
+                    processPayload(payload);
+                } catch (err) {
+                    // Ignore malformed partial lines.
+                }
+            });
+        }
+
+        async function runUptest() {
+            const runBtn = document.getElementById('uptestRunButton');
+            const container = document.getElementById('uptestResults');
+            if (!runBtn || !container) return;
+
+            runBtn.disabled = true;
+            runBtn.textContent = 'Running...';
+            renderUptestPendingRows();
+
+            try {
+                const response = await fetch('/api/backend/uptest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+
+                if (!response.ok || !response.body) {
+                    throw new Error('Uptest failed');
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let receivedCount = 0;
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const chunks = buffer.split('\n');
+                    buffer = chunks.pop() || '';
+
+                    processUptestStreamLines(chunks.join('\n'), (payload) => {
+                        if (payload.type === 'result' && payload.result) {
+                            upsertUptestResult(payload.result);
+                            receivedCount += 1;
+                        } else if (payload.type === 'done') {
+                            addConsoleLog(`Uptest completed (${payload.timeout_seconds}s timeout)`);
+                        }
+                    });
+                }
+
+                const tail = decoder.decode();
+                if (tail) {
+                    buffer += tail;
+                }
+                if (buffer.trim()) {
+                    processUptestStreamLines(buffer, (payload) => {
+                        if (payload.type === 'result' && payload.result) {
+                            upsertUptestResult(payload.result);
+                            receivedCount += 1;
+                        } else if (payload.type === 'done') {
+                            addConsoleLog(`Uptest completed (${payload.timeout_seconds}s timeout)`);
+                        }
+                    });
+                }
+
+                if (receivedCount === 0) {
+                    container.innerHTML = '<div class="uptest-empty">No AI entries returned.</div>';
+                }
+            } catch (error) {
+                container.innerHTML = '<div class="uptest-empty">Failed to run uptime test.</div>';
+                addConsoleLog(`Uptest error: ${error.message || error}`);
+            } finally {
+                runBtn.disabled = false;
+                runBtn.textContent = 'Run Uptest';
+            }
         }
 
         function formatTaskDistribution(content) {
@@ -3954,8 +4176,6 @@
             setProcessingState(true);
             
             // Send to server
-            const systemPromptInput = document.getElementById('systemPromptInput');
-            const userSystemPrompt = systemPromptInput ? systemPromptInput.value.trim() : '';
             const workflowMode = getWorkflowMode();
             const activeChatId = currentSessionId || tempChatId;
             const activeState = ensureConversation(activeChatId);
@@ -3972,7 +4192,6 @@
             }
             socket.emit('send_message', {
                 message: message,
-                system_prompt: userSystemPrompt,
                 chat_id: activeChatId,
                 workflow_mode: workflowMode
             });
@@ -4618,10 +4837,6 @@
             // Clear console log
             document.getElementById('consoleContent').innerHTML = '';
 
-            // Reset system prompt
-            const sysPromptEl = document.getElementById('systemPromptInput');
-            if (sysPromptEl) sysPromptEl.value = '';
-
             uploadedPDFs = [];
             displayPDFs();
 
@@ -4649,7 +4864,6 @@
                     messages: messages,
                     timestamp: new Date().toISOString(),
                     selectedBots: [],
-                    systemPrompt: (document.getElementById('systemPromptInput') || {}).value || '',
                     uploadedDocuments: uploadedPDFs
                 };
 
@@ -4901,12 +5115,6 @@
                         // Load messages with unified non-final grouping
                         renderLoadedMessages(conversationWindow, data.chat.messages || [], currentSessionId);
                         
-                        // Restore system prompt if available
-                        const sysPromptEl = document.getElementById('systemPromptInput');
-                        if (sysPromptEl && data.chat.systemPrompt !== undefined) {
-                            sysPromptEl.value = data.chat.systemPrompt;
-                        }
-
                         restoreLoadedDocuments(data.chat);
 
                         // Update current session info
@@ -5030,7 +5238,6 @@
 
             // Snapshot current temp chat state now, so quick chat switching won't save the wrong DOM.
             const snapshotMessages = getCurrentMessages();
-            const snapshotSystemPrompt = (document.getElementById('systemPromptInput') || {}).value || '';
             const snapshotUploadedDocuments = [...uploadedPDFs];
             const snapshotTempId = tempChatId || ('temp_' + Date.now().toString());
             if (!tempChatId) {
@@ -5045,7 +5252,6 @@
                         id: snapshotTempId,
                         messages: snapshotMessages,
                         selectedBots: [],
-                        systemPrompt: snapshotSystemPrompt,
                         uploadedDocuments: snapshotUploadedDocuments
                     };
 
@@ -5130,12 +5336,6 @@
                         }
                         setProcessingState(!!data.chat.isGenerating);
 
-                        // Restore system prompt if available
-                        const sysPromptElTemp = document.getElementById('systemPromptInput');
-                        if (sysPromptElTemp && data.chat.systemPrompt !== undefined) {
-                            sysPromptElTemp.value = data.chat.systemPrompt;
-                        }
-
                         restoreLoadedDocuments(data.chat);
                         
                         // Update active state in history list
@@ -5184,15 +5384,6 @@
                     alert('Error deleting temporary chat');
                 });
             }
-        }
-
-        // Panel toggle functionality
-        function togglePanel(panelId) {
-            const panel = document.getElementById(panelId);
-            const toggle = panel.querySelector('.panel-toggle');
-            
-            panel.classList.toggle('collapsed');
-            toggle.classList.toggle('collapsed');
         }
 
         // Initialize

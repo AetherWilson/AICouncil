@@ -1,13 +1,14 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 from flask_socketio import SocketIO, emit, join_room
 import json
 import time
 import threading
 import queue
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from datetime import datetime
 import re
-from GPT_handle import completion_response, completion_response_stream, convert_to_traditional_chinese
+from GPT_handle import completion_response, completion_response_stream, convert_to_traditional_chinese, client
 import os
 from werkzeug.utils import secure_filename
 from PIL import Image, UnidentifiedImageError
@@ -39,6 +40,7 @@ DEFAULT_MD_READER_CONFIG = {
     'preview_chars_per_file': 1200
 }
 config_store = ConfigStore(base_dir='.')
+UPTEST_TIMEOUT_SECONDS = 30
 
 # Store all conversation state keyed by conversation_id
 # {
@@ -650,6 +652,138 @@ def get_council():
             'support_pdf_input': model_info.get('support_pdf_input', False)
         }
     return jsonify(roles)
+
+
+def _probe_model_latency(model_id, timeout_seconds):
+    start = time.perf_counter()
+    try:
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {'role': 'system', 'content': 'You are a health check. Reply very briefly.'},
+                {'role': 'user', 'content': 'hello'}
+            ],
+            temperature=0,
+            max_tokens=10,
+            timeout=timeout_seconds
+        )
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
+        choices = getattr(response, 'choices', None) or []
+        content = ''
+        if choices:
+            content = str((choices[0].message.content or '')).strip()
+
+        if not content:
+            return {
+                'status': 'timeout',
+                'elapsed_ms': None,
+                'reply': '',
+                'error': 'Empty response'
+            }
+
+        return {
+            'status': 'ok',
+            'elapsed_ms': elapsed_ms,
+            'reply': content,
+            'error': ''
+        }
+    except Exception as exc:
+        return {
+            'status': 'timeout',
+            'elapsed_ms': None,
+            'reply': '',
+            'error': str(exc)
+        }
+
+
+@app.route('/api/backend/uptest', methods=['POST'])
+def backend_uptest():
+    payload = request.get_json(silent=True) or {}
+    requested_timeout = payload.get('timeout_seconds', UPTEST_TIMEOUT_SECONDS)
+    try:
+        timeout_seconds = int(requested_timeout)
+    except (TypeError, ValueError):
+        timeout_seconds = UPTEST_TIMEOUT_SECONDS
+    timeout_seconds = max(5, min(timeout_seconds, 120))
+
+    config = load_config()
+    role_rows = []
+    for role_name in COUNCIL_ROLES:
+        model_id = str(config.get(role_name, '') or '').strip()
+        model_info = get_model_info(model_id) if model_id else {}
+        role_rows.append({
+            'role': role_name,
+            'role_label': role_name.replace('_', ' '),
+            'model_id': model_id,
+            'model_name': model_info.get('name', model_id) if model_id else 'Not configured',
+            'status': 'timeout',
+            'elapsed_ms': None,
+            'reply': '',
+            'error': ''
+        })
+
+    def generate_rows():
+        futures = {}
+        completed_roles = set()
+
+        with ThreadPoolExecutor(max_workers=max(1, min(6, len(role_rows)))) as pool:
+            for row in role_rows:
+                if not row['model_id']:
+                    row['status'] = 'timeout'
+                    row['error'] = 'Model not configured'
+                    completed_roles.add(row['role'])
+                    yield json.dumps({'type': 'result', 'result': row}, ensure_ascii=False) + '\n'
+                    continue
+                future = pool.submit(_probe_model_latency, row['model_id'], timeout_seconds)
+                futures[future] = row
+
+            try:
+                for future in as_completed(list(futures.keys()), timeout=timeout_seconds + 5):
+                    row = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {
+                            'status': 'timeout',
+                            'elapsed_ms': None,
+                            'reply': '',
+                            'error': str(exc)
+                        }
+                    row.update(result)
+                    completed_roles.add(row['role'])
+                    yield json.dumps({'type': 'result', 'result': row}, ensure_ascii=False) + '\n'
+            except FutureTimeoutError:
+                pass
+
+            for row in role_rows:
+                if row['role'] in completed_roles:
+                    continue
+                row.update({
+                    'status': 'timeout',
+                    'elapsed_ms': None,
+                    'reply': '',
+                    'error': 'Timeout'
+                })
+                yield json.dumps({'type': 'result', 'result': row}, ensure_ascii=False) + '\n'
+
+        ok_count = sum(1 for row in role_rows if row.get('status') == 'ok')
+        timeout_count = len(role_rows) - ok_count
+        yield json.dumps({
+            'type': 'done',
+            'timeout_seconds': timeout_seconds,
+            'ok_count': ok_count,
+            'timeout_count': timeout_count,
+            'total': len(role_rows)
+        }, ensure_ascii=False) + '\n'
+
+    return Response(
+        stream_with_context(generate_rows()),
+        mimetype='application/x-ndjson',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no'
+        }
+    )
 
 @app.route('/api/models', methods=['GET'])
 def get_models():
