@@ -288,74 +288,115 @@
             background: #0b0c10;
         }
 
-        .pdf-section {
-            padding: 20px;
-            overflow-y: auto;
-        }
-
-        .pdf-upload-area {
-            border: 2px dashed #4ec9b0;
-            border-radius: 8px;
-            padding: 30px;
-            text-align: center;
-            margin-bottom: 20px;
-            background: #2d2d30;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .pdf-upload-area:hover {
-            background: #333333;
-            border-color: #5fd9c0;
-        }
-
-        .pdf-upload-area.dragover {
-            background: #3a4a47;
-            border-color: #5fd9c0;
+        .input-area.dragover .input-container {
+            outline: 2px dashed #4ec9b0;
+            outline-offset: 2px;
+            border-radius: 12px;
+            background: rgba(78, 201, 176, 0.08);
         }
 
         .pdf-list {
-            margin-top: 20px;
+            margin-bottom: 8px;
+            display: none;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .pdf-list.has-items {
+            display: flex;
         }
 
         .pdf-item {
-            background: #2d2d30;
-            padding: 12px 15px;
-            margin-bottom: 10px;
-            border-radius: 5px;
-            display: flex;
-            justify-content: space-between;
+            background: #1f232b;
+            padding: 6px 10px;
+            border-radius: 999px;
+            display: inline-flex;
             align-items: center;
+            gap: 8px;
+            border: 1px solid #2e333d;
         }
 
         .pdf-item-info {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-width: 0;
         }
 
         .pdf-name {
-            font-weight: bold;
+            font-weight: 600;
             color: #e0e0e0;
+            max-width: 180px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .pdf-pages {
             font-size: 12px;
-            color: #858585;
+            color: #96a0b2;
+            white-space: nowrap;
+        }
+
+        .message-source-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .message-source-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            border: 1px solid #2e333d;
+            background: #161a21;
+            color: #d6dbe6;
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 12px;
+            max-width: 100%;
+        }
+
+        .message-source-chip .chip-name {
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 170px;
+        }
+
+        .message-source-chip .chip-meta {
+            color: #96a0b2;
+            white-space: nowrap;
         }
 
         .remove-pdf {
-            background: #d9534f;
+            background: #2b3038;
             border: none;
-            border-radius: 3px;
-            color: white;
-            padding: 5px 12px;
+            border-radius: 999px;
+            color: #cfd7e7;
+            width: 20px;
+            height: 20px;
+            padding: 0;
             cursor: pointer;
             font-size: 12px;
+            line-height: 20px;
         }
 
         .remove-pdf:hover {
-            background: #c9302c;
+            background: #d9534f;
+            color: #ffffff;
+        }
+
+        @media (max-width: 768px) {
+            .pdf-name {
+                max-width: 120px;
+            }
+
+            .message-source-chip .chip-name {
+                max-width: 120px;
+            }
         }
 
         .main-content {
@@ -1927,7 +1968,6 @@
                 </div>
                 <div class="sidebar-tab-controls">
                     <button class="tab active" data-tab="chat">💬 Chat</button>
-                    <button class="tab" data-tab="pdf">📄 Source</button>
                     <button class="tab" data-tab="console">🖥 Backend</button>
                 </div>
             </div>
@@ -1941,8 +1981,12 @@
                         <div class="message-content">Welcome to AI Council! Open Backend to monitor council roles and logs while you chat.</div>
                     </div>
                 </div>
-                <div class="input-area">
-                    <div class="input-container">
+                <div class="input-area" id="inputArea">
+                    <input type="file" id="pdfFileInput" accept=".pdf,.jpg,.jpeg,.png" multiple style="display: none;">
+                    <div class="pdf-list" id="pdfList">
+                        <div id="pdfItems"></div>
+                    </div>
+                    <div class="input-container" id="messageDropZone" title="Drop PDF/image files here or press Ctrl+V">
                         <textarea id="messageInput" placeholder="Type your message here... (Shift+Enter for new line)" autocomplete="off" rows="1"></textarea>
                         <button id="workflowModeButton" type="button" data-mode="auto" aria-label="Open workflow mode selector" title="Mode: Auto">🚀</button>
                         <button id="sendButton">Send</button>
@@ -1977,22 +2021,6 @@
                         </span>
                         <span class="workflow-mode-option-check" aria-hidden="true">✓</span>
                     </button>
-                </div>
-            </div>
-
-            <div class="tab-content" id="pdfTab">
-                <div class="pdf-section">
-                    <h2 style="color: #4ec9b0; margin-bottom: 20px;">📄 Upload Documents & Images</h2>
-                    <div class="pdf-upload-area" id="pdfUploadArea">
-                        <input type="file" id="pdfFileInput" accept=".pdf,.jpg,.jpeg,.png" multiple style="display: none;">
-                        <p style="font-size: 18px; margin-bottom: 10px;">📁 Click or Drag & Drop Files Here</p>
-                        <p style="color: #858585; font-size: 14px;">Supports PDF, JPG, PNG - Files stay scoped to the current chat</p>
-                        <p style="color: #4ec9b0; font-size: 13px; margin-top: 10px;">💡 Tip: Press Ctrl+V to paste images from clipboard</p>
-                    </div>
-                    <div class="pdf-list" id="pdfList">
-                        <h3 style="color: #4ec9b0; margin-bottom: 15px;">Uploaded Documents</h3>
-                        <div id="pdfItems"></div>
-                    </div>
                 </div>
             </div>
 
@@ -2035,6 +2063,8 @@
             heavy: '💡'
         };
         let uploadedPDFs = [];
+        const pendingUploadCleanup = {};
+        const pendingUploadKeys = new Set();
         let isAIProcessing = false;
         let councilRoles = {};
         const conversations = {};
@@ -2413,6 +2443,102 @@
 
         // Auto-scroll: only follow bottom if user hasn't scrolled up
         function getConvWindow() { return document.getElementById('conversationWindow'); }
+
+        function getSafeDocumentsSnapshot(documents) {
+            if (!Array.isArray(documents)) return [];
+            return documents.map(doc => ({
+                filename: doc && doc.filename ? String(doc.filename) : '',
+                type: doc && doc.type ? String(doc.type) : 'file',
+                size: Number(doc && doc.size ? doc.size : 0),
+                pages: Number.isFinite(Number(doc && doc.pages)) ? Number(doc.pages) : null,
+                width: Number.isFinite(Number(doc && doc.width)) ? Number(doc.width) : null,
+                height: Number.isFinite(Number(doc && doc.height)) ? Number(doc.height) : null
+            })).filter(doc => doc.filename);
+        }
+
+        function formatSourceInfo(doc) {
+            const sizeText = Number.isFinite(doc.size) && doc.size > 0
+                ? `${(doc.size / 1024).toFixed(1)} KB`
+                : 'size n/a';
+
+            if (doc.type === 'pdf') {
+                return sizeText;
+            }
+
+            if (Number.isFinite(doc.width) && Number.isFinite(doc.height) && doc.width > 0 && doc.height > 0) {
+                return `${doc.width}x${doc.height}px • ${sizeText}`;
+            }
+
+            return sizeText;
+        }
+
+        function buildMessageAttachmentChips(attachments) {
+            const docs = getSafeDocumentsSnapshot(attachments);
+            if (docs.length === 0) return '';
+            const chips = docs.map(doc => {
+                const icon = doc.type === 'pdf' ? '📄' : '🖼️';
+                return `
+                    <span class="message-source-chip">
+                        <span>${icon}</span>
+                        <span class="chip-name" title="${escapeHtml(doc.filename)}">${escapeHtml(doc.filename)}</span>
+                        <span class="chip-meta">${escapeHtml(formatSourceInfo(doc))}</span>
+                    </span>
+                `;
+            }).join('');
+            return `<div class="message-source-chips">${chips}</div>`;
+        }
+
+        function queuePendingUploadCleanup(chatId, docs) {
+            if (!chatId) return;
+            const safeDocs = getSafeDocumentsSnapshot(docs);
+            if (safeDocs.length === 0) return;
+            if (!pendingUploadCleanup[chatId]) {
+                pendingUploadCleanup[chatId] = [];
+            }
+            const seen = new Set(pendingUploadCleanup[chatId].map(doc => doc.filename));
+            safeDocs.forEach(doc => {
+                if (!seen.has(doc.filename)) {
+                    seen.add(doc.filename);
+                    pendingUploadCleanup[chatId].push(doc);
+                }
+            });
+        }
+
+        function flushPendingUploadCleanup(chatId) {
+            if (!chatId || !Array.isArray(pendingUploadCleanup[chatId]) || pendingUploadCleanup[chatId].length === 0) {
+                return;
+            }
+
+            const docsToRemove = [...pendingUploadCleanup[chatId]];
+            delete pendingUploadCleanup[chatId];
+
+            docsToRemove.forEach((doc) => {
+                fetch('/api/remove_document', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ filename: doc.filename, chat_id: chatId })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.success) {
+                        addConsoleLog(`Warning: failed to clear source ${doc.filename}`);
+                    }
+                })
+                .catch(() => {
+                    addConsoleLog(`Warning: failed to clear source ${doc.filename}`);
+                });
+            });
+        }
+
+        function filterSupportedFiles(fileList) {
+            return Array.from(fileList || []).filter(f =>
+                f.type === 'application/pdf' ||
+                f.type === 'image/jpeg' ||
+                f.type === 'image/png' ||
+                f.type === 'image/jpg'
+            );
+        }
+
         function isNearBottom(cw, threshold = 80) {
             return cw.scrollHeight - cw.scrollTop - cw.clientHeight <= threshold;
         }
@@ -2440,43 +2566,71 @@
         });
 
         // PDF Upload functionality
-        const pdfUploadArea = document.getElementById('pdfUploadArea');
+        const pdfUploadArea = document.getElementById('messageDropZone');
         const pdfFileInput = document.getElementById('pdfFileInput');
+        const inputArea = document.getElementById('inputArea');
+        const pdfList = document.getElementById('pdfList');
         const pdfItems = document.getElementById('pdfItems');
+        const chatTab = document.getElementById('chatTab');
+        const conversationWindow = document.getElementById('conversationWindow');
 
-        pdfUploadArea.addEventListener('click', () => pdfFileInput.click());
+        function setChatDragActive(active) {
+            if (inputArea) {
+                inputArea.classList.toggle('dragover', !!active);
+            }
+        }
 
-        pdfFileInput.addEventListener('change', handlePDFUpload);
-
-        // Drag and drop
-        pdfUploadArea.addEventListener('dragover', (e) => {
+        function handleDroppedFiles(e) {
             e.preventDefault();
-            pdfUploadArea.classList.add('dragover');
-        });
-
-        pdfUploadArea.addEventListener('dragleave', () => {
-            pdfUploadArea.classList.remove('dragover');
-        });
-
-        pdfUploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            pdfUploadArea.classList.remove('dragover');
-            const files = Array.from(e.dataTransfer.files).filter(f => 
-                f.type === 'application/pdf' || 
-                f.type === 'image/jpeg' || 
-                f.type === 'image/png' ||
-                f.type === 'image/jpg'
-            );
+            e.stopPropagation();
+            setChatDragActive(false);
+            const files = filterSupportedFiles(e.dataTransfer.files);
             if (files.length > 0) {
                 handlePDFFiles(files);
             }
+        }
+
+        pdfFileInput.addEventListener('change', handlePDFUpload);
+
+        // Drag and drop around the message box
+        pdfUploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            setChatDragActive(true);
+        });
+
+        inputArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            setChatDragActive(true);
+        });
+
+        inputArea.addEventListener('dragleave', (e) => {
+            if (!inputArea.contains(e.relatedTarget)) {
+                setChatDragActive(false);
+            }
+        });
+
+        pdfUploadArea.addEventListener('drop', handleDroppedFiles);
+        inputArea.addEventListener('drop', handleDroppedFiles);
+
+        conversationWindow.addEventListener('dragover', (e) => {
+            if (!chatTab || !chatTab.classList.contains('active')) return;
+            if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+                e.preventDefault();
+            }
+        });
+
+        conversationWindow.addEventListener('dragleave', () => {
+            setChatDragActive(false);
+        });
+
+        conversationWindow.addEventListener('drop', (e) => {
+            e.preventDefault();
+            setChatDragActive(false);
         });
 
         // Paste image support
         document.addEventListener('paste', (e) => {
-            // Only handle paste when PDF tab is active
-            const pdfTab = document.getElementById('pdfTab');
-            if (!pdfTab.classList.contains('active')) return;
+            if (!chatTab || !chatTab.classList.contains('active')) return;
 
             const items = e.clipboardData.items;
             for (let i = 0; i < items.length; i++) {
@@ -2495,6 +2649,7 @@
         function handlePDFUpload(e) {
             const files = Array.from(e.target.files);
             handlePDFFiles(files);
+            e.target.value = '';
         }
 
         function handlePDFFiles(files) {
@@ -2505,6 +2660,12 @@
             }
 
             files.forEach(file => {
+                const uploadKey = `${activeChatId}:${file.name}:${file.size}:${file.lastModified}`;
+                if (pendingUploadKeys.has(uploadKey)) {
+                    return;
+                }
+                pendingUploadKeys.add(uploadKey);
+
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('chat_id', activeChatId);
@@ -2519,7 +2680,9 @@
                         uploadedPDFs.push(data.document);
                         displayPDFs();
                         const docType = data.document.type === 'pdf' ? 'PDF' : 'Image';
-                        const info = data.document.type === 'pdf' ? `${data.document.pages} pages` : `${data.document.width}x${data.document.height}px`;
+                        const info = data.document.type === 'pdf'
+                            ? `${(data.document.size / 1024).toFixed(1)} KB`
+                            : `${data.document.width}x${data.document.height}px`;
                         addConsoleLog(`${docType} uploaded: ${data.document.filename} (${info})`);
                     } else {
                         addConsoleLog(`Error uploading document: ${data.error}`);
@@ -2528,6 +2691,9 @@
                 .catch(error => {
                     console.error('Error:', error);
                     addConsoleLog('Error uploading document');
+                })
+                .finally(() => {
+                    pendingUploadKeys.delete(uploadKey);
                 });
             });
         }
@@ -2535,8 +2701,14 @@
         function displayPDFs() {
             pdfItems.innerHTML = '';
             if (uploadedPDFs.length === 0) {
-                pdfItems.innerHTML = '<p style="color: #858585; text-align: center; padding: 20px;">No documents uploaded yet</p>';
+                if (pdfList) {
+                    pdfList.classList.remove('has-items');
+                }
                 return;
+            }
+
+            if (pdfList) {
+                pdfList.classList.add('has-items');
             }
 
             uploadedPDFs.forEach((doc, index) => {
@@ -2544,14 +2716,14 @@
                 pdfItem.className = 'pdf-item';
                 const icon = doc.type === 'pdf' ? '📄' : '🖼️';
                 const info = doc.type === 'pdf' ? 
-                    `${doc.pages} pages • ${(doc.size / 1024).toFixed(1)} KB` :
+                    `${(doc.size / 1024).toFixed(1)} KB` :
                     `${doc.width}x${doc.height}px • ${(doc.size / 1024).toFixed(1)} KB`;
                 pdfItem.innerHTML = `
                     <div class="pdf-item-info">
-                        <div class="pdf-name">${icon} ${doc.filename}</div>
+                        <div class="pdf-name" title="${escapeHtml(doc.filename)}">${icon} ${escapeHtml(doc.filename)}</div>
                         <div class="pdf-pages">${info}</div>
                     </div>
-                    <button class="remove-pdf" onclick="removePDF(${index})">Remove</button>
+                    <button class="remove-pdf" onclick="removePDF(${index})" title="Remove source">x</button>
                 `;
                 pdfItems.appendChild(pdfItem);
             });
@@ -4085,15 +4257,19 @@
             });
         }
 
-        function addMessage(type, content, sender = null) {
+        function addMessage(type, content, sender = null, attachments = []) {
             const conversationWindow = document.getElementById('conversationWindow');
             const activeChatId = getActiveChatId();
             const state = ensureConversation(activeChatId);
             const messageDiv = document.createElement('div');
             const messageId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            const safeAttachments = getSafeDocumentsSnapshot(attachments);
             messageDiv.className = `message ${type}`;
             messageDiv.setAttribute('data-raw-content', String(content || ''));
             messageDiv.setAttribute('data-message-id', messageId);
+            if (type === 'user' && safeAttachments.length > 0) {
+                messageDiv.setAttribute('data-user-attachments', JSON.stringify(safeAttachments));
+            }
 
             // Format the content
             const formattedContent = formatMessage(content);
@@ -4107,11 +4283,15 @@
                         isFinalResponse: false
                     })
                     : '';
+                const attachmentUI = (isUser && safeAttachments.length > 0)
+                    ? buildMessageAttachmentChips(safeAttachments)
+                    : '';
                 
                 messageDiv.innerHTML = `
                     <div class="message-wrapper">
                         <div class="message-header">${sender}${type === 'ai' ? '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>' : ''}</div>
                         <div class="message-content">${formattedContent}</div>
+                        ${attachmentUI}
                         ${actionUI}
                     </div>
                 `;
@@ -4131,7 +4311,8 @@
                     sender: sender,
                     content: content,
                     raw_markdown: content,
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    attachments: safeAttachments
                 });
             }
 
@@ -4169,8 +4350,10 @@
                 tempChatId = 'temp_' + Date.now().toString();
             }
 
+            const messageAttachments = getSafeDocumentsSnapshot(uploadedPDFs);
+
             // Display user message
-            addMessage('user', message, 'You');
+            addMessage('user', message, 'You', messageAttachments);
             
             // Switch to stop button
             setProcessingState(true);
@@ -4195,6 +4378,15 @@
                 chat_id: activeChatId,
                 workflow_mode: workflowMode
             });
+
+            if (messageAttachments.length > 0 && activeChatId) {
+                queuePendingUploadCleanup(activeChatId, messageAttachments);
+                uploadedPDFs = [];
+                displayPDFs();
+                if (activeChatId && pendingUploadCleanup[activeChatId]) {
+                    delete pendingUploadCleanup[activeChatId];
+                }
+            }
 
             // Clear input
             input.value = '';
@@ -4717,6 +4909,7 @@
                     state.thinking_process.new_run_pending = false;
                     state.thinking_process.active_run_group_id = null;
                 }
+                flushPendingUploadCleanup(chatId);
             }
             refreshThinkingProcessUI(chatId || getActiveChatId());
             if (!chatId || chatId === getActiveChatId()) {
@@ -4958,8 +5151,12 @@
                 const messageDiv = document.createElement('div');
                 messageDiv.className = `message ${msg.type}`;
                 const resolvedMessageId = msg.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                const messageAttachments = msg.type === 'user' ? getSafeDocumentsSnapshot(msg.attachments) : [];
                 msg.id = resolvedMessageId;
                 messageDiv.setAttribute('data-message-id', resolvedMessageId);
+                if (msg.type === 'user' && messageAttachments.length > 0) {
+                    messageDiv.setAttribute('data-user-attachments', JSON.stringify(messageAttachments));
+                }
 
                 const isNonFinal = isNonFinalSavedMessage(msg);
                 const runGroupId = msg.run_group_id || 'non-final';
@@ -5014,11 +5211,15 @@
                             isFinalResponse: msg.is_final_response === true
                         })
                         : '';
+                    const attachmentUI = (msg.type === 'user' && messageAttachments.length > 0)
+                        ? buildMessageAttachmentChips(messageAttachments)
+                        : '';
 
                     messageDiv.innerHTML = `
                         <div class="message-wrapper">
                             <div class="message-header">${msg.sender}${mdCollapseBtn}</div>
                             <div class="message-content">${displayContent}</div>
+                            ${attachmentUI}
                             ${actionUI}
                         </div>
                     `;
@@ -5208,6 +5409,14 @@
                         thinking: msg.getAttribute('data-thinking') || '',
                         is_final_response: msg.getAttribute('data-is-final-response') === 'true'
                     };
+                    const rawAttachments = msg.getAttribute('data-user-attachments') || '';
+                    if (rawAttachments) {
+                        try {
+                            messageData.attachments = getSafeDocumentsSnapshot(JSON.parse(rawAttachments));
+                        } catch (err) {
+                            messageData.attachments = [];
+                        }
+                    }
                     
                     // Add raw content if available (for AI messages)
                     // Try to extract bot name and id for AI messages if available in sender
