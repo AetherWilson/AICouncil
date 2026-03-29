@@ -1171,7 +1171,7 @@ def extract_json_from_text(text):
     # Extract first balanced {...} object while respecting quoted strings.
     start = stripped.find('{')
     if start == -1:
-        return stripped
+        return ''  # No opening brace found - return empty instead of raw text
 
     depth = 0
     in_string = False
@@ -1196,7 +1196,7 @@ def extract_json_from_text(text):
             if depth == 0:
                 return stripped[start:idx + 1]
 
-    return stripped
+    return ''  # Unbalanced braces - return empty
 
 
 def _clamp_confidence(value, default=0.5):
@@ -2538,7 +2538,15 @@ def handle_message_task(data, conversation_id):
                         user_prompt=convo_summary,
                         temperature=0.3
                     )
-                    extract_payload = json.loads(extract_json_from_text(extract_raw))
+                    extracted_json_str = extract_json_from_text(extract_raw)
+                    if not extracted_json_str or not extracted_json_str.strip():
+                        _log_internal_error('run_memory_management empty extractor response', 
+                                          f"extract_raw: {repr(extract_raw[:200])}\nextracted_json_str: {repr(extracted_json_str[:200] if extracted_json_str else '')}")
+                        emit_chat('console_log', {
+                            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: empty extractor output"
+                        })
+                        return
+                    extract_payload = json.loads(extracted_json_str)
                 except json.JSONDecodeError as exc:
                     _log_internal_error('run_memory_management invalid extractor JSON', exc)
                     emit_chat('console_log', {
