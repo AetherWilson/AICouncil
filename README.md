@@ -1,92 +1,287 @@
-# The AI Council
+# AI Council
 
-**The AI Council** is a sophisticated multi-LLM chat interface that allows users to consult with a diverse panel of AI models simultaneously. It orchestrates conversations across various providers (Anthropic, DeepSeek, Google, xAI, etc.) through a unified, real-time web interface.
+AI Council is a local multi-model chat app that lets you send one prompt to a configurable panel of LLMs, stream their outputs live, and manage chats through a lightweight web UI.
 
-## 🌟 Key Features
+It is built around a small “council” workflow with roles like **MarkReader**, **Leader**, **Researcher**, **Creator**, **Analyzer**, **Verifier**, and **MemWriter**, all configured through JSON and routed through an OpenAI-compatible API client.
 
-*   **Unified Council Interface**: Interact with multiple AI models in a single session. Compare responses or have them work together on complex tasks.
-*   **Broad Model Support**: Configurable support for top-tier models including:
-    *   **Anthropic**: Claude 3.5/3.7 (Sonnet, Haiku, Opus) and "Thinking" variants.
-    *   **DeepSeek**: V3, R1.
-    *   **xAI**: Grok 3 (including DeepSearch).
-    *   **Google**: Gemini 1.5/2.0 (Pro, Flash).
-    *   **OpenAI**: GPT-4o, o1, o3-mini.
-*   **Document & Image Analysis**: 
-    *   **PDF Support**: Upload PDF documents and pass them directly to PDF-capable models.
-    *   **Model Fallback Notice**: If a selected model is not PDF-capable, the system adds a prompt notice that PDFs were attached but cannot be read by that model.
-    *   **OCR Capability**: Extract text from uploaded images (JPG, PNG) using `easyocr`.
-*   **Web Search Integration**: Dedicated autonomous web search capabilities (defaulting to Grok 3 DeepSearch).
-*   **Flexible Configuration**: Easily manage available bots, pricing tiers, and capabilities via `config.json`.
-*   **Real-time Streaming**: Low-latency token streaming using Socket.IO.
-*   **Chat Management**: Auto-saving chat history and daily temporary sessions.
+> ## Vibe coded notice
+> This project is **vibe coded**: it was built iteratively and fast, with a strong focus on getting useful behavior on screen quickly. Expect practical structure, evolving conventions, and occasional rough edges.
 
-## 🛠️ Technology Stack
+## What it does
 
-*   **Backend**: Python (Flask, Flask-SocketIO)
-*   **Frontend**: HTML5, CSS3, JavaScript (Socket.IO client, Markdown rendering, KaTeX for math)
-*   **AI Integration**: OpenAI-compatible client (supporting various endpoints)
-*   **Utilities**: `easyocr`, `Pillow`
+- Run a council-style multi-model conversation from one UI
+- Stream responses in real time with Socket.IO
+- Configure role-to-model assignments in `config.json`
+- Manage available models and capabilities in `model.json`
+- Upload **PDFs** and **images** as chat context
+- Save named chats and auto-save temporary chats
+- Maintain persistent cross-chat memory in `skills/memories/memory.md`
+- Let a **MarkReader** preselect relevant markdown skills for the Leader
+- Inspect backend state from the built-in **Backend** tab
+- Run a quick **Uptest** that sends a hello request to each configured council role and reports latency/status
 
-## 🚀 Getting Started
+## Current architecture
 
-1.  **Clone the repository**
-2.  **Install dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    ```
-3.  **Configuration**:
-    *   Copy `.env.example` to `.env` and add your API keys.
-    *   Copy `config.json.example` to `config.json` to customize your available bots.
-4.  **Run the Application**:
-    *   Execute `main.bat` (Windows)
-    *   Or run directly: `python main.py`
-5.  **Access the Interface**:
-    *   Open your browser to `http://localhost:5000`
+### Backend
 
-## 📝 Usage
+- **Python**
+- **Flask** for HTTP routes
+- **Flask-SocketIO** for live streaming updates
+- **OpenAI Python client** with optional custom `base_url`
 
-*   **Select Bots**: Choose which members of the "Council" you want to engage for a specific query.
-*   **Upload Context**: Drag and drop files to provide context to the active models.
-*   **Chat**: Send your prompt and watch as multiple perspectives stream in simultaneously.
+### Frontend
 
-## 📚 Leader Skills Folder
+- Single-page HTML interface in `templates/index.html`
+- Markdown rendering via `marked`
+- Syntax highlighting via `highlight.js`
+- Math rendering via `KaTeX`
 
-You can add local markdown skill files that help the Leader decide task routing.
+### Utilities
 
-*   Create a folder named `skills/` in the project root.
-*   Add one or more `.md` files with routing rules, decision patterns, or role assignment hints.
-*   A dedicated **MarkReader** role runs before Leader and selects one or more relevant markdown files.
-*   The selected files are loaded into **Leader prompts only** (task distribution and final synthesis), not other roles.
+- `Pillow` for image handling
+- `opencc` for Simplified → Traditional Chinese conversion support
+- `python-dotenv` for environment loading
+- `httpx` for API transport
 
-Configure behavior in `config.json` with role models only by default. MarkReader and skills tuning are hardcoded in backend defaults.
+## Project structure
+
+Key files and folders:
+
+- `main.py` — main Flask + Socket.IO app
+- `GPT_handle.py` — model request handling and streaming helpers
+- `services/config_store.py` — cached config/model loading
+- `services/memory_manager.py` — persistent memory file management
+- `templates/index.html` — main web UI
+- `config.json` — active role/model config
+- `config.json.example` — starter config
+- `model.json` — enabled model catalog and capability metadata
+- `skills/` — optional markdown skills and memory files
+- `chat_history/` — saved chats
+- `temp_chat_history/` — auto-saved temporary chats
+- `uploads/` — uploaded PDFs and images
+- `gpt_responses/` — request/response debug logs
+
+## Features in more detail
+
+### 1. Council role workflow
+
+The app is structured around a role-based council. Current built-in roles include:
+
+- `MarkReader`
+- `Leader`
+- `Researcher`
+- `Creator`
+- `Analyzer`
+- `Verifier`
+- `MemWriter`
+
+The role model assignments live in `config.json`.
+
+Example:
 
 ```json
-"MarkReader": "gpt-4o",
-"Leader": "gpt-4o",
-"Researcher": "gpt-4o",
-"Creator": "claude-3-5-sonnet",
-"Analyzer": "gpt-4o",
-"Verifier": "gpt-4o"
-```
-
-Optional advanced overrides are still supported if you want to tune behavior:
-
-```json
-"md_reader": {
-    "enabled": true,
-    "max_inventory_files": 40,
-    "preview_lines_per_file": 20,
-    "preview_chars_per_file": 1200
-},
-"skills": {
-    "enabled": true,
-    "folder": "skills",
-    "max_files": 3,
-    "max_chars_per_file": 2500,
-    "max_total_chars": 7000
+{
+  "MarkReader": "gpt-4o-mini",
+  "Leader": "gpt-4o",
+  "Researcher": "gpt-4o",
+  "Creator": "claude-sonnet-4-6",
+  "Analyzer": "gpt-4o",
+  "Verifier": "gpt-4o",
+  "MemWriter": "claude-sonnet-4-6"
 }
 ```
 
-Runtime notes:
-*   If MarkReader is disabled, misconfigured, or inventory is unavailable, council execution continues normally.
-*   Console logs report MarkReader selected files, rejected files, and loaded Leader context files.
+### 2. Model registry
+
+`model.json` is the source of truth for available models. Each entry can include:
+
+- `id`
+- `name`
+- `enabled`
+- `price`
+- `provider`
+- `support_images`
+- `support_pdf_input`
+
+This makes it easy to expose only the models you actually want available in the UI.
+
+### 3. File uploads
+
+The current app supports:
+
+- `.pdf`
+- `.jpg`
+- `.jpeg`
+- `.png`
+
+Uploaded files are stored in `uploads/` and registered against the active conversation.
+
+For PDFs:
+
+- PDF-capable models can receive the file as input
+- metadata is tracked per uploaded document
+
+For images:
+
+- images are converted to data URLs for model input where supported
+
+### 4. Chat persistence
+
+There are two kinds of chat storage:
+
+- **Saved chats** in `chat_history/`
+- **Temporary chats** in `temp_chat_history/`
+
+Temporary chats are meant for same-day work and are cleaned up automatically when old.
+
+### 5. Persistent memory
+
+Cross-chat memory is managed through:
+
+- `services/memory_manager.py`
+- `skills/memories/memory.md`
+
+The memory system is intended to store useful long-lived context and inject it into later conversations.
+
+### 6. Skills support
+
+The Leader can use markdown skills from the `skills/` folder.
+
+The flow is:
+
+1. **MarkReader** scans available markdown files
+2. It selects the most relevant files for the current task
+3. Those selected files are loaded into Leader context
+
+This is useful for local prompting rules, workflow hints, or domain-specific instructions.
+
+### 7. Backend monitoring
+
+The UI includes a **Backend** tab where you can:
+
+- inspect backend-related panels
+- run an **Uptest** against configured council models
+- view role/model availability and response timing behavior
+
+## Requirements
+
+From `requirements.txt`:
+
+- `flask`
+- `flask-socketio`
+- `python-socketio`
+- `openai`
+- `httpx`
+- `python-dotenv`
+- `Pillow`
+- `easyocr`
+- `opencc`
+
+## Setup
+
+### 1. Clone the repo
+
+```bash
+git clone <your-repo-url>
+cd Council
+```
+
+### 2. Create and activate a virtual environment
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Configure environment variables
+
+Copy `.env.example` to `.env` and fill in your values:
+
+```env
+gpt_api_key="your-api-key-here"
+gpt_redirect_url="your-redirect-url-here"
+```
+
+Notes:
+
+- `gpt_api_key` is your API key
+- `gpt_redirect_url` can point to an OpenAI-compatible endpoint
+- `gpt_redirect_url` can be left empty if you want the default OpenAI endpoint behavior
+
+### 5. Configure council roles
+
+Copy:
+
+- `config.json.example` → `config.json`
+
+Then edit the role-to-model mapping as needed.
+
+### 6. Review enabled models
+
+Edit `model.json` to decide:
+
+- which models are enabled
+- provider labels
+- price tiers
+- image support
+- PDF support
+
+## Running the app
+
+### Windows helper
+
+```bat
+main.bat
+```
+
+### Direct run
+
+```bash
+python main.py
+```
+
+Then open:
+
+```text
+http://localhost:5000
+```
+
+## Basic usage
+
+1. Open the web UI
+2. Choose the bots/models you want involved
+3. Type a prompt
+4. Optionally upload PDFs or images
+5. Watch responses stream in live
+6. Save the chat or let it remain temporary
+
+## Notes and caveats
+
+- This is a **local app-first** workflow, not a polished SaaS product
+- The codebase is intentionally flexible and may change quickly
+- Uploaded files, saved chats, temp chats, and debug logs are stored locally
+- Some behavior depends on whether your configured endpoint supports specific model capabilities
+- The project contains practical logging and persistence features, but it is still very much an evolving tool
+
+## Why “vibe coded” matters here
+
+Because this project is vibe coded, the design goal is mostly:
+
+- fast iteration
+- useful behavior over perfect abstraction
+- simple files you can edit directly
+- easy local customization
+
+If you open the code, that is the spirit you should expect.
+
+## License
+
+Add your preferred license here if you plan to distribute the project.

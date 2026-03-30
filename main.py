@@ -475,6 +475,10 @@ Rules:
 - Question only concrete, high-impact issues
 - If there is no issue worth debating, return empty questioned_roles and empty doubt_points
 - Use lowercase role names: researcher, creator, analyzer
+- Rank doubts by impact: critical > important > minor
+- For each doubt, specify: what is wrong, why it matters, what evidence contradicts it
+- Avoid vague language like "unclear" or "needs more detail"
+- Only question if you can articulate the specific problem
 
 Return ONLY valid JSON in this exact shape:
 {
@@ -483,7 +487,9 @@ Return ONLY valid JSON in this exact shape:
         {
             "point_id": "P1",
             "target_role": "researcher",
-            "doubt": "Specific concise doubt in 1-2 sentences"
+            "doubt": "Specific concise doubt in 1-2 sentences",
+            "severity": "critical",
+            "required_evidence": "cite source or provide calculation"
         }
     ],
     "confidence_in_doubt": 0.0
@@ -498,7 +504,10 @@ You were explicitly questioned by the Verifier.
 Rules:
 - Answer only the questioned points
 - Keep the response as short as possible while fully resolving each doubt
-- For each point_id, provide one concise rebuttal segment
+- For each point_id, provide one concise rebuttal segment using this format:
+  [point_id]: [Acknowledge/Refute/Clarify]
+  Evidence: [specific data/logic]
+  Updated claim: [revised statement if needed]
 - You may admit, correct, refute, or provide brief supporting evidence
 - No introductions, no summaries, no unrelated content
 """
