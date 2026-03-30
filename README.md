@@ -271,17 +271,6 @@ http://localhost:5000
 - Some behavior depends on whether your configured endpoint supports specific model capabilities
 - The project contains practical logging and persistence features, but it is still very much an evolving tool
 
-## Why “vibe coded” matters here
-
-Because this project is vibe coded, the design goal is mostly:
-
-- fast iteration
-- useful behavior over perfect abstraction
-- simple files you can edit directly
-- easy local customization
-
-If you open the code, that is the spirit you should expect.
-
 ## License
 
 Add your preferred license here if you plan to distribute the project.
