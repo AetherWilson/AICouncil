@@ -339,6 +339,33 @@ def get_model_info(model_id):
     """Get model details by ID from model.json"""
     return resolve_model_info(load_models(), model_id)
 
+
+def resolve_uptest_model_input(raw_model_name):
+    """Resolve user-provided model text to a model id and display name.
+
+    Accepts either exact model id or model display name (case-insensitive).
+    Falls back to raw text as model id when no match is found.
+    """
+    text = str(raw_model_name or '').strip()
+    if not text:
+        return '', ''
+
+    models = load_models()
+    lowered = text.lower()
+
+    for model in models:
+        model_id = str(model.get('id', '') or '').strip()
+        if model_id == text:
+            return model_id, str(model.get('name', model_id) or model_id)
+
+    for model in models:
+        model_name = str(model.get('name', '') or '').strip()
+        if model_name and model_name.lower() == lowered:
+            model_id = str(model.get('id', '') or '').strip() or text
+            return model_id, model_name
+
+    return text, text
+
 # Council role system prompts
 LEADER_DISTRIBUTE_PROMPT = """You are the Leader of an AI council. Your only job is task routing.
 
@@ -393,11 +420,14 @@ Hard constraints reminder:
 - Do not place any final answer text in "analysis".
 """
 
-RESEARCHER_PROMPT = """You are the Researcher in an AI council. Gather only the facts directly relevant to the task — nothing more.
+RESEARCHER_PROMPT = """You are the Researcher in an AI council. Provide the most detailed, useful research possible for the assigned task by default.
 
-- Be concise: key facts, figures, and sources only
+- Be thorough and comprehensive unless the Leader's assigned task explicitly asks for brevity, a short summary, or a narrower scope
+- Include all directly relevant facts, context, caveats, definitions, comparisons, and supporting details that help produce a stronger final answer
+- Prefer depth over brevity when there is any doubt
 - Cite URLs where available
-- No background padding or preamble
+- Organize clearly using markdown
+- Do not add filler, but do not omit helpful detail merely to stay short
 
 Do NOT prefix your response with your role name."""
 
@@ -504,12 +534,22 @@ You were explicitly questioned by the Verifier.
 Rules:
 - Answer only the questioned points
 - Keep the response as short as possible while fully resolving each doubt
-- For each point_id, provide one concise rebuttal segment using this format:
-  [point_id]: [Acknowledge/Refute/Clarify]
-  Evidence: [specific data/logic]
-  Updated claim: [revised statement if needed]
+- Return ONLY valid JSON in this exact shape:
+{
+    "rebuttals": [
+        {
+            "point_id": "P1",
+            "status": "refute",
+            "evidence": "specific data/logic",
+            "updated_claim": "revised statement if needed"
+        }
+    ]
+}
+- Include one rebuttal object for every questioned point_id
 - You may admit, correct, refute, or provide brief supporting evidence
-- No introductions, no summaries, no unrelated content
+- Allowed status values: "acknowledge" | "refute" | "clarify"
+- Keep evidence and updated_claim concise but specific
+- Do not include markdown or any extra text
 """
 
 VERIFIER_DEBATE_STEP_C_PROMPT = """You are the Verifier in a post-round debate stage.
@@ -715,27 +755,42 @@ def _probe_model_latency(model_id, timeout_seconds):
 def backend_uptest():
     payload = request.get_json(silent=True) or {}
     requested_timeout = payload.get('timeout_seconds', UPTEST_TIMEOUT_SECONDS)
+    requested_model = payload.get('model_name', '')
     try:
         timeout_seconds = int(requested_timeout)
     except (TypeError, ValueError):
         timeout_seconds = UPTEST_TIMEOUT_SECONDS
     timeout_seconds = max(5, min(timeout_seconds, 120))
 
-    config = load_config()
     role_rows = []
-    for role_name in COUNCIL_ROLES:
-        model_id = str(config.get(role_name, '') or '').strip()
-        model_info = get_model_info(model_id) if model_id else {}
+    selected_model_id, selected_model_name = resolve_uptest_model_input(requested_model)
+
+    if selected_model_id:
         role_rows.append({
-            'role': role_name,
-            'role_label': role_name.replace('_', ' '),
-            'model_id': model_id,
-            'model_name': model_info.get('name', model_id) if model_id else 'Not configured',
+            'role': '__custom_model__',
+            'role_label': 'Custom Model',
+            'model_id': selected_model_id,
+            'model_name': selected_model_name or selected_model_id,
             'status': 'timeout',
             'elapsed_ms': None,
             'reply': '',
             'error': ''
         })
+    else:
+        config = load_config()
+        for role_name in COUNCIL_ROLES:
+            model_id = str(config.get(role_name, '') or '').strip()
+            model_info = get_model_info(model_id) if model_id else {}
+            role_rows.append({
+                'role': role_name,
+                'role_label': role_name.replace('_', ' '),
+                'model_id': model_id,
+                'model_name': model_info.get('name', model_id) if model_id else 'Not configured',
+                'status': 'timeout',
+                'elapsed_ms': None,
+                'reply': '',
+                'error': ''
+            })
 
     def generate_rows():
         futures = {}
@@ -786,6 +841,7 @@ def backend_uptest():
         yield json.dumps({
             'type': 'done',
             'timeout_seconds': timeout_seconds,
+            'model_name': selected_model_id,
             'ok_count': ok_count,
             'timeout_count': timeout_count,
             'total': len(role_rows)

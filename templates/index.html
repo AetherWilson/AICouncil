@@ -482,8 +482,30 @@
         .uptest-run {
             display: flex;
             align-items: center;
+            flex-wrap: wrap;
             gap: 10px;
             margin-bottom: 12px;
+        }
+
+        .uptest-model-input {
+            min-width: 240px;
+            flex: 1;
+            background: #101319;
+            color: #dce4f1;
+            border: 1px solid #2a2f39;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 12px;
+        }
+
+        .uptest-model-input::placeholder {
+            color: #6f7a8d;
+        }
+
+        .uptest-model-input:focus {
+            outline: none;
+            border-color: #3b6ea9;
+            box-shadow: 0 0 0 2px rgba(59, 110, 169, 0.2);
         }
 
         .uptest-run-btn {
@@ -2043,6 +2065,13 @@
                         <h3>Uptest</h3>
                         <div class="uptest-run">
                             <button id="uptestRunButton" class="uptest-run-btn" onclick="runUptest()">Run Uptest</button>
+                            <input
+                                id="uptestModelInput"
+                                class="uptest-model-input"
+                                type="text"
+                                placeholder="Optional model id"
+                                title="Leave empty to test all configured council roles"
+                            />
                             <div class="uptest-note">Sends "hello" to each AI and measures response time.</div>
                         </div>
                         <div class="uptest-results" id="uptestResults">
@@ -3294,9 +3323,23 @@
             }
         }
 
-        function renderUptestPendingRows() {
+        function renderUptestPendingRows(selectedModel = '') {
             const container = document.getElementById('uptestResults');
             if (!container) return;
+
+            const modelText = String(selectedModel || '').trim();
+            if (modelText) {
+                container.innerHTML = `
+                    <div class="uptest-row" data-role="__custom_model__">
+                        <div class="uptest-role">
+                            <div class="uptest-role-name">Custom Model</div>
+                            <div class="uptest-role-model">${escapeHtml(modelText)}</div>
+                        </div>
+                        <div class="uptest-status pending">waiting...</div>
+                    </div>
+                `;
+                return;
+            }
 
             const roleOrder = ['Leader', 'MarkReader', 'Researcher', 'Creator', 'Analyzer', 'Verifier'];
             const knownRoles = Object.keys(councilRoles || {});
@@ -3342,17 +3385,20 @@
         async function runUptest() {
             const runBtn = document.getElementById('uptestRunButton');
             const container = document.getElementById('uptestResults');
+            const modelInput = document.getElementById('uptestModelInput');
             if (!runBtn || !container) return;
+
+            const selectedModel = modelInput ? String(modelInput.value || '').trim() : '';
 
             runBtn.disabled = true;
             runBtn.textContent = 'Running...';
-            renderUptestPendingRows();
+            renderUptestPendingRows(selectedModel);
 
             try {
                 const response = await fetch('/api/backend/uptest', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})
+                    body: JSON.stringify({ model_name: selectedModel })
                 });
 
                 if (!response.ok || !response.body) {
@@ -3377,7 +3423,8 @@
                             upsertUptestResult(payload.result);
                             receivedCount += 1;
                         } else if (payload.type === 'done') {
-                            addConsoleLog(`Uptest completed (${payload.timeout_seconds}s timeout)`);
+                            const suffix = payload.model_name ? ` for ${payload.model_name}` : '';
+                            addConsoleLog(`Uptest completed${suffix} (${payload.timeout_seconds}s timeout)`);
                         }
                     });
                 }
@@ -3392,7 +3439,8 @@
                             upsertUptestResult(payload.result);
                             receivedCount += 1;
                         } else if (payload.type === 'done') {
-                            addConsoleLog(`Uptest completed (${payload.timeout_seconds}s timeout)`);
+                            const suffix = payload.model_name ? ` for ${payload.model_name}` : '';
+                            addConsoleLog(`Uptest completed${suffix} (${payload.timeout_seconds}s timeout)`);
                         }
                     });
                 }
@@ -3563,6 +3611,12 @@
                 && Object.prototype.hasOwnProperty.call(payload, 'updated_confidence');
         }
 
+        function isDebateRebuttalPayload(payload) {
+            return !!payload
+                && !Array.isArray(payload)
+                && Array.isArray(payload.rebuttals);
+        }
+
         function formatDebateQuestioningCard(payload, sender = '') {
             const questionedRoles = Array.isArray(payload.questioned_roles) ? payload.questioned_roles : [];
             const doubtPoints = Array.isArray(payload.doubt_points) ? payload.doubt_points : [];
@@ -3642,6 +3696,49 @@
                 </div>`;
         }
 
+        function formatDebateRebuttalCard(payload, sender = '') {
+            const rebuttals = Array.isArray(payload.rebuttals) ? payload.rebuttals : [];
+
+            let html = `
+                <div class="structured-card">
+                    <div class="structured-card-header">
+                        <span>debate rebuttal</span>
+                        ${sender ? `<span style="opacity:0.7; font-weight:600; text-transform:none;">${escapeHtml(sender)}</span>` : ''}
+                    </div>`;
+
+            if (rebuttals.length === 0) {
+                html += `
+                    <div class="structured-list">
+                        <div class="structured-list-item">
+                            <div class="structured-list-head">No rebuttal points</div>
+                            <div class="structured-list-body">The model returned an empty rebuttal set.</div>
+                        </div>
+                    </div>
+                </div>`;
+                return html;
+            }
+
+            html += '<div class="structured-list">';
+            for (const item of rebuttals) {
+                const pointId = String(item && item.point_id ? item.point_id : 'P?');
+                const statusRaw = String(item && item.status ? item.status : 'clarify').trim().toLowerCase();
+                const status = ['acknowledge', 'refute', 'clarify'].includes(statusRaw) ? statusRaw : 'clarify';
+                const evidence = String(item && item.evidence ? item.evidence : '');
+                const updatedClaim = String(item && item.updated_claim ? item.updated_claim : '');
+
+                html += `
+                    <div class="structured-list-item">
+                        <div class="structured-list-head">${escapeHtml(pointId)} • ${escapeHtml(status)}</div>
+                        <div class="structured-list-body">
+                            <div><strong>Evidence:</strong> ${escapeHtml(evidence)}</div>
+                            <div style="margin-top:6px;"><strong>Updated claim:</strong> ${escapeHtml(updatedClaim)}</div>
+                        </div>
+                    </div>`;
+            }
+            html += '</div></div>';
+            return html;
+        }
+
         function formatGenericStructuredJsonCard(payload, sender = '') {
             const entries = Object.entries(payload || {});
             if (entries.length === 0) {
@@ -3685,6 +3782,9 @@
             }
             if (isDebateVerdictPayload(payload)) {
                 return formatDebateVerdictCard(payload, sender);
+            }
+            if (isDebateRebuttalPayload(payload)) {
+                return formatDebateRebuttalCard(payload, sender);
             }
             return formatGenericStructuredJsonCard(payload, sender);
         }
