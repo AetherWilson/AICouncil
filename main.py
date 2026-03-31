@@ -464,8 +464,18 @@ Synthesize into a single cohesive final response:
 - Use the most current version of each contribution (updated responses take priority over originals)
 - Incorporate any Verifier corrections
 - Be well-organized and directly address the user's request
+- Preserve the information needed to justify the conclusion, not just the conclusion itself
+- Keep key evidence when relevant: source links, factual support, assumptions, caveats, and the calculation steps needed to understand or verify the result
+- Prefer a strong structure: direct answer first, then supporting detail underneath when needed
+- Do not over-compress Researcher or Analyzer output if that would remove essential support for the answer
 - Use proper markdown formatting
 - Never use raw HTML tags (for example: <p>, <ul>, <li>, <div>); use markdown syntax only
+
+If the task depends on evidence or reasoning, the final answer should normally include short supporting sections such as:
+- "Why / Basis"
+- "Calculation" or "Reasoning"
+- "Sources"
+- "Caveats"
 
 Respond directly — do NOT mention the council, team members, or that you are combining results. Do NOT prefix with your role name."""
 
@@ -502,13 +512,15 @@ Your job in this step is to raise focused doubts about the first-round outputs.
 
 Rules:
 - Keep everything minimal and sufficient only
-- Question only concrete, high-impact issues
+- Question only concrete, high-impact issues that could materially change the final answer
+- Prefer fewer, stronger doubts over many small ones
 - If there is no issue worth debating, return empty questioned_roles and empty doubt_points
 - Use lowercase role names: researcher, creator, analyzer
 - Rank doubts by impact: critical > important > minor
-- For each doubt, specify: what is wrong, why it matters, what evidence contradicts it
+- For each doubt, specify: what is wrong, why it matters, and what evidence, source, or calculation is needed to resolve it
 - Avoid vague language like "unclear" or "needs more detail"
 - Only question if you can articulate the specific problem
+- Focus especially on unsupported claims, missing source support, broken logic, hidden assumptions, or calculation steps that do not support the stated result
 
 Return ONLY valid JSON in this exact shape:
 {
@@ -534,6 +546,9 @@ You were explicitly questioned by the Verifier.
 Rules:
 - Answer only the questioned points
 - Keep the response as short as possible while fully resolving each doubt
+- Prefer direct correction or direct evidence over long explanation
+- If the Verifier requested a source, cite the source briefly
+- If the Verifier questioned a calculation or assumption, show only the steps needed to validate or revise the claim
 - Return ONLY valid JSON in this exact shape:
 {
     "rebuttals": [
@@ -560,6 +575,8 @@ Rules:
 - Keep output minimal and sufficient only
 - Judge based only on the provided doubts and rebuttal
 - Use one final verdict for this role in this cycle
+- Prefer ending the debate once the material issue is resolved
+- Continue only if a specific unresolved problem remains that could still change the final answer
 
 Return ONLY valid JSON in this exact shape:
 {
@@ -1370,14 +1387,20 @@ def _parse_step_a_payload(raw_text):
         target_role = _normalize_questioned_role(item.get('target_role'))
         point_id = str(item.get('point_id') or '').strip()
         doubt = str(item.get('doubt') or '').strip()
+        severity = str(item.get('severity') or '').strip().lower() or 'important'
+        required_evidence = str(item.get('required_evidence') or '').strip()
         if not target_role or not doubt:
             continue
         if not point_id:
             point_id = f"P{len(doubt_points) + 1}"
+        if severity not in {'critical', 'important', 'minor'}:
+            severity = 'important'
         doubt_points.append({
             'point_id': point_id,
             'target_role': target_role,
-            'doubt': doubt
+            'doubt': doubt,
+            'severity': severity,
+            'required_evidence': required_evidence
         })
         if target_role not in questioned_roles:
             questioned_roles.append(target_role)
@@ -1391,9 +1414,9 @@ def _parse_step_a_payload(raw_text):
 
 def _parse_step_c_payload(raw_text):
     fallback = {
-        'verdict': 'partially_accept',
+        'verdict': 'accept',
         'reason': 'Unable to parse verifier verdict cleanly.',
-        'next_action': 'move_to_other_point',
+        'next_action': 'enough_for_this_role',
         'updated_confidence': 0.5
     }
     if not raw_text:
@@ -2387,6 +2410,16 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
         if not questioned_roles or not doubt_points:
             emit_chat('console_log', {
                 'message': f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: no further doubts, debate closed."
+            })
+            break
+
+        high_priority_points = [
+            point for point in doubt_points
+            if point.get('severity') in {'critical', 'important'}
+        ]
+        if not high_priority_points and step_a_payload.get('confidence_in_doubt', 0.0) < 0.6:
+            emit_chat('console_log', {
+                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: only low-confidence minor doubts remained, debate closed."
             })
             break
 
