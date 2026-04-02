@@ -2330,6 +2330,75 @@ def _run_optional_council_role(role_name, task_key, base_prompt, user_message, u
     return role_response
 
 
+def _build_debate_round_snapshot(available_targets, role_latest_outputs):
+    sections = []
+    for role_name in (available_targets or []):
+        sections.append(
+            f"\n\n===== {role_name.replace('_', ' ')} Current Output =====\n"
+            f"{role_latest_outputs.get(role_name, '')}"
+        )
+    return ''.join(sections)
+
+
+def _build_debate_history_snapshot(debate_records, role_filter=None):
+    relevant_records = [
+        record for record in (debate_records or [])
+        if not role_filter or record.get('role') == role_filter
+    ]
+    if not relevant_records:
+        return ''
+
+    history_snapshot = "\n\n===== Prior Debate Records ====="
+    for record in relevant_records:
+        history_snapshot += (
+            f"\nCycle {record['cycle']} | {record['role'].replace('_', ' ')} | "
+            f"verdict={record['verdict']} | next_action={record['next_action']}"
+            f"\nReason: {record['reason']}"
+        )
+    return history_snapshot
+
+
+def _build_step_c_verdict_context(cycle, role_name, role_points, rebuttal,
+                                  role_latest_outputs, available_targets,
+                                  debate_records, step_a_payload):
+    round_snapshot = _build_debate_round_snapshot(available_targets, role_latest_outputs)
+    role_history_snapshot = _build_debate_history_snapshot(debate_records, role_filter=role_name)
+    global_history_snapshot = _build_debate_history_snapshot(debate_records)
+    role_output = role_latest_outputs.get(role_name, '')
+    role_history_count = len([
+        record for record in (debate_records or [])
+        if record.get('role') == role_name
+    ])
+
+    context_meta = {
+        'has_role_output': bool(str(role_output).strip()),
+        'role_history_count': role_history_count,
+        'global_history_count': len(debate_records or []),
+        'question_count': len(role_points or []),
+        'confidence_in_doubt': _clamp_confidence(
+            (step_a_payload or {}).get('confidence_in_doubt'),
+            default=0.5
+        )
+    }
+
+    context_block = (
+        "\n\nDebate verdict context policy:"
+        "\nAll required context for this verdict is provided below."
+        "\nDo not ask for additional internal state, prior cycles, or system logs."
+        f"\n\nCycle: {cycle}"
+        f"\nRole under review: {role_name}"
+        f"\nQuestion count for this role: {context_meta['question_count']}"
+        f"\nVerifier confidence_in_doubt from Step A: {context_meta['confidence_in_doubt']}"
+        f"\n\n{role_name} output under review:\n{role_output}"
+        f"\n\nQuestioned points:\n{json.dumps(role_points, ensure_ascii=False, indent=2)}"
+        f"\n\nRebuttal:\n{rebuttal}"
+        + (f"\n\n{role_name} debate history:{role_history_snapshot}" if role_history_snapshot else '')
+        + (f"\n\nGlobal debate history:{global_history_snapshot}" if global_history_snapshot else '')
+        + (f"\n\nCurrent round outputs:{round_snapshot}" if round_snapshot else '')
+    )
+    return context_block, context_meta
+
+
 def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config, council_results,
                                  chat_history, conversation_id, run_group_id, auto_save_chat,
                                  emit_chat, stop_if_aborted):
@@ -2357,19 +2426,8 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
             'message': f"[{cycle_ts}] Debate cycle {cycle}/{DEBATE_MAX_CYCLES}: Verifier questioning..."
         })
 
-        round_snapshot = ""
-        for role_name in available_targets:
-            round_snapshot += f"\n\n===== {role_name.replace('_', ' ')} Current Output =====\n{role_latest_outputs.get(role_name, '')}"
-
-        history_snapshot = ""
-        if debate_records:
-            history_snapshot = "\n\n===== Prior Debate Records ====="
-            for record in debate_records:
-                history_snapshot += (
-                    f"\nCycle {record['cycle']} | {record['role'].replace('_', ' ')} | "
-                    f"verdict={record['verdict']} | next_action={record['next_action']}"
-                    f"\nReason: {record['reason']}"
-                )
+        round_snapshot = _build_debate_round_snapshot(available_targets, role_latest_outputs)
+        history_snapshot = _build_debate_history_snapshot(debate_records)
 
         step_a_system = (
             VERIFIER_DEBATE_STEP_A_PROMPT
@@ -2477,12 +2535,30 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
                 return ''
 
             role_points = [p for p in doubt_points if p.get('target_role') == role_name]
+            step_c_context, step_c_meta = _build_step_c_verdict_context(
+                cycle=cycle,
+                role_name=role_name,
+                role_points=role_points,
+                rebuttal=rebuttal,
+                role_latest_outputs=role_latest_outputs,
+                available_targets=available_targets,
+                debate_records=debate_records,
+                step_a_payload=step_a_payload
+            )
+            emit_chat('console_log', {
+                'message': (
+                    f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: "
+                    f"Verdict context for {role_name} "
+                    f"(has_role_output={step_c_meta['has_role_output']}, "
+                    f"role_history={step_c_meta['role_history_count']}, "
+                    f"global_history={step_c_meta['global_history_count']}, "
+                    f"question_count={step_c_meta['question_count']})."
+                )
+            })
             step_c_system = (
                 VERIFIER_DEBATE_STEP_C_PROMPT
                 + f"\n\nOriginal user request: {user_message}"
-                + f"\n\nRole under review: {role_name}"
-                + f"\n\nQuestioned points:\n{json.dumps(role_points, ensure_ascii=False, indent=2)}"
-                + f"\n\nRebuttal:\n{rebuttal}"
+                + step_c_context
             )
             if user_system_prompt:
                 step_c_system = user_system_prompt + "\n\n" + step_c_system
