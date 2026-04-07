@@ -2004,11 +2004,11 @@
                     </div>
                 </div>
                 <div class="input-area" id="inputArea">
-                    <input type="file" id="pdfFileInput" accept=".pdf,.jpg,.jpeg,.png" multiple style="display: none;">
+                    <input type="file" id="pdfFileInput" accept=".pdf,.jpg,.jpeg,.png,.docx,.docm,.dotx,.dotm" multiple style="display: none;">
                     <div class="pdf-list" id="pdfList">
                         <div id="pdfItems"></div>
                     </div>
-                    <div class="input-container" id="messageDropZone" title="Drop PDF/image files here or press Ctrl+V">
+                    <div class="input-container" id="messageDropZone" title="Drop PDF/image/Word files here or press Ctrl+V">
                         <textarea id="messageInput" placeholder="Type your message here... (Shift+Enter for new line)" autocomplete="off" rows="1"></textarea>
                         <button id="workflowModeButton" type="button" data-mode="auto" aria-label="Open workflow mode selector" title="Mode: Auto">🚀</button>
                         <button id="sendButton">Send</button>
@@ -2490,7 +2490,7 @@
                 ? `${(doc.size / 1024).toFixed(1)} KB`
                 : 'size n/a';
 
-            if (doc.type === 'pdf') {
+            if (doc.type === 'pdf' || doc.type === 'word') {
                 return sizeText;
             }
 
@@ -2501,11 +2501,25 @@
             return sizeText;
         }
 
+        function getDocumentTypeLabel(doc) {
+            if (doc.type === 'pdf') return 'PDF';
+            if (doc.type === 'image') return 'Image';
+            if (doc.type === 'word') return 'Word';
+            return 'Document';
+        }
+
+        function getDocumentIcon(doc) {
+            if (doc.type === 'pdf') return '📄';
+            if (doc.type === 'image') return '🖼️';
+            if (doc.type === 'word') return '📝';
+            return '📎';
+        }
+
         function buildMessageAttachmentChips(attachments) {
             const docs = getSafeDocumentsSnapshot(attachments);
             if (docs.length === 0) return '';
             const chips = docs.map(doc => {
-                const icon = doc.type === 'pdf' ? '📄' : '🖼️';
+                const icon = getDocumentIcon(doc);
                 return `
                     <span class="message-source-chip">
                         <span>${icon}</span>
@@ -2560,12 +2574,32 @@
         }
 
         function filterSupportedFiles(fileList) {
-            return Array.from(fileList || []).filter(f =>
-                f.type === 'application/pdf' ||
-                f.type === 'image/jpeg' ||
-                f.type === 'image/png' ||
-                f.type === 'image/jpg'
-            );
+            const supportedMimeTypes = new Set([
+                'application/pdf',
+                'image/jpeg',
+                'image/png',
+                'image/jpg',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'application/vnd.ms-word.document.macroEnabled.12',
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+                'application/vnd.ms-word.template.macroEnabled.12'
+            ]);
+            const supportedExtensions = new Set(['pdf', 'jpg', 'jpeg', 'png', 'docx', 'docm', 'dotx', 'dotm']);
+
+            return Array.from(fileList || []).filter(f => {
+                const mimeType = (f.type || '').toLowerCase();
+                if (supportedMimeTypes.has(mimeType)) {
+                    return true;
+                }
+
+                const dotIndex = (f.name || '').lastIndexOf('.');
+                if (dotIndex < 0) {
+                    return false;
+                }
+
+                const extension = f.name.slice(dotIndex + 1).toLowerCase();
+                return supportedExtensions.has(extension);
+            });
         }
 
         function isNearBottom(cw, threshold = 80) {
@@ -2708,10 +2742,8 @@
                     if (data.success) {
                         uploadedPDFs.push(data.document);
                         displayPDFs();
-                        const docType = data.document.type === 'pdf' ? 'PDF' : 'Image';
-                        const info = data.document.type === 'pdf'
-                            ? `${(data.document.size / 1024).toFixed(1)} KB`
-                            : `${data.document.width}x${data.document.height}px`;
+                        const docType = getDocumentTypeLabel(data.document);
+                        const info = formatSourceInfo(data.document);
                         addConsoleLog(`${docType} uploaded: ${data.document.filename} (${info})`);
                     } else {
                         addConsoleLog(`Error uploading document: ${data.error}`);
@@ -2743,10 +2775,8 @@
             uploadedPDFs.forEach((doc, index) => {
                 const pdfItem = document.createElement('div');
                 pdfItem.className = 'pdf-item';
-                const icon = doc.type === 'pdf' ? '📄' : '🖼️';
-                const info = doc.type === 'pdf' ? 
-                    `${(doc.size / 1024).toFixed(1)} KB` :
-                    `${doc.width}x${doc.height}px • ${(doc.size / 1024).toFixed(1)} KB`;
+                const icon = getDocumentIcon(doc);
+                const info = formatSourceInfo(doc);
                 pdfItem.innerHTML = `
                     <div class="pdf-item-info">
                         <div class="pdf-name" title="${escapeHtml(doc.filename)}">${icon} ${escapeHtml(doc.filename)}</div>
@@ -2771,7 +2801,7 @@
                 if (data.success) {
                     uploadedPDFs.splice(index, 1);
                     displayPDFs();
-                    const docType = doc.type === 'pdf' ? 'PDF' : 'Image';
+                    const docType = getDocumentTypeLabel(doc);
                     addConsoleLog(`${docType} removed: ${doc.filename}`);
                 }
             });

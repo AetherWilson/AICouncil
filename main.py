@@ -5,6 +5,7 @@ import time
 import threading
 import queue
 import uuid
+import importlib
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from datetime import datetime
 import re
@@ -41,6 +42,8 @@ DEFAULT_MD_READER_CONFIG = {
 }
 config_store = ConfigStore(base_dir='.')
 UPTEST_TIMEOUT_SECONDS = 30
+SUPPORTED_UPLOAD_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png', 'docx', 'docm', 'dotx', 'dotm'}
+WORD_UPLOAD_EXTENSIONS = {'docx', 'docm', 'dotx', 'dotm'}
 
 # Store all conversation state keyed by conversation_id
 # {
@@ -679,6 +682,49 @@ def _extract_document_payload(filepath, filename, pages_hint=None):
             'type': 'pdf'
         }
 
+    if file_ext in WORD_UPLOAD_EXTENSIONS:
+        try:
+            docx_module = importlib.import_module('docx')
+            Document = getattr(docx_module, 'Document', None)
+            if Document is None:
+                raise ValueError('Word extraction dependency is missing')
+        except ImportError as exc:
+            raise ValueError('Word extraction dependency is missing') from exc
+
+        try:
+            word_doc = Document(filepath)
+        except Exception as exc:
+            raise ValueError(f'Failed to parse Word file: {filename}') from exc
+
+        text_chunks = []
+        for para in word_doc.paragraphs:
+            para_text = (para.text or '').strip()
+            if para_text:
+                text_chunks.append(para_text)
+
+        for table in word_doc.tables:
+            for row in table.rows:
+                cells = [
+                    (cell.text or '').strip()
+                    for cell in row.cells
+                    if (cell.text or '').strip()
+                ]
+                if cells:
+                    text_chunks.append(' | '.join(cells))
+
+        extracted_text = '\n'.join(text_chunks).strip()
+        if not extracted_text:
+            extracted_text = '[No extractable text found in Word document.]'
+
+        return {
+            'filename': filename,
+            'content': '[Word document uploaded]',
+            'filepath': filepath,
+            'size': file_size,
+            'type': 'word',
+            'text': extracted_text
+        }
+
     img = Image.open(filepath)
     width, height = img.size
     return {
@@ -882,7 +928,7 @@ def get_models():
 
 @app.route('/api/upload_document', methods=['POST'])
 def upload_document():
-    """Handle PDF and image upload and store normalized metadata"""
+    """Handle PDF, image, and Word OpenXML upload and store normalized metadata"""
     conversation_id = request.form.get('chat_id')
     if not conversation_id:
         return jsonify({'success': False, 'error': 'chat_id is required'})
@@ -900,8 +946,8 @@ def upload_document():
         return jsonify({'success': False, 'error': 'Invalid file name'})
 
     file_ext = filename.lower().split('.')[-1]
-    if file_ext not in ['pdf', 'jpg', 'jpeg', 'png']:
-        return jsonify({'success': False, 'error': 'Only PDF, JPG, and PNG files are allowed'})
+    if file_ext not in SUPPORTED_UPLOAD_EXTENSIONS:
+        return jsonify({'success': False, 'error': 'Only PDF, JPG, JPEG, PNG, DOCX, DOCM, DOTX, and DOTM files are allowed'})
 
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     try:
@@ -1734,7 +1780,9 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
         context_text = ""
         unsupported_pdf_filenames = []
         for filename, doc_info in documents.items():
-            if doc_info['type'] == 'image':
+            doc_type = doc_info.get('type')
+
+            if doc_type == 'image':
                 if support_images:
                     img_base64 = encode_image_to_base64(doc_info['filepath'])
                     if img_base64:
@@ -1750,14 +1798,37 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
                 context_text += "\n"
                 continue
 
-            if support_pdf_input and doc_info.get('filepath'):
-                pdf_inputs.append({
-                    'filename': filename,
-                    'filepath': doc_info['filepath']
-                })
+            if doc_type == 'pdf':
+                if support_pdf_input and doc_info.get('filepath'):
+                    pdf_inputs.append({
+                        'filename': filename,
+                        'filepath': doc_info['filepath']
+                    })
+                    continue
+
+                unsupported_pdf_filenames.append(filename)
                 continue
 
-            unsupported_pdf_filenames.append(filename)
+            if not context_text:
+                context_text = "\n\n===== AVAILABLE DOCUMENTS =====\n"
+
+            if doc_type == 'word':
+                context_text += f"\n--- Word Document: {filename} ---\n"
+                word_text = doc_info.get('text', '').strip()
+                if word_text:
+                    context_text += word_text[:12000]
+                    if len(word_text) > 12000:
+                        context_text += "\n[... content truncated ...]"
+                else:
+                    context_text += "[Word document uploaded, but no extractable text was found.]"
+                context_text += "\n"
+                continue
+
+            context_text += f"\n--- Document: {filename} ---\n"
+            context_text += doc_info.get('content', '[Document uploaded]')[:5000]
+            if len(doc_info.get('content', '')) > 5000:
+                context_text += "\n[... content truncated ...]"
+            context_text += "\n"
 
         if context_text:
             system_prompt += context_text

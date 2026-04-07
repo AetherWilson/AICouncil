@@ -13,7 +13,7 @@ It is built around a small “council” workflow with roles like **MarkReader**
 - Stream responses in real time with Socket.IO
 - Configure role-to-model assignments in `config.json`
 - Manage available models and capabilities in `model.json`
-- Upload **PDFs** and **images** as chat context
+- Upload **PDFs**, **images**, and **Word OpenXML files** as chat context
 - Save named chats and auto-save temporary chats
 - Maintain persistent cross-chat memory in `skills/memories/memory.md`
 - Let a **MarkReader** preselect relevant markdown skills for the Leader
@@ -58,7 +58,7 @@ Key files and folders:
 - `skills/` — optional markdown skills and memory files
 - `chat_history/` — saved chats
 - `temp_chat_history/` — auto-saved temporary chats
-- `uploads/` — uploaded PDFs and images
+- `uploads/` — uploaded PDFs, images, and Word OpenXML files
 - `gpt_responses/` — request/response debug logs
 
 ## Features in more detail
@@ -113,6 +113,12 @@ The current app supports:
 - `.jpg`
 - `.jpeg`
 - `.png`
+- `.docx`
+- `.docm`
+- `.dotx`
+- `.dotm`
+
+Legacy `.doc` files are not supported.
 
 Uploaded files are stored in `uploads/` and registered against the active conversation.
 
@@ -124,6 +130,11 @@ For PDFs:
 For images:
 
 - images are converted to data URLs for model input where supported
+
+For Word OpenXML files:
+
+- text is extracted on the backend
+- extracted content is injected into role context for all models
 
 ### 4. Chat persistence
 
@@ -174,6 +185,7 @@ From `requirements.txt`:
 - `httpx`
 - `python-dotenv`
 - `Pillow`
+- `python-docx`
 - `easyocr`
 - `opencc`
 
