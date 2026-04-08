@@ -2822,8 +2822,8 @@
         function displayCouncilRoles() {
             const container = document.getElementById('councilRolesList');
             const roleIcons = {
-                'MarkReader': '🤖',
-                'MD_Reader': '🤖',
+                'MarkReader': '📄',
+                'MD_Reader': '📄',
                 'Leader': '👑',
                 'Researcher': '🔬',
                 'Creator': '✍️',
@@ -2858,7 +2858,7 @@
             let html = '';
             for (const role of orderedRoles) {
                 const info = councilRoles[role];
-                const icon = roleIcons[role] || '🤖';
+                const icon = roleIcons[role] || '📄';
                 const label = roleLabels[role] || role;
                 html += `
                     <div class="council-role-item" data-role="${role}">
