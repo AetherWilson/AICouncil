@@ -4480,6 +4480,21 @@
                 tempChatId = 'temp_' + Date.now().toString();
             }
 
+            const activeChatId = currentSessionId || tempChatId;
+            if (activeChatId) {
+                const historySnapshot = getCurrentMessages().filter((msg) => {
+                    const sender = String((msg && msg.sender) || '').trim().toLowerCase();
+                    return !(msg && msg.type === 'ai' && sender === 'system');
+                });
+                socket.emit('join_chat', { chat_id: activeChatId });
+                if (historySnapshot.length > 0) {
+                    socket.emit('load_chat_history', {
+                        chat_id: activeChatId,
+                        messages: historySnapshot
+                    });
+                }
+            }
+
             const messageAttachments = getSafeDocumentsSnapshot(uploadedPDFs);
 
             // Display user message
@@ -4490,7 +4505,6 @@
             
             // Send to server
             const workflowMode = getWorkflowMode();
-            const activeChatId = currentSessionId || tempChatId;
             const activeState = ensureConversation(activeChatId);
             if (activeState) {
                 activeState.is_generating = true;
@@ -4499,9 +4513,6 @@
                 activeState.thinking_process.preview_text = '';
                 activeState.thinking_process.active_run_group_id = null;
                 activeState.thinking_process.active_container_id = null;
-            }
-            if (activeChatId) {
-                socket.emit('join_chat', { chat_id: activeChatId });
             }
             socket.emit('send_message', {
                 message: message,
@@ -5460,7 +5471,13 @@
                         setActiveHistoryItemByChatId(chatId);
                         
                         const activeChatId = currentSessionId || tempChatId;
-                        if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
+                        if (activeChatId) {
+                            socket.emit('join_chat', { chat_id: activeChatId });
+                            socket.emit('load_chat_history', {
+                                chat_id: activeChatId,
+                                messages: data.chat.messages || []
+                            });
+                        }
                         
                         conversationWindow.scrollTop = conversationWindow.scrollHeight;
                         addConsoleLog(`Loaded chat: ${currentSessionName}`);
@@ -5681,7 +5698,13 @@
                         setActiveHistoryItemByChatId(chatId);
                         
                         const activeChatId = currentSessionId || tempChatId;
-                        if(activeChatId) { socket.emit('join_chat', { chat_id: activeChatId }); }
+                        if (activeChatId) {
+                            socket.emit('join_chat', { chat_id: activeChatId });
+                            socket.emit('load_chat_history', {
+                                chat_id: activeChatId,
+                                messages: data.chat.messages || []
+                            });
+                        }
                         
                         conversationWindow.scrollTop = conversationWindow.scrollHeight;
                         addConsoleLog(`Loaded temporary chat`);

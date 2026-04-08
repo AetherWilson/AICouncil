@@ -168,6 +168,49 @@ def _normalize_messages_for_storage(messages):
     return [_normalize_ui_message_for_storage(msg) for msg in (messages or [])]
 
 
+def _replace_conversation_messages_from_ui(conversation_id, messages):
+    """Replace in-memory conversation messages using UI message payload format."""
+    conv = get_conversation(conversation_id)
+    normalized_messages = messages if isinstance(messages, list) else []
+
+    conv['messages'] = []
+    for msg in normalized_messages:
+        msg_type = str(msg.get('type') or '').strip().lower() if isinstance(msg, dict) else ''
+        if msg_type == 'user':
+            raw_user = _extract_raw_markdown_from_ui_message(msg)
+            append_conversation_message(
+                conversation_id,
+                role='user',
+                content=raw_user,
+                raw_markdown=raw_user,
+                id=(msg.get('id') if isinstance(msg, dict) else None) or uuid.uuid4().hex,
+                run_group_id=(msg.get('run_group_id') if isinstance(msg, dict) else None)
+            )
+        elif msg_type == 'ai':
+            bot_name = (msg.get('botName') if isinstance(msg, dict) else None) or (msg.get('sender') if isinstance(msg, dict) else None) or 'AI'
+            bot_id = (msg.get('botId') if isinstance(msg, dict) else None) or 'unknown'
+            raw_ai = _extract_raw_markdown_from_ui_message(msg)
+            append_conversation_message(
+                conversation_id,
+                role='assistant',
+                content=f"[{bot_name} ({bot_id})] {raw_ai}",
+                raw_markdown=raw_ai,
+                id=(msg.get('id') if isinstance(msg, dict) else None) or uuid.uuid4().hex,
+                bot_name=bot_name,
+                bot_id=bot_id,
+                run_group_id=(msg.get('run_group_id') if isinstance(msg, dict) else None),
+                run_id=(msg.get('run_id') if isinstance(msg, dict) else None) or (msg.get('id') if isinstance(msg, dict) else None),
+                model_id=(msg.get('model_id') if isinstance(msg, dict) else None),
+                role_name=(msg.get('role_name') if isinstance(msg, dict) else None),
+                thinking=(msg.get('thinking') if isinstance(msg, dict) else '') or '',
+                stream_status=(msg.get('stream_status') if isinstance(msg, dict) else '') or '',
+                is_final_response=bool(msg.get('is_final_response', False)) if isinstance(msg, dict) else False
+            )
+
+    _sync_run_group_counter(conversation_id, normalized_messages)
+    return len(conv['messages'])
+
+
 def _get_last_preview(messages):
     if not messages:
         return ''
@@ -1121,6 +1164,15 @@ def load_chat(chat_id):
         chat_data['messages'] = _history_to_ui_messages(normalized_chat_id)
         chat_data['uploadedDocuments'] = _conversation_documents_to_ui(normalized_chat_id)
 
+    target_conv = get_conversation(normalized_chat_id)
+    if not target_conv.get('is_generating'):
+        hydrated_count = _replace_conversation_messages_from_ui(
+            normalized_chat_id,
+            chat_data.get('messages', [])
+        )
+        emit_log_ts = datetime.now().strftime("%H:%M:%S")
+        logger.info("[%s] Hydrated conversation %s from load_chat (%s messages)", emit_log_ts, normalized_chat_id, hydrated_count)
+
     _sync_run_group_counter(normalized_chat_id, chat_data.get('messages', []))
     chat_data['isGenerating'] = get_conversation(normalized_chat_id).get('is_generating', False)
     return jsonify({'success': True, 'chat': chat_data})
@@ -1244,6 +1296,15 @@ def load_temp_chat(chat_id):
     if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
         chat_data['messages'] = _history_to_ui_messages(normalized_chat_id)
         chat_data['uploadedDocuments'] = _conversation_documents_to_ui(normalized_chat_id)
+
+    target_conv = get_conversation(normalized_chat_id)
+    if not target_conv.get('is_generating'):
+        hydrated_count = _replace_conversation_messages_from_ui(
+            normalized_chat_id,
+            chat_data.get('messages', [])
+        )
+        emit_log_ts = datetime.now().strftime("%H:%M:%S")
+        logger.info("[%s] Hydrated conversation %s from load_temp_chat (%s messages)", emit_log_ts, normalized_chat_id, hydrated_count)
 
     _sync_run_group_counter(normalized_chat_id, chat_data.get('messages', []))
     chat_data['isGenerating'] = get_conversation(normalized_chat_id).get('is_generating', False)
@@ -1489,6 +1550,42 @@ def _parse_step_c_payload(raw_text):
         'next_action': next_action,
         'updated_confidence': _clamp_confidence(payload.get('updated_confidence'), default=0.5)
     }
+
+
+def _parse_step_a_payload_strict(raw_text):
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return None
+    json_text = extract_json_from_text(raw_text)
+    if not json_text:
+        return None
+    try:
+        payload = json.loads(json_text)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    required_keys = ['questioned_roles', 'doubt_points', 'confidence_in_doubt']
+    if any(key not in payload for key in required_keys):
+        return None
+    return _parse_step_a_payload(json.dumps(payload, ensure_ascii=False))
+
+
+def _parse_step_c_payload_strict(raw_text):
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return None
+    json_text = extract_json_from_text(raw_text)
+    if not json_text:
+        return None
+    try:
+        payload = json.loads(json_text)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    required_keys = ['verdict', 'reason', 'next_action', 'updated_confidence']
+    if any(key not in payload for key in required_keys):
+        return None
+    return _parse_step_c_payload(json.dumps(payload, ensure_ascii=False))
 
 
 def _coerce_int(value, default_value, minimum=1):
@@ -2526,7 +2623,41 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
         if stop_if_aborted():
             return ''
 
-        step_a_payload = _parse_step_a_payload(step_a_raw)
+        step_a_payload = _parse_step_a_payload_strict(step_a_raw)
+        if step_a_payload is None:
+            emit_chat('console_log', {
+                'message': (
+                    f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: "
+                    "Step-A JSON parse failed; retrying with strict schema instruction."
+                )
+            })
+            strict_step_a_system = (
+                step_a_system
+                + "\n\nSTRICT RETRY INSTRUCTION: Return exactly one valid JSON object in the required schema."
+                + " Do not include markdown, code fences, natural language explanation, or extra keys."
+            )
+            try:
+                step_a_retry_raw = completion_response(
+                    model=verifier_model_id,
+                    system_prompt=strict_step_a_system,
+                    user_prompt='Return ONLY the questioning JSON now.',
+                    chat_history=chat_history,
+                    temperature=0.2
+                )
+                step_a_payload = _parse_step_a_payload_strict(step_a_retry_raw)
+            except Exception as exc:
+                _log_internal_error('debate step-a strict retry failed', exc)
+                step_a_payload = None
+
+        if step_a_payload is None:
+            emit_chat('console_log', {
+                'message': (
+                    f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: "
+                    "Step-A parse failed after strict retry; debate closed safely to avoid false assumptions."
+                )
+            })
+            break
+
         questioned_roles = [
             role for role in step_a_payload.get('questioned_roles', [])
             if role in available_targets
@@ -2647,7 +2778,40 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
                 support_pdf_input=verifier_info.get('support_pdf_input', False),
                 on_stream_progress=auto_save_chat
             )
-            verdict = _parse_step_c_payload(step_c_raw)
+            verdict = _parse_step_c_payload_strict(step_c_raw)
+            if verdict is None:
+                emit_chat('console_log', {
+                    'message': (
+                        f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: "
+                        f"Step-C JSON parse failed for {role_name}; retrying with strict schema instruction."
+                    )
+                })
+                strict_step_c_system = (
+                    step_c_system
+                    + "\n\nSTRICT RETRY INSTRUCTION: Return exactly one valid JSON object in the required schema."
+                    + " Do not include markdown, code fences, natural language explanation, or extra keys."
+                )
+                try:
+                    step_c_retry_raw = completion_response(
+                        model=verifier_model_id,
+                        system_prompt=strict_step_c_system,
+                        user_prompt='Return ONLY the verdict JSON now.',
+                        chat_history=chat_history,
+                        temperature=0.2
+                    )
+                    verdict = _parse_step_c_payload_strict(step_c_retry_raw)
+                except Exception as exc:
+                    _log_internal_error('debate step-c strict retry failed', exc)
+                    verdict = None
+
+            if verdict is None:
+                verdict = {
+                    'verdict': 'reject',
+                    'reason': 'Verifier verdict JSON parse failed after strict retry; treated as unresolved for safety.',
+                    'next_action': 'continue_question',
+                    'updated_confidence': 0.0
+                }
+
             verdict_record = {
                 'cycle': cycle,
                 'role': role_name,
@@ -3486,47 +3650,12 @@ def handle_load_chat_history(data):
             'chat_id': conversation_id
         }, to=conversation_id)
         return
-    
-    # Convert UI message format to backend conversation history format
-    conv['messages'] = []
-    for msg in messages:
-        if msg.get('type') == 'user':
-            raw_user = _extract_raw_markdown_from_ui_message(msg)
-            append_conversation_message(
-                conversation_id,
-                role='user',
-                content=raw_user,
-                raw_markdown=raw_user,
-                id=msg.get('id', uuid.uuid4().hex),
-                run_group_id=msg.get('run_group_id')
-            )
-        elif msg.get('type') == 'ai':
-            # AI messages in the format [Bot Name (bot-id)] message
-            bot_name = msg.get('botName') or msg.get('sender') or 'AI'
-            bot_id = msg.get('botId', 'unknown')
-            raw_ai = _extract_raw_markdown_from_ui_message(msg)
-            append_conversation_message(
-                conversation_id,
-                role='assistant',
-                content=f"[{bot_name} ({bot_id})] {raw_ai}",
-                raw_markdown=raw_ai,
-                id=msg.get('id', uuid.uuid4().hex),
-                bot_name=bot_name,
-                bot_id=bot_id,
-                run_group_id=msg.get('run_group_id'),
-                run_id=msg.get('run_id') or msg.get('id'),
-                model_id=msg.get('model_id'),
-                role_name=msg.get('role_name'),
-                thinking=msg.get('thinking', ''),
-                stream_status=msg.get('stream_status', ''),
-                is_final_response=bool(msg.get('is_final_response', False))
-            )
 
-    _sync_run_group_counter(conversation_id, messages)
+    loaded_count = _replace_conversation_messages_from_ui(conversation_id, messages)
     
     timestamp = datetime.now().strftime("%H:%M:%S")
     emit('console_log', {
-        'message': f"[{timestamp}] Chat history loaded ({len(messages)} messages)",
+        'message': f"[{timestamp}] Chat history loaded ({loaded_count} messages)",
         'chat_id': conversation_id
     }, to=conversation_id)
 
