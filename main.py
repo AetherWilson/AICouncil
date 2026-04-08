@@ -1423,6 +1423,60 @@ def _normalize_workflow_mode(value):
     return 'auto'
 
 
+def _normalize_history_context_mode(value):
+    normalized = str(value or '').strip().lower()
+    if normalized in {'all', 'final_only'}:
+        return normalized
+    return 'final_only'
+
+
+def _is_final_response_history_message(message):
+    if not isinstance(message, dict):
+        return False
+
+    if str(message.get('role') or '').lower() != 'assistant':
+        return False
+
+    if bool(message.get('is_final_response', False)):
+        return True
+
+    role_name = str(message.get('role_name') or '').strip().lower()
+    if 'final response' in role_name:
+        return True
+
+    bot_name = str(message.get('bot_name') or '').strip().lower()
+    return 'leader' in bot_name and 'final response' in bot_name
+
+
+def _build_prompt_chat_history(messages, end_index, history_context_mode):
+    """Build model prompt history from persisted conversation messages."""
+    history = []
+    safe_end = max(0, int(end_index or 0))
+
+    for msg in (messages or [])[:safe_end]:
+        if not isinstance(msg, dict):
+            continue
+
+        role = str(msg.get('role') or '').lower()
+        if role == 'user':
+            raw = msg.get('raw_markdown')
+            text = raw if isinstance(raw, str) and raw else msg.get('content', '')
+            history.append({'role': 'user', 'content': text})
+            continue
+
+        if role != 'assistant':
+            continue
+
+        if history_context_mode == 'final_only' and not _is_final_response_history_message(msg):
+            continue
+
+        raw = msg.get('raw_markdown')
+        text = raw if isinstance(raw, str) and raw else msg.get('content', '')
+        history.append({'role': 'assistant', 'content': text})
+
+    return history
+
+
 def _normalize_task_distribution(tasks):
     normalized = dict(tasks) if isinstance(tasks, dict) else {}
 
@@ -3176,17 +3230,23 @@ def handle_message_task(data, conversation_id):
         'timestamp': datetime.now().strftime("%H:%M:%S")
     })
 
-    # Build chat history (exclude current user message)
-    chat_history = [
-        {"role": msg["role"], "content": msg["content"]}
-        for msg in conv['messages'][:current_user_index]
-    ]
-
     # Load council config
     config = load_config()
+    history_context_mode = _normalize_history_context_mode(config.get('history_context_mode', 'final_only'))
+
+    # Build chat history (exclude current user message) using configured prompt policy.
+    chat_history = _build_prompt_chat_history(
+        conv.get('messages', []),
+        current_user_index,
+        history_context_mode
+    )
+
     timestamp = datetime.now().strftime("%H:%M:%S")
     emit_chat('console_log', {
-        'message': f"[{timestamp}] Council workflow started (mode: {workflow_mode})"
+        'message': (
+            f"[{timestamp}] Council workflow started (mode: {workflow_mode}, "
+            f"history: {history_context_mode})"
+        )
     })
     leader_skills_context = ''
 

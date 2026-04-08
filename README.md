@@ -87,9 +87,15 @@ Example:
   "Creator": "claude-sonnet-4-6",
   "Analyzer": "gpt-4o",
   "Verifier": "gpt-4o",
-  "MemWriter": "claude-sonnet-4-6"
+  "MemWriter": "claude-sonnet-4-6",
+  "history_context_mode": "final_only"
 }
 ```
+
+`history_context_mode` controls what prior assistant outputs are sent back into later model calls:
+
+- `final_only` (recommended): include only prior Leader final responses plus user turns
+- `all`: include all prior assistant outputs (task distribution + subroles + final)
 
 ### 2. Model registry
 
