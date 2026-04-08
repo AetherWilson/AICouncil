@@ -204,7 +204,11 @@ def _replace_conversation_messages_from_ui(conversation_id, messages):
                 role_name=(msg.get('role_name') if isinstance(msg, dict) else None),
                 thinking=(msg.get('thinking') if isinstance(msg, dict) else '') or '',
                 stream_status=(msg.get('stream_status') if isinstance(msg, dict) else '') or '',
-                is_final_response=bool(msg.get('is_final_response', False)) if isinstance(msg, dict) else False
+                is_final_response=bool(msg.get('is_final_response', False)) if isinstance(msg, dict) else False,
+                target_role=(msg.get('target_role') if isinstance(msg, dict) else None),
+                debate_cycle=(msg.get('debate_cycle') if isinstance(msg, dict) else None),
+                event_kind=(msg.get('event_kind') if isinstance(msg, dict) else None),
+                is_subrole_hidden=bool(msg.get('is_subrole_hidden', False)) if isinstance(msg, dict) else False
             )
 
     _sync_run_group_counter(conversation_id, normalized_messages)
@@ -1977,7 +1981,11 @@ def _history_to_ui_messages(conversation_id):
             'role_name': msg.get('role_name'),
             'thinking': msg.get('thinking', ''),
             'stream_status': msg.get('stream_status', ''),
-            'is_final_response': bool(msg.get('is_final_response', False))
+            'is_final_response': bool(msg.get('is_final_response', False)),
+            'target_role': msg.get('target_role'),
+            'debate_cycle': msg.get('debate_cycle'),
+            'event_kind': msg.get('event_kind'),
+            'is_subrole_hidden': bool(msg.get('is_subrole_hidden', False))
         })
 
     return ui_messages
@@ -2041,9 +2049,17 @@ def _conversation_documents_to_ui(conversation_id):
         for doc in conv.get('uploaded_documents', {}).values()
     ]
 
-def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, support_pdf_input=False, on_stream_progress=None, _retry=False, _timeout_fallback_used=False, _fallback_used=False, internal_orchestration=False):
+def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, support_pdf_input=False, on_stream_progress=None, _retry=False, _timeout_fallback_used=False, _fallback_used=False, internal_orchestration=False, stream_context=None):
+    safe_stream_context = {
+        key: value
+        for key, value in dict(stream_context or {}).items()
+        if value is not None
+    }
+
     def emit_chat(event, payload=None):
         enriched = dict(payload or {})
+        for key, value in safe_stream_context.items():
+            enriched.setdefault(key, value)
         enriched['chat_id'] = conversation_id
         socketio.emit(event, enriched, to=conversation_id)
 
@@ -2109,7 +2125,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
             model_id=model_id,
             thinking='',
             stream_status='running',
-            is_final_response=is_final_response
+            is_final_response=is_final_response,
+            **safe_stream_context
         )
         conv['pending_message_id'] = pending_message_id
 
@@ -2242,7 +2259,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 conversation_id,
                 pending_message_id,
                 raw_markdown=timeout_notice,
-                stream_status='timed_out'
+                stream_status='timed_out',
+                **safe_stream_context
             )
             emit_chat('ai_response_end', {
                 'bot_name': role_label,
@@ -2296,7 +2314,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                     _retry=False,
                     _timeout_fallback_used=True,
                     _fallback_used=True,
-                    internal_orchestration=internal_orchestration
+                    internal_orchestration=internal_orchestration,
+                    stream_context=safe_stream_context
                 )
             return ''
 
@@ -2332,7 +2351,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 pending_message_id,
                 thinking=thinking_converted,
                 raw_markdown=partial_converted,
-                stream_status='stopped'
+                stream_status='stopped',
+                **safe_stream_context
             )
             if conv.get('pending_message_id') == pending_message_id:
                 conv['pending_message_id'] = None
@@ -2376,7 +2396,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
             pending_message_id,
             thinking=thinking_converted,
             raw_markdown=converted_response,
-            stream_status='done'
+            stream_status='done',
+            **safe_stream_context
         )
 
         # Status done
@@ -2408,7 +2429,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 _retry=True,
                 _timeout_fallback_used=_timeout_fallback_used,
                 _fallback_used=_fallback_used,
-                internal_orchestration=internal_orchestration
+                internal_orchestration=internal_orchestration,
+                stream_context=safe_stream_context
             )
 
         fallback_model_id = str(load_config().get('FallBacker', '') or '').strip()
@@ -2437,7 +2459,8 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 _retry=False,
                 _timeout_fallback_used=_timeout_fallback_used,
                 _fallback_used=True,
-                internal_orchestration=internal_orchestration
+                internal_orchestration=internal_orchestration,
+                stream_context=safe_stream_context
             )
 
         # Second failure — skip this role
@@ -2618,7 +2641,11 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
             run_group_id=run_group_id,
             support_images=verifier_info.get('support_images', False),
             support_pdf_input=verifier_info.get('support_pdf_input', False),
-            on_stream_progress=auto_save_chat
+            on_stream_progress=auto_save_chat,
+            stream_context={
+                'event_kind': 'verifier_questioning',
+                'debate_cycle': cycle
+            }
         )
         if stop_if_aborted():
             return ''
@@ -2716,7 +2743,12 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
                 run_group_id=run_group_id,
                 support_images=role_info.get('support_images', False),
                 support_pdf_input=role_info.get('support_pdf_input', False),
-                on_stream_progress=auto_save_chat
+                on_stream_progress=auto_save_chat,
+                stream_context={
+                    'event_kind': 'debate_rebuttal',
+                    'target_role': role_name,
+                    'debate_cycle': cycle
+                }
             )
             if rebuttal_response is None:
                 continue
@@ -2776,7 +2808,12 @@ def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config
                 run_group_id=run_group_id,
                 support_images=verifier_info.get('support_images', False),
                 support_pdf_input=verifier_info.get('support_pdf_input', False),
-                on_stream_progress=auto_save_chat
+                on_stream_progress=auto_save_chat,
+                stream_context={
+                    'event_kind': 'verifier_verdict',
+                    'target_role': role_name,
+                    'debate_cycle': cycle
+                }
             )
             verdict = _parse_step_c_payload_strict(step_c_raw)
             if verdict is None:
@@ -3044,16 +3081,15 @@ def handle_message_task(data, conversation_id):
         verifier_task = clean_task_value('verifier_task')
         direct_response_preview = str(tasks_payload.get('direct_response', '') or '').strip()
 
-        summary_lines = [
-            'Structured routing summary:',
-            f'- Analysis: {analysis_text}',
-            f'- Researcher: {researcher_task}',
-            f'- Creator: {creator_task}',
-            f'- Analyzer: {analyzer_task}',
-            f'- Verifier: {verifier_task}',
-            f"- Direct response present: {'Yes' if direct_response_preview else 'No'}"
-        ]
-        summary_text = '\n'.join(summary_lines)
+        summary_payload = {
+            'analysis': analysis_text,
+            'researcher_task': researcher_task,
+            'creator_task': creator_task,
+            'analyzer_task': analyzer_task,
+            'verifier_task': verifier_task,
+            'direct_response': direct_response_preview
+        }
+        summary_text = json.dumps(summary_payload, ensure_ascii=False, indent=2)
 
         message_id = uuid.uuid4().hex
         bot_id = f"council-leader-distribution-{uuid.uuid4().hex[:8]}"
@@ -3074,7 +3110,8 @@ def handle_message_task(data, conversation_id):
             model_id=model_id,
             thinking='',
             stream_status='done',
-            is_final_response=False
+            is_final_response=False,
+            event_kind='task_distribution'
         )
 
         emit_chat('ai_response_start', {
@@ -3086,7 +3123,8 @@ def handle_message_task(data, conversation_id):
             'run_group_id': run_group_id,
             'role_name': 'Leader',
             'model_id': model_id,
-            'is_final_response': False
+            'is_final_response': False,
+            'event_kind': 'task_distribution'
         })
 
         emit_chat('ai_response_end', {
@@ -3100,7 +3138,8 @@ def handle_message_task(data, conversation_id):
             'run_group_id': run_group_id,
             'role_name': 'Leader',
             'model_id': model_id,
-            'is_final_response': False
+            'is_final_response': False,
+            'event_kind': 'task_distribution'
         })
 
         auto_save_chat()

@@ -669,6 +669,10 @@
             position: relative;
         }
 
+        .message.subrole-hidden {
+            display: none !important;
+        }
+
         .stream-cursor {
             display: inline-block;
             width: 2px;
@@ -744,136 +748,534 @@
             display: block;
         }
 
-        /* ── Task Distribution Card ── */
+        /* ── Task Distribution Visual Board ── */
         .task-distribution {
             display: flex;
             flex-direction: column;
-            gap: 8px;
-            border-left: 2px solid #3b4b5c;
-            padding-left: 10px;
-            margin: 6px 0 10px;
-        }
-
-        .task-dist-analysis {
-            background: transparent;
-            border: none;
-            border-radius: 0;
-            padding: 0;
-            font-size: 0.88em;
-            color: #a4b0bf;
-            line-height: 1.45;
-        }
-
-        .task-dist-analysis-label {
-            font-size: 0.68em;
-            text-transform: uppercase;
-            letter-spacing: 0.09em;
-            color: #7f8d9d;
-            font-weight: 700;
-            margin-bottom: 4px;
+            gap: 12px;
+            border: 1px solid #2d3e52;
+            border-radius: 12px;
+            background: linear-gradient(150deg, #111821 0%, #0f141b 100%);
+            padding: 12px;
+            margin: 8px 0 12px;
         }
 
         .task-dist-summary {
             display: flex;
-            align-items: center;
-            gap: 8px;
+            justify-content: space-between;
+            gap: 10px;
             flex-wrap: wrap;
-            color: #d4dde8;
-            font-size: 0.86em;
-            line-height: 1.3;
+            align-items: flex-start;
         }
 
-        .task-dist-summary strong {
-            color: #9cdcfe;
+        .task-dist-title {
+            color: #dce9fb;
+            font-size: 0.92em;
             font-weight: 700;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+
+        .task-dist-subtitle {
+            color: #8ba0bd;
+            font-size: 0.76em;
+            margin-top: 2px;
+        }
+
+        .task-dist-chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
         }
 
         .task-dist-chip {
-            border: 1px solid #3d4f65;
+            border: 1px solid #3a506c;
             border-radius: 999px;
-            padding: 1px 8px;
-            color: #a7c4e6;
+            padding: 2px 8px;
+            color: #b4cee8;
+            font-size: 0.7em;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            background: #121e2b;
+        }
+
+        .task-dist-analysis {
+            font-size: 0.84em;
+            color: #a9b7c9;
+            line-height: 1.45;
+            border: 1px solid #2a394b;
+            border-radius: 8px;
+            padding: 8px 10px;
+            background: #0f151d;
+        }
+
+        .task-dist-analysis-label {
+            font-size: 0.66em;
+            text-transform: uppercase;
+            letter-spacing: 0.09em;
+            color: #8296af;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .task-dist-role-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(180px, 1fr));
+            gap: 8px;
+        }
+
+        .task-subrole-card {
+            border: 1px solid #30445a;
+            border-radius: 10px;
+            padding: 10px;
+            background: linear-gradient(165deg, #141d28 0%, #101721 100%);
+            text-align: left;
+            color: #dde7f6;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            width: 100%;
+            cursor: pointer;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+        }
+
+        .task-subrole-card:hover {
+            border-color: #5b80aa;
+            box-shadow: 0 5px 16px rgba(36, 78, 120, 0.25);
+            transform: translateY(-1px);
+        }
+
+        .task-subrole-card[data-clickable="false"] {
+            cursor: default;
+            opacity: 0.7;
+            box-shadow: none;
+            transform: none;
+        }
+
+        .task-subrole-card.active-overlay {
+            border-color: #8bc7ff;
+            box-shadow: 0 0 0 1px rgba(139, 199, 255, 0.75), 0 8px 22px rgba(42, 95, 150, 0.34);
+        }
+
+        .task-subrole-top {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .task-subrole-light {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #586678;
+            flex-shrink: 0;
+            transition: all 0.25s ease;
+        }
+
+        .task-subrole-light.waiting {
+            background: #ffd700;
+            box-shadow: 0 0 4px #ffd700;
+        }
+
+        .task-subrole-light.running {
+            background: #ffd700;
+            box-shadow: 0 0 8px #ffd700, 0 0 12px #ffd700;
+            animation: glow-yellow 1.5s infinite;
+        }
+
+        .task-subrole-light.done {
+            background: #00ff00;
+            box-shadow: 0 0 6px #00ff00;
+        }
+
+        .task-subrole-light.error {
+            background: #ff0000;
+            box-shadow: 0 0 8px #ff0000;
+        }
+
+        .task-subrole-light.stopped {
+            background: #f07c31;
+            box-shadow: 0 0 6px #f07c31;
+        }
+
+        .task-subrole-light.skipped {
+            background: #808892;
+            box-shadow: 0 0 3px #808892;
+        }
+
+        .task-subrole-name {
+            font-size: 0.8em;
+            font-weight: 700;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+            color: #acd0f0;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .task-subrole-model {
+            font-size: 0.66em;
+            color: #7f95b1;
+            letter-spacing: 0.03em;
+            border: 1px solid #2f3f54;
+            border-radius: 999px;
+            padding: 1px 7px;
+            background: #0f1823;
+            white-space: nowrap;
+            max-width: 42%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .task-subrole-status {
+            margin-left: auto;
+            color: #9db5d2;
+            font-size: 0.68em;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .task-subrole-task {
+            color: #d3deed;
+            font-size: 0.83em;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+            min-height: 2.6em;
+        }
+
+        .task-subrole-card[data-clickable="false"] .task-subrole-task {
+            color: #8b96a4;
+        }
+
+        .task-subrole-open-hint {
+            color: #8faccd;
+            font-size: 0.65em;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            opacity: 0.6;
+        }
+
+        .subrole-overlay-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(4, 6, 10, 0.58);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.25s ease;
+            z-index: 1250;
+        }
+
+        .subrole-overlay-backdrop.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .subrole-overlay-panel {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            bottom: 10px;
+            width: 50vw;
+            max-width: calc(100vw - 20px);
+            background: #0f1218;
+            border: 1px solid #2c3440;
+            border-radius: 12px;
+            box-shadow: -12px 0 28px rgba(0, 0, 0, 0.38);
+            transform: translateX(104%);
+            transition: transform 0.28s ease;
+            z-index: 1260;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .subrole-overlay-panel.open {
+            transform: translateX(0);
+        }
+
+        .subrole-overlay-header {
+            padding: 14px 16px;
+            border-bottom: 1px solid #243043;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            background: linear-gradient(180deg, #131926 0%, #101621 100%);
+        }
+
+        .subrole-overlay-heading {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            min-width: 0;
+        }
+
+        .subrole-overlay-title {
+            font-size: 0.96em;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            color: #dce9fb;
+            text-transform: uppercase;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .subrole-overlay-subtitle {
+            font-size: 0.74em;
+            color: #93a7c0;
+            margin-top: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .subrole-overlay-close {
+            border: 1px solid #31465d;
+            background: #132033;
+            color: #c9ddf5;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 0.72em;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        .subrole-overlay-close:hover {
+            background: #1a2a42;
+        }
+
+        .subrole-overlay-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 14px 16px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            min-height: 0;
+        }
+
+        .subrole-overlay-section {
+            border: 1px solid #273445;
+            border-radius: 10px;
+            background: #111722;
+            padding: 10px 12px;
+        }
+
+        .subrole-overlay-section h4 {
+            margin: 0 0 7px;
+            color: #9dc4ea;
+            font-size: 0.72em;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .subrole-overlay-text {
+            color: #d7e1ef;
+            font-size: 0.88em;
+            line-height: 1.48;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            min-width: 0;
+            max-width: 100%;
+        }
+
+        .subrole-overlay-text > * {
+            max-width: 100%;
+        }
+
+        .subrole-overlay-text > *:first-child {
+            margin-top: 0;
+        }
+
+        .subrole-overlay-text > *:last-child {
+            margin-bottom: 0;
+        }
+
+        .subrole-overlay-text h1,
+        .subrole-overlay-text h2,
+        .subrole-overlay-text h3,
+        .subrole-overlay-text h4,
+        .subrole-overlay-text h5,
+        .subrole-overlay-text h6 {
+            color: #dfe9f7;
+            line-height: 1.22;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        .subrole-overlay-text h1 { font-size: 1.55em; }
+        .subrole-overlay-text h2 { font-size: 1.35em; }
+        .subrole-overlay-text h3 { font-size: 1.18em; }
+        .subrole-overlay-text h4 { font-size: 1.04em; }
+        .subrole-overlay-text h5,
+        .subrole-overlay-text h6 { font-size: 0.96em; }
+
+        .subrole-overlay-text p,
+        .subrole-overlay-text li,
+        .subrole-overlay-text blockquote {
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        .subrole-overlay-text ul,
+        .subrole-overlay-text ol {
+            padding-left: 1.35em;
+        }
+
+        .subrole-overlay-text pre {
+            max-width: 100%;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        .subrole-overlay-text pre code {
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        .subrole-overlay-text code {
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        .subrole-overlay-text table {
+            display: block;
+            width: 100%;
+            max-width: 100%;
+            overflow-x: auto;
+        }
+
+        .subrole-overlay-text img,
+        .subrole-overlay-text svg,
+        .subrole-overlay-text canvas {
+            max-width: 100%;
+            height: auto;
+        }
+
+        .subrole-overlay-thinking {
+            color: #a9b8c9;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.82em;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            max-height: 260px;
+            overflow: auto;
+        }
+
+        .subrole-verdict-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .subrole-verdict-item {
+            border: 1px solid #2f4359;
+            border-radius: 8px;
+            padding: 8px 10px;
+            background: #121d2c;
+        }
+
+        .subrole-verdict-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 6px;
+            color: #a9c6e4;
             font-size: 0.72em;
             letter-spacing: 0.05em;
             text-transform: uppercase;
         }
 
-        .task-dist-toggle {
-            margin-left: auto;
-            border: none;
-            background: transparent;
-            color: #8fb2d8;
-            font-size: 0.75em;
-            letter-spacing: 0.08em;
+        .subrole-verdict-reason {
+            color: #d6e3f4;
+            font-size: 0.84em;
+            line-height: 1.44;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .subrole-verdict-section {
+            margin-top: 8px;
+            border-top: 1px solid #26384e;
+            padding-top: 8px;
+        }
+
+        .subrole-verdict-section-title {
+            color: #9ec0e2;
+            font-size: 0.72em;
+            letter-spacing: 0.06em;
             text-transform: uppercase;
-            cursor: pointer;
-            padding: 0;
+            margin-bottom: 6px;
         }
 
-        .task-dist-toggle:hover {
-            color: #b8d3ef;
+        .subrole-verdict-point {
+            border: 1px solid #2b4058;
+            border-radius: 6px;
+            padding: 6px 8px;
+            background: #0f1826;
+            margin-bottom: 6px;
         }
 
-        .task-dist-details {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 6px;
+        .subrole-verdict-point:last-child {
+            margin-bottom: 0;
         }
 
-        .task-dist-details.collapsed {
-            display: none;
-        }
-
-        .task-dist-item {
-            display: flex;
-            align-items: flex-start;
-            gap: 8px;
-            padding: 3px 0;
-            border: none;
-            background: transparent;
-            border-radius: 0;
-        }
-
-        .task-dist-state-dot {
-            width: 7px;
-            height: 7px;
-            border-radius: 999px;
-            margin-top: 7px;
-            background: #4ec9b0;
-            flex-shrink: 0;
-            opacity: 0.9;
-        }
-
-        .task-dist-item.skipped .task-dist-state-dot {
-            background: #586270;
-            opacity: 0.7;
-        }
-
-        .task-dist-item-body {
-            min-width: 0;
-        }
-
-        .task-dist-role-name {
+        .subrole-verdict-point-head {
+            color: #b6d1ee;
             font-size: 0.74em;
-            font-weight: 700;
+            letter-spacing: 0.04em;
             text-transform: uppercase;
-            letter-spacing: 0.07em;
-            color: #8fb2d8;
-            margin-bottom: 2px;
+            margin-bottom: 4px;
         }
 
-        .task-dist-item.skipped .task-dist-role-name {
-            color: #627180;
+        .subrole-verdict-point-body {
+            color: #d6e3f4;
+            font-size: 0.82em;
+            line-height: 1.42;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: anywhere;
         }
 
-        .task-dist-task-text {
-            font-size: 0.9em;
-            color: #d6dde7;
-            line-height: 1.45;
+        .subrole-empty {
+            color: #8398b2;
+            font-size: 0.84em;
+            font-style: italic;
         }
 
-        .task-dist-item.skipped .task-dist-task-text {
-            color: #7f8a97;
+        @media (max-width: 1024px) {
+            .task-dist-role-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .subrole-overlay-panel {
+                top: 0;
+                right: 0;
+                bottom: 0;
+                width: 100vw;
+                max-width: 100vw;
+                border-radius: 0;
+                border-left: none;
+                border-right: none;
+            }
         }
 
         /* ── Structured Council Output Cards ── */
@@ -2083,6 +2485,23 @@
         </div>
     </div>
 
+    <div class="subrole-overlay-backdrop" id="subroleOverlayBackdrop" onclick="closeSubroleOverlay()"></div>
+    <aside class="subrole-overlay-panel" id="subroleOverlayPanel" aria-hidden="true">
+        <div class="subrole-overlay-header">
+            <div class="subrole-overlay-heading">
+                <span class="task-subrole-light" id="subroleOverlayLight"></span>
+                <div>
+                    <div class="subrole-overlay-title" id="subroleOverlayTitle">Subrole Output</div>
+                    <div class="subrole-overlay-subtitle" id="subroleOverlaySubtitle">Select a subrole card to inspect details</div>
+                </div>
+            </div>
+            <button class="subrole-overlay-close" type="button" onclick="closeSubroleOverlay()">Close</button>
+        </div>
+        <div class="subrole-overlay-body" id="subroleOverlayBody">
+            <div class="subrole-empty">Select a role from the task distribution board to open its output panel.</div>
+        </div>
+    </aside>
+
     <script>
         const socket = io();
         const WORKFLOW_MODES = ['auto', 'fast', 'heavy'];
@@ -2091,6 +2510,8 @@
             fast: '⚡',
             heavy: '💡'
         };
+        const TASK_DISTRIBUTION_ROLES = ['Researcher', 'Creator', 'Analyzer', 'Verifier'];
+        const SUBROLE_STATUS_VALUES = ['waiting', 'running', 'done', 'error', 'skipped', 'stopped'];
         let uploadedPDFs = [];
         const pendingUploadCleanup = {};
         const pendingUploadKeys = new Set();
@@ -2210,6 +2631,11 @@
 
         function handleWorkflowOverlayEscape(evt) {
             if (evt.key === 'Escape') {
+                const panel = document.getElementById('subroleOverlayPanel');
+                if (panel && panel.classList.contains('open')) {
+                    closeSubroleOverlay();
+                    return;
+                }
                 closeWorkflowModeOverlay();
             }
         }
@@ -2233,6 +2659,15 @@
                         new_run_pending: false,
                         active_run_group_id: null,
                         group_container_ids: {}
+                    },
+                    subrole_tracking: {
+                        runs: {},
+                        last_run_group_id: null,
+                        overlay: {
+                            open: false,
+                            run_group_id: null,
+                            role_name: null
+                        }
                     }
                 };
             }
@@ -2253,6 +2688,691 @@
                 return window.CSS.escape(String(value));
             }
             return String(value).replace(/(["\\])/g, '\\$1');
+        }
+
+        function normalizeSubroleRoleName(role) {
+            const raw = String(role || '').trim().toLowerCase().replace(/\s+/g, '_');
+            const mapping = {
+                researcher: 'Researcher',
+                creator: 'Creator',
+                creative_writer: 'Creator',
+                analyzer: 'Analyzer',
+                verifier: 'Verifier'
+            };
+            return mapping[raw] || '';
+        }
+
+        function getConfiguredSubroleModelName(roleName) {
+            const normalized = normalizeSubroleRoleName(roleName);
+            if (!normalized || !councilRoles || typeof councilRoles !== 'object') return '';
+
+            const roleLookup = {
+                Researcher: ['Researcher'],
+                Creator: ['Creator', 'Creative_Writer'],
+                Analyzer: ['Analyzer'],
+                Verifier: ['Verifier']
+            };
+
+            const candidates = roleLookup[normalized] || [normalized];
+            for (const key of candidates) {
+                const info = councilRoles[key];
+                if (!info || typeof info !== 'object') continue;
+                const modelName = String(info.model_name || info.model_id || '').trim();
+                if (modelName) return modelName;
+            }
+
+            return '';
+        }
+
+        function resolveSubroleModelLabel(roleName, roleState = null) {
+            const liveModel = String(roleState && roleState.model_id ? roleState.model_id : '').trim();
+            if (liveModel) return liveModel;
+            return getConfiguredSubroleModelName(roleName);
+        }
+
+        function normalizeSubroleStatus(status, fallback = 'waiting') {
+            const normalized = String(status || '').trim().toLowerCase();
+            if (SUBROLE_STATUS_VALUES.includes(normalized)) {
+                return normalized;
+            }
+            return fallback;
+        }
+
+        function createEmptySubroleRecord(roleName) {
+            return {
+                role_name: roleName,
+                task_text: 'SKIP',
+                assigned: false,
+                status: 'skipped',
+                output_text: '',
+                thinking_text: '',
+                sender: '',
+                model_id: '',
+                run_id: null,
+                message_id: null,
+                stream_status: '',
+                verdicts: []
+            };
+        }
+
+        function resetSubroleTrackingState(state) {
+            if (!state) return;
+            state.subrole_tracking = {
+                runs: {},
+                last_run_group_id: null,
+                overlay: {
+                    open: false,
+                    run_group_id: null,
+                    role_name: null
+                }
+            };
+        }
+
+        function resolveSubroleRunGroupId(chatId, runGroupId) {
+            if (runGroupId) return String(runGroupId);
+            const state = ensureConversation(chatId);
+            if (!state) return null;
+            if (state.subrole_tracking && state.subrole_tracking.last_run_group_id) {
+                return state.subrole_tracking.last_run_group_id;
+            }
+            if (state.thinking_process && state.thinking_process.active_run_group_id) {
+                return state.thinking_process.active_run_group_id;
+            }
+            return null;
+        }
+
+        function ensureSubroleRunState(chatId, runGroupId) {
+            const state = ensureConversation(chatId);
+            if (!state) return null;
+            const resolvedRunGroupId = resolveSubroleRunGroupId(chatId, runGroupId)
+                || `rungrp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+            if (!state.subrole_tracking.runs[resolvedRunGroupId]) {
+                const roleMap = {};
+                TASK_DISTRIBUTION_ROLES.forEach((roleName) => {
+                    roleMap[roleName] = createEmptySubroleRecord(roleName);
+                });
+                state.subrole_tracking.runs[resolvedRunGroupId] = {
+                    run_group_id: resolvedRunGroupId,
+                    analysis: '',
+                    direct_response: '',
+                    roles: roleMap,
+                    unassigned_verdicts: []
+                };
+            }
+
+            state.subrole_tracking.last_run_group_id = resolvedRunGroupId;
+            return state.subrole_tracking.runs[resolvedRunGroupId];
+        }
+
+        function ensureSubroleRoleState(chatId, runGroupId, roleName) {
+            const normalizedRole = normalizeSubroleRoleName(roleName);
+            if (!normalizedRole) return null;
+            const runState = ensureSubroleRunState(chatId, runGroupId);
+            if (!runState) return null;
+            if (!runState.roles[normalizedRole]) {
+                runState.roles[normalizedRole] = createEmptySubroleRecord(normalizedRole);
+            }
+            return runState.roles[normalizedRole];
+        }
+
+        function normalizeTaskText(taskValue) {
+            const text = String(taskValue || '').trim();
+            return text ? text : 'SKIP';
+        }
+
+        function applyTaskDistributionState(chatId, runGroupId, tasks) {
+            const runState = ensureSubroleRunState(chatId, runGroupId);
+            if (!runState || !tasks || typeof tasks !== 'object') return runState;
+
+            runState.analysis = String(tasks.analysis || '').trim();
+            runState.direct_response = String(tasks.direct_response || '').trim();
+
+            const roleConfig = [
+                { role: 'Researcher', key: 'researcher_task' },
+                { role: 'Creator', key: 'creator_task' },
+                { role: 'Analyzer', key: 'analyzer_task' },
+                { role: 'Verifier', key: 'verifier_task' }
+            ];
+
+            roleConfig.forEach(({ role, key }) => {
+                const roleState = ensureSubroleRoleState(chatId, runState.run_group_id, role);
+                if (!roleState) return;
+                const taskText = normalizeTaskText(tasks[key]);
+                const isSkip = taskText.toUpperCase() === 'SKIP';
+                roleState.task_text = taskText;
+                roleState.assigned = !isSkip;
+                if (isSkip) {
+                    roleState.status = 'skipped';
+                } else if (roleState.status === 'skipped') {
+                    roleState.status = 'waiting';
+                }
+            });
+
+            return runState;
+        }
+
+        function statusLabel(status) {
+            const normalized = normalizeSubroleStatus(status, 'waiting');
+            const labels = {
+                waiting: 'Waiting',
+                running: 'Running',
+                done: 'Done',
+                error: 'Error',
+                skipped: 'Skipped',
+                stopped: 'Stopped'
+            };
+            return labels[normalized] || 'Waiting';
+        }
+
+        function isSubroleCardClickable(roleState) {
+            if (!roleState) return false;
+            return !!roleState.assigned && String(roleState.task_text || '').toUpperCase() !== 'SKIP';
+        }
+
+        function refreshTaskDistributionCards(chatId, runGroupId = null) {
+            const activeChatId = getActiveChatId();
+            if (!chatId || chatId !== activeChatId) return;
+            const conversationWindow = getConvWindow();
+            if (!conversationWindow) return;
+
+            const state = ensureConversation(chatId);
+            if (!state || !state.subrole_tracking) return;
+
+            const selector = runGroupId
+                ? `.task-subrole-card[data-run-group-id="${escapeForAttributeSelector(runGroupId)}"]`
+                : '.task-subrole-card[data-run-group-id]';
+
+            conversationWindow.querySelectorAll(selector).forEach((card) => {
+                const cardRunGroupId = card.getAttribute('data-run-group-id');
+                const cardRole = card.getAttribute('data-subrole-role');
+                const runState = state.subrole_tracking.runs[cardRunGroupId];
+                const roleState = runState && runState.roles ? runState.roles[cardRole] : null;
+                if (!roleState) return;
+
+                const status = normalizeSubroleStatus(roleState.status, roleState.assigned ? 'waiting' : 'skipped');
+                const clickable = isSubroleCardClickable(roleState);
+                const light = card.querySelector('[data-subrole-light]');
+                const statusEl = card.querySelector('[data-subrole-status]');
+                const taskEl = card.querySelector('[data-subrole-task]');
+                const hintEl = card.querySelector('[data-subrole-hint]');
+                const modelEl = card.querySelector('[data-subrole-model]');
+                const modelLabel = resolveSubroleModelLabel(cardRole, roleState);
+
+                if (light) light.className = `task-subrole-light ${status}`;
+                if (statusEl) statusEl.textContent = statusLabel(status);
+                if (taskEl) taskEl.textContent = roleState.task_text || 'SKIP';
+                if (hintEl) hintEl.textContent = clickable ? 'Open Live Output' : 'Not Assigned';
+                if (modelEl) {
+                    modelEl.textContent = modelLabel || 'Model pending';
+                    modelEl.title = modelLabel || '';
+                }
+
+                card.dataset.clickable = clickable ? 'true' : 'false';
+                card.disabled = !clickable;
+
+                const overlay = state.subrole_tracking.overlay || {};
+                const isSelected = !!overlay.open
+                    && overlay.run_group_id === cardRunGroupId
+                    && overlay.role_name === cardRole;
+                card.classList.toggle('active-overlay', isSelected);
+            });
+        }
+
+        function buildVerdictTimelineHtml(verdicts) {
+            if (!Array.isArray(verdicts) || verdicts.length === 0) {
+                return '<div class="subrole-empty">No verifier verdict yet.</div>';
+            }
+
+            return `<div class="subrole-verdict-list">${verdicts.map((item) => {
+                const doubtPoints = Array.isArray(item.doubt_points) ? item.doubt_points : [];
+                const rebuttals = Array.isArray(item.rebuttals) ? item.rebuttals : [];
+                const verdict = String(item.verdict || '').toLowerCase();
+                const hasVerdict = ['accept', 'partially_accept', 'reject'].includes(verdict);
+                const badgeClass = hasVerdict ? verdict : 'reject';
+                const cycleText = Number.isFinite(Number(item.cycle)) ? `Cycle ${Number(item.cycle)}` : 'Cycle ?';
+                const confidenceText = formatConfidenceText(item.updated_confidence);
+                const reason = escapeHtml(String(item.reason || '').trim() || 'No reason provided.');
+                const nextAction = escapeHtml(String(item.next_action || '').trim() || 'n/a');
+
+                const doubtsHtml = doubtPoints.length
+                    ? doubtPoints.map((point) => {
+                        const pointId = escapeHtml(String(point.point_id || 'P?'));
+                        const severity = escapeHtml(String(point.severity || 'minor'));
+                        const doubt = escapeHtml(String(point.doubt || '').trim() || 'No detail provided.');
+                        return `
+                            <div class="subrole-verdict-point">
+                                <div class="subrole-verdict-point-head">${pointId} • ${severity}</div>
+                                <div class="subrole-verdict-point-body">${doubt}</div>
+                            </div>`;
+                    }).join('')
+                    : '<div class="subrole-empty">No verifier doubts captured.</div>';
+
+                const rebuttalHtml = rebuttals.length
+                    ? rebuttals.map((reply) => {
+                        const pointId = escapeHtml(String(reply.point_id || 'P?'));
+                        const status = escapeHtml(String(reply.status || 'clarify'));
+                        const evidence = escapeHtml(String(reply.evidence || '').trim() || 'No evidence provided.');
+                        const updatedClaim = escapeHtml(String(reply.updated_claim || '').trim() || 'No updated claim provided.');
+                        return `
+                            <div class="subrole-verdict-point">
+                                <div class="subrole-verdict-point-head">${pointId} • ${status}</div>
+                                <div class="subrole-verdict-point-body"><strong>Evidence:</strong> ${evidence}</div>
+                                <div class="subrole-verdict-point-body" style="margin-top:4px;"><strong>Updated claim:</strong> ${updatedClaim}</div>
+                            </div>`;
+                    }).join('')
+                    : '<div class="subrole-empty">No rebuttal captured yet.</div>';
+
+                const verdictHtml = hasVerdict
+                    ? `
+                        <div class="subrole-verdict-head" style="margin-bottom:8px;">
+                            <span>Verifier Decision</span>
+                            <span class="structured-verdict-badge ${badgeClass}">${escapeHtml(verdict)}</span>
+                        </div>
+                        <div class="subrole-verdict-reason">${reason}</div>
+                        <div class="subrole-verdict-reason" style="margin-top:6px; opacity:0.9;">Next: ${nextAction}</div>
+                        <div class="subrole-verdict-reason" style="margin-top:4px; opacity:0.8;">Confidence: ${escapeHtml(confidenceText)}</div>`
+                    : '<div class="subrole-empty">No final verifier verdict yet.</div>';
+
+                return `
+                    <div class="subrole-verdict-item">
+                        <div class="subrole-verdict-head">
+                            <span>${escapeHtml(cycleText)}</span>
+                            <span>${doubtPoints.length} doubts • ${rebuttals.length} rebuttals</span>
+                        </div>
+                        <div class="subrole-verdict-section">
+                            <div class="subrole-verdict-section-title">Verifier Doubts</div>
+                            ${doubtsHtml}
+                        </div>
+                        <div class="subrole-verdict-section">
+                            <div class="subrole-verdict-section-title">Role Rebuttal</div>
+                            ${rebuttalHtml}
+                        </div>
+                        <div class="subrole-verdict-section">
+                            <div class="subrole-verdict-section-title">Verifier Verdict</div>
+                            ${verdictHtml}
+                        </div>
+                    </div>`;
+            }).join('')}</div>`;
+        }
+
+        function refreshSubroleOverlay(chatId = getActiveChatId()) {
+            const panel = document.getElementById('subroleOverlayPanel');
+            const body = document.getElementById('subroleOverlayBody');
+            const title = document.getElementById('subroleOverlayTitle');
+            const subtitle = document.getElementById('subroleOverlaySubtitle');
+            const light = document.getElementById('subroleOverlayLight');
+            if (!panel || !body || !title || !subtitle || !light) return;
+
+            const state = ensureConversation(chatId);
+            if (!state || !state.subrole_tracking) return;
+
+            const overlay = state.subrole_tracking.overlay || {};
+            if (!overlay.open || !overlay.run_group_id || !overlay.role_name) {
+                body.innerHTML = '<div class="subrole-empty">Select a role from the task distribution board to open its output panel.</div>';
+                title.textContent = 'Subrole Output';
+                subtitle.textContent = 'Select a subrole card to inspect details';
+                light.className = 'task-subrole-light';
+                return;
+            }
+
+            const runState = state.subrole_tracking.runs[overlay.run_group_id];
+            const roleState = runState && runState.roles ? runState.roles[overlay.role_name] : null;
+            if (!roleState) {
+                body.innerHTML = '<div class="subrole-empty">Role output is not available for this run.</div>';
+                title.textContent = overlay.role_name;
+                subtitle.textContent = `Run ${overlay.run_group_id}`;
+                light.className = 'task-subrole-light';
+                refreshTaskDistributionCards(chatId, overlay.run_group_id);
+                return;
+            }
+
+            const roleStatus = normalizeSubroleStatus(roleState.status, roleState.assigned ? 'waiting' : 'skipped');
+            const overlayModelLabel = resolveSubroleModelLabel(overlay.role_name, roleState);
+            title.textContent = overlayModelLabel
+                ? `${overlay.role_name} (${overlayModelLabel}) Output`
+                : `${overlay.role_name} Output`;
+            subtitle.textContent = `${statusLabel(roleStatus)} • Run ${overlay.run_group_id}`;
+            light.className = `task-subrole-light ${roleStatus}`;
+
+            const assignmentText = escapeHtml(roleState.task_text || 'SKIP');
+            const thinkingHtml = roleState.thinking_text
+                ? `<div class="subrole-overlay-thinking">${escapeHtml(roleState.thinking_text)}</div>`
+                : '<div class="subrole-empty">No thinking stream captured yet.</div>';
+            const outputHtml = roleState.output_text
+                ? formatMessage(roleState.output_text)
+                : '<div class="subrole-empty">No output yet.</div>';
+            const verdictHtml = buildVerdictTimelineHtml(roleState.verdicts);
+
+            body.innerHTML = `
+                <div class="subrole-overlay-section">
+                    <h4>Assigned Task</h4>
+                    <div class="subrole-overlay-text">${assignmentText}</div>
+                </div>
+                <div class="subrole-overlay-section">
+                    <h4>Thinking</h4>
+                    ${thinkingHtml}
+                </div>
+                <div class="subrole-overlay-section">
+                    <h4>Output</h4>
+                    <div class="subrole-overlay-text">${outputHtml}</div>
+                </div>
+                <div class="subrole-overlay-section">
+                    <h4>Verifier Verdict Timeline</h4>
+                    ${verdictHtml}
+                </div>
+            `;
+
+            setTimeout(() => {
+                renderLatex(body);
+                addCopyButtonsToCodeBlocks(body);
+            }, 10);
+
+            refreshTaskDistributionCards(chatId, overlay.run_group_id);
+        }
+
+        function openSubroleOverlay(runGroupId, roleName, chatId = getActiveChatId()) {
+            const normalizedRole = normalizeSubroleRoleName(roleName);
+            if (!chatId || !runGroupId || !normalizedRole) return;
+
+            const state = ensureConversation(chatId);
+            if (!state || !state.subrole_tracking) return;
+            ensureSubroleRoleState(chatId, runGroupId, normalizedRole);
+
+            state.subrole_tracking.overlay = {
+                open: true,
+                run_group_id: String(runGroupId),
+                role_name: normalizedRole
+            };
+
+            const backdrop = document.getElementById('subroleOverlayBackdrop');
+            const panel = document.getElementById('subroleOverlayPanel');
+            if (backdrop) backdrop.classList.add('open');
+            if (panel) {
+                panel.classList.add('open');
+                panel.setAttribute('aria-hidden', 'false');
+            }
+
+            refreshSubroleOverlay(chatId);
+        }
+
+        function closeSubroleOverlay(chatId = getActiveChatId()) {
+            Object.values(conversations).forEach((conv) => {
+                if (!conv || !conv.subrole_tracking || !conv.subrole_tracking.overlay) return;
+                conv.subrole_tracking.overlay.open = false;
+                conv.subrole_tracking.overlay.run_group_id = null;
+                conv.subrole_tracking.overlay.role_name = null;
+            });
+
+            const backdrop = document.getElementById('subroleOverlayBackdrop');
+            const panel = document.getElementById('subroleOverlayPanel');
+            if (backdrop) backdrop.classList.remove('open');
+            if (panel) {
+                panel.classList.remove('open');
+                panel.setAttribute('aria-hidden', 'true');
+            }
+
+            refreshTaskDistributionCards(chatId);
+        }
+
+        function openSubroleOverlayFromTaskCard(btn) {
+            if (!btn || btn.dataset.clickable !== 'true') return;
+            const runGroupId = btn.getAttribute('data-run-group-id');
+            const roleName = btn.getAttribute('data-subrole-role');
+            openSubroleOverlay(runGroupId, roleName);
+        }
+
+        function refreshSubroleVisualState(chatId, runGroupId = null) {
+            refreshTaskDistributionCards(chatId, runGroupId);
+            const state = ensureConversation(chatId);
+            if (!state || !state.subrole_tracking || !state.subrole_tracking.overlay.open) return;
+            refreshSubroleOverlay(chatId);
+        }
+
+        function recordSubroleStreamChunk(chatId, runGroupId, roleName, chunkType, chunkText, data = {}) {
+            const roleState = ensureSubroleRoleState(chatId, runGroupId, roleName);
+            if (!roleState) return;
+
+            const text = String(chunkText || '');
+            if (!text) return;
+            if (chunkType === 'thinking') {
+                roleState.thinking_text += text;
+            } else {
+                roleState.output_text += text;
+            }
+
+            roleState.sender = data.bot_name || roleState.sender;
+            roleState.model_id = data.model_id || roleState.model_id;
+            roleState.run_id = data.run_id || roleState.run_id;
+            roleState.message_id = data.message_id || roleState.message_id;
+            if (roleState.assigned && roleState.status === 'waiting') {
+                roleState.status = 'running';
+            }
+
+            refreshSubroleVisualState(chatId, runGroupId);
+        }
+
+        function finalizeSubroleOutputState(chatId, runGroupId, roleName, data = {}) {
+            const roleState = ensureSubroleRoleState(chatId, runGroupId, roleName);
+            if (!roleState) return;
+
+            roleState.sender = data.bot_name || roleState.sender;
+            roleState.model_id = data.model_id || roleState.model_id;
+            roleState.run_id = data.run_id || roleState.run_id;
+            roleState.message_id = data.message_id || roleState.message_id;
+            roleState.stream_status = data.stopped ? 'stopped' : 'done';
+
+            if (typeof data.message === 'string') {
+                roleState.output_text = data.message;
+            }
+            if (typeof data.thinking === 'string' && data.thinking.length > 0) {
+                roleState.thinking_text = data.thinking;
+            }
+
+            if (roleState.assigned) {
+                roleState.status = data.stopped ? 'stopped' : 'done';
+            }
+
+            refreshSubroleVisualState(chatId, runGroupId);
+        }
+
+        function extractDebateCycleFromText(text) {
+            const match = String(text || '').match(/\bC(\d+)\b/i);
+            return match ? Number(match[1]) : null;
+        }
+
+        function isDebateTimelineEventKind(eventKind) {
+            const normalized = String(eventKind || '').trim().toLowerCase();
+            return ['verifier_questioning', 'debate_rebuttal', 'verifier_verdict'].includes(normalized);
+        }
+
+        function isDebateTimelineSender(sender) {
+            const text = String(sender || '').toLowerCase();
+            return text.includes('debate questioning')
+                || text.includes('debate rebuttal')
+                || text.includes('debate verdict');
+        }
+
+        function inferDebateCycle(data = {}) {
+            const directCycle = Number(data.debate_cycle);
+            if (Number.isFinite(directCycle)) {
+                return directCycle;
+            }
+            return extractDebateCycleFromText(data.bot_name || data.sender || '');
+        }
+
+        function sortSubroleTimeline(roleState) {
+            if (!roleState || !Array.isArray(roleState.verdicts)) return;
+            roleState.verdicts.sort((a, b) => {
+                const cycleA = Number.isFinite(Number(a.cycle)) ? Number(a.cycle) : Number.MAX_SAFE_INTEGER;
+                const cycleB = Number.isFinite(Number(b.cycle)) ? Number(b.cycle) : Number.MAX_SAFE_INTEGER;
+                if (cycleA !== cycleB) return cycleA - cycleB;
+                return String(a.timestamp || '').localeCompare(String(b.timestamp || ''));
+            });
+        }
+
+        function ensureSubroleTimelineEntry(roleState, cycle, data = {}) {
+            if (!roleState || !Array.isArray(roleState.verdicts)) return null;
+            const numericCycle = Number(cycle);
+            const normalizedCycle = Number.isFinite(numericCycle) ? numericCycle : null;
+
+            let entry = null;
+            if (normalizedCycle !== null) {
+                entry = roleState.verdicts.find((item) => Number.isFinite(Number(item && item.cycle)) && Number(item.cycle) === normalizedCycle) || null;
+            }
+
+            if (!entry) {
+                entry = {
+                    cycle: normalizedCycle,
+                    doubt_points: [],
+                    rebuttals: [],
+                    verdict: '',
+                    reason: '',
+                    next_action: '',
+                    updated_confidence: null,
+                    timestamp: data.timestamp || new Date().toISOString(),
+                    questioning_message_id: null,
+                    rebuttal_message_id: null,
+                    verdict_message_id: null
+                };
+                roleState.verdicts.push(entry);
+            }
+
+            if (!entry.timestamp) {
+                entry.timestamp = data.timestamp || new Date().toISOString();
+            }
+
+            return entry;
+        }
+
+        function normalizeDoubtPoint(point, defaultTargetRole = '') {
+            const roleName = normalizeSubroleRoleName(point && point.target_role) || defaultTargetRole;
+            return {
+                point_id: String(point && point.point_id ? point.point_id : 'P?').trim() || 'P?',
+                target_role: roleName,
+                doubt: String(point && point.doubt ? point.doubt : '').trim(),
+                severity: String(point && point.severity ? point.severity : 'minor').trim().toLowerCase() || 'minor'
+            };
+        }
+
+        function addVerifierQuestioningToSubrole(chatId, runGroupId, payload, data = {}) {
+            if (!payload || !Array.isArray(payload.doubt_points)) return;
+
+            const cycle = inferDebateCycle(data);
+            const groupedByRole = {};
+            payload.doubt_points.forEach((point) => {
+                const normalized = normalizeDoubtPoint(point);
+                if (!normalized.target_role) return;
+                if (!groupedByRole[normalized.target_role]) {
+                    groupedByRole[normalized.target_role] = [];
+                }
+                groupedByRole[normalized.target_role].push(normalized);
+            });
+
+            Object.entries(groupedByRole).forEach(([targetRole, rolePoints]) => {
+                const roleState = ensureSubroleRoleState(chatId, runGroupId, targetRole);
+                if (!roleState) return;
+
+                const timelineEntry = ensureSubroleTimelineEntry(roleState, cycle, data);
+                if (!timelineEntry) return;
+
+                timelineEntry.doubt_points = rolePoints;
+                timelineEntry.confidence_in_doubt = payload.confidence_in_doubt;
+                timelineEntry.questioning_message_id = data.message_id || timelineEntry.questioning_message_id;
+                timelineEntry.timestamp = data.timestamp || timelineEntry.timestamp;
+                sortSubroleTimeline(roleState);
+            });
+
+            refreshSubroleVisualState(chatId, runGroupId);
+        }
+
+        function inferRebuttalTargetRole(data, payload = null) {
+            const directTarget = normalizeSubroleRoleName(data && data.target_role);
+            if (directTarget) return directTarget;
+
+            const roleNameTarget = normalizeSubroleRoleName(data && data.role_name);
+            if (roleNameTarget) return roleNameTarget;
+
+            if (payload && Array.isArray(payload.rebuttals) && payload.rebuttals.length > 0) {
+                const inferred = normalizeSubroleRoleName(payload.rebuttals[0].target_role);
+                if (inferred) return inferred;
+            }
+
+            const sender = String((data && data.bot_name) || '').trim();
+            const withParen = sender.match(/debate\s+rebuttal\s+c\d+\s+([a-z_\s]+?)\s*\(/i);
+            if (withParen && withParen[1]) {
+                const inferred = normalizeSubroleRoleName(withParen[1]);
+                if (inferred) return inferred;
+            }
+            return '';
+        }
+
+        function addDebateRebuttalToSubrole(chatId, runGroupId, targetRole, payload, data = {}) {
+            const roleState = ensureSubroleRoleState(chatId, runGroupId, targetRole);
+            if (!roleState || !payload) return;
+
+            const cycle = inferDebateCycle(data);
+            const timelineEntry = ensureSubroleTimelineEntry(roleState, cycle, data);
+            if (!timelineEntry) return;
+
+            const rebuttals = Array.isArray(payload.rebuttals) ? payload.rebuttals : [];
+            timelineEntry.rebuttals = rebuttals.map((item) => ({
+                point_id: String(item && item.point_id ? item.point_id : 'P?').trim() || 'P?',
+                status: String(item && item.status ? item.status : 'clarify').trim().toLowerCase() || 'clarify',
+                evidence: String(item && item.evidence ? item.evidence : '').trim(),
+                updated_claim: String(item && item.updated_claim ? item.updated_claim : '').trim()
+            }));
+            timelineEntry.rebuttal_message_id = data.message_id || timelineEntry.rebuttal_message_id;
+            timelineEntry.timestamp = data.timestamp || timelineEntry.timestamp;
+
+            sortSubroleTimeline(roleState);
+            refreshSubroleVisualState(chatId, runGroupId);
+        }
+
+        function inferVerdictTargetRole(data, payload = null) {
+            const directTarget = normalizeSubroleRoleName(data && data.target_role);
+            if (directTarget) return directTarget;
+
+            const payloadTarget = normalizeSubroleRoleName(payload && payload.target_role);
+            if (payloadTarget) return payloadTarget;
+
+            const sender = String((data && data.bot_name) || '').trim();
+            const withParen = sender.match(/debate\s+verdict\s+c\d+\s+([a-z_\s]+?)\s*\(/i);
+            if (withParen && withParen[1]) {
+                const inferred = normalizeSubroleRoleName(withParen[1]);
+                if (inferred) return inferred;
+            }
+
+            const trailing = sender.match(/debate\s+verdict\s+c\d+\s+([a-z_\s]+)$/i);
+            if (trailing && trailing[1]) {
+                return normalizeSubroleRoleName(trailing[1]);
+            }
+            return '';
+        }
+
+        function addVerifierVerdictToSubrole(chatId, runGroupId, targetRole, payload, data = {}) {
+            const roleState = ensureSubroleRoleState(chatId, runGroupId, targetRole);
+            if (!roleState || !payload) return;
+
+            const verdict = String(payload.verdict || '').trim().toLowerCase() || 'reject';
+            if (data.message_id && roleState.verdicts.some(item => item && item.verdict_message_id === data.message_id)) {
+                return;
+            }
+
+            const cycle = inferDebateCycle(data);
+            const timelineEntry = ensureSubroleTimelineEntry(roleState, cycle, data);
+            if (!timelineEntry) return;
+
+            timelineEntry.verdict = verdict;
+            timelineEntry.reason = String(payload.reason || '').trim();
+            timelineEntry.next_action = String(payload.next_action || '').trim();
+            timelineEntry.updated_confidence = payload.updated_confidence;
+            timelineEntry.verdict_message_id = data.message_id || timelineEntry.verdict_message_id;
+            timelineEntry.timestamp = data.timestamp || timelineEntry.timestamp;
+
+            sortSubroleTimeline(roleState);
+
+            refreshSubroleVisualState(chatId, runGroupId);
         }
 
         function getMessageRole(msg) {
@@ -3487,7 +4607,7 @@
             }
         }
 
-        function formatTaskDistribution(content) {
+        function formatTaskDistribution(content, options = {}) {
             let tasks;
             try {
                 const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -3498,13 +4618,20 @@
                 return formatMessage(content);
             }
 
-            return renderTaskDistributionCard(tasks);
+            return renderTaskDistributionCard(tasks, options);
         }
 
-        function renderTaskDistributionCard(tasks) {
+        function renderTaskDistributionCard(tasks, options = {}) {
             if (!tasks || typeof tasks !== 'object') {
                 return formatMessage(String(tasks || ''));
             }
+
+            const chatId = options.chatId || getActiveChatId();
+            const runGroupId = options.runGroupId || resolveSubroleRunGroupId(chatId, null);
+            const runState = applyTaskDistributionState(chatId, runGroupId, tasks);
+            const effectiveRunGroupId = (runState && runState.run_group_id)
+                ? runState.run_group_id
+                : (runGroupId || `rungrp-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
 
             const roleConfig = [
                 { key: 'researcher_task', label: 'Researcher' },
@@ -3518,35 +4645,54 @@
             let skippedCount = 0;
 
             for (const { key, label } of roleConfig) {
-                const task = tasks[key] || 'SKIP';
+                const roleState = runState && runState.roles && runState.roles[label]
+                    ? runState.roles[label]
+                    : createEmptySubroleRecord(label);
+                const fallbackTask = normalizeTaskText(tasks[key]);
+                const task = roleState.task_text || fallbackTask;
                 const isSkip = task.trim().toUpperCase() === 'SKIP';
+                const status = normalizeSubroleStatus(roleState.status, isSkip ? 'skipped' : 'waiting');
+                const clickable = isSubroleCardClickable(roleState);
+                const modelLabel = resolveSubroleModelLabel(label, roleState);
                 if (isSkip) skippedCount += 1;
                 else activeCount += 1;
 
                 roleRows.push(`
-                    <div class="task-dist-item${isSkip ? ' skipped' : ''}">
-                        <span class="task-dist-state-dot" aria-hidden="true"></span>
-                        <div class="task-dist-item-body">
-                            <div class="task-dist-role-name">${label}</div>
-                            <div class="task-dist-task-text">${isSkip ? 'SKIP' : escapeHtml(task)}</div>
+                    <button
+                        class="task-subrole-card"
+                        type="button"
+                        data-run-group-id="${escapeHtml(effectiveRunGroupId)}"
+                        data-subrole-role="${escapeHtml(label)}"
+                        data-clickable="${clickable ? 'true' : 'false'}"
+                        ${clickable ? '' : 'disabled'}
+                        onclick="openSubroleOverlayFromTaskCard(this)">
+                        <div class="task-subrole-top">
+                            <span class="task-subrole-light ${status}" data-subrole-light></span>
+                            <span class="task-subrole-name">${escapeHtml(label)}</span>
+                            <span class="task-subrole-model" data-subrole-model title="${escapeHtml(modelLabel || '')}">${escapeHtml(modelLabel || 'Model pending')}</span>
+                            <span class="task-subrole-status" data-subrole-status>${escapeHtml(statusLabel(status))}</span>
                         </div>
-                    </div>`);
+                        <div class="task-subrole-task" data-subrole-task>${escapeHtml(isSkip ? 'SKIP' : task)}</div>
+                        <div class="task-subrole-open-hint" data-subrole-hint>${clickable ? 'Open Live Output' : 'Not Assigned'}</div>
+                    </button>`);
             }
 
             const hasDirectResponse = String(tasks.direct_response || '').trim().length > 0;
-            const detailsId = `task-dist-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
             let html = `
-                <div class="task-distribution">
+                <div class="task-distribution" data-run-group-id="${escapeHtml(effectiveRunGroupId)}">
                     <div class="task-dist-summary">
-                        <strong>Routing Summary</strong>
-                        <span class="task-dist-chip">Active ${activeCount}</span>
-                        <span class="task-dist-chip">Skip ${skippedCount}</span>
-                        <span class="task-dist-chip">Direct ${hasDirectResponse ? 'Yes' : 'No'}</span>
-                        <button class="task-dist-toggle" type="button" aria-expanded="false" aria-controls="${detailsId}" onclick="toggleTaskDistDetails(this)">Details</button>
+                        <div>
+                            <div class="task-dist-title">Task Distribution</div>
+                            <div class="task-dist-subtitle">Click a role card to open the output panel</div>
+                        </div>
+                        <div class="task-dist-chip-row">
+                            <span class="task-dist-chip">Active ${activeCount}</span>
+                            <span class="task-dist-chip">Skip ${skippedCount}</span>
+                            <span class="task-dist-chip">Direct ${hasDirectResponse ? 'Yes' : 'No'}</span>
+                        </div>
                     </div>`;
 
-            html += `<div class="task-dist-details collapsed" id="${detailsId}">`;
             if (tasks.analysis) {
                 html += `
                     <div class="task-dist-analysis">
@@ -3554,21 +4700,10 @@
                         ${escapeHtml(tasks.analysis)}
                     </div>`;
             }
-            html += roleRows.join('');
-            html += '</div></div>';
+            html += `<div class="task-dist-role-grid">${roleRows.join('')}</div>`;
+            html += '</div>';
 
             return html;
-        }
-
-        function toggleTaskDistDetails(toggleBtn) {
-            const container = toggleBtn && toggleBtn.closest ? toggleBtn.closest('.task-distribution') : null;
-            if (!container) return;
-            const details = container.querySelector('.task-dist-details');
-            if (!details) return;
-
-            const isCollapsed = details.classList.toggle('collapsed');
-            toggleBtn.textContent = isCollapsed ? 'Details' : 'Hide';
-            toggleBtn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
         }
 
         function extractStructuredJsonCandidate(content) {
@@ -3586,14 +4721,104 @@
             return (trimmed.startsWith('{') && trimmed.endsWith('}')) ? trimmed : null;
         }
 
-        function parseStructuredJson(content) {
-            const candidate = extractStructuredJsonCandidate(content);
-            if (!candidate) return null;
-            try {
-                return JSON.parse(candidate);
-            } catch (e) {
-                return null;
+        function extractBalancedJsonObjectCandidates(content, maxCandidates = 8) {
+            if (typeof content !== 'string') return [];
+
+            const candidates = [];
+            let start = content.indexOf('{');
+
+            while (start !== -1 && candidates.length < maxCandidates) {
+                let depth = 0;
+                let inString = false;
+                let escaped = false;
+                let end = -1;
+
+                for (let i = start; i < content.length; i += 1) {
+                    const ch = content[i];
+
+                    if (inString) {
+                        if (escaped) {
+                            escaped = false;
+                        } else if (ch === '\\') {
+                            escaped = true;
+                        } else if (ch === '"') {
+                            inString = false;
+                        }
+                        continue;
+                    }
+
+                    if (ch === '"') {
+                        inString = true;
+                        continue;
+                    }
+
+                    if (ch === '{') {
+                        depth += 1;
+                    } else if (ch === '}') {
+                        depth -= 1;
+                        if (depth === 0) {
+                            end = i;
+                            break;
+                        }
+                        if (depth < 0) {
+                            break;
+                        }
+                    }
+                }
+
+                if (end !== -1) {
+                    candidates.push(content.slice(start, end + 1).trim());
+                    start = content.indexOf('{', start + 1);
+                } else {
+                    start = content.indexOf('{', start + 1);
+                }
             }
+
+            return candidates;
+        }
+
+        function parseStructuredJson(content) {
+            if (typeof content !== 'string') return null;
+
+            const raw = content.trim();
+            if (!raw) return null;
+
+            const candidates = [];
+            const candidateSet = new Set();
+            const pushCandidate = (value) => {
+                if (typeof value !== 'string') return;
+                const normalized = value.trim();
+                if (!normalized || candidateSet.has(normalized)) return;
+                candidateSet.add(normalized);
+                candidates.push(normalized);
+            };
+
+            pushCandidate(extractStructuredJsonCandidate(raw));
+
+            const fencedBlocks = raw.match(/```(?:json|javascript|js)?\s*\n?([\s\S]*?)\n?```/gi) || [];
+            fencedBlocks.forEach((block) => {
+                const inner = block
+                    .replace(/^```(?:json|javascript|js)?\s*/i, '')
+                    .replace(/```$/i, '')
+                    .trim();
+                pushCandidate(inner);
+                extractBalancedJsonObjectCandidates(inner).forEach(pushCandidate);
+            });
+
+            extractBalancedJsonObjectCandidates(raw).forEach(pushCandidate);
+
+            for (const candidate of candidates) {
+                try {
+                    const parsed = JSON.parse(candidate);
+                    if (parsed && typeof parsed === 'object') {
+                        return parsed;
+                    }
+                } catch (e) {
+                    // Try the next candidate.
+                }
+            }
+
+            return null;
         }
 
         function normalizeRoleTag(role) {
@@ -3627,9 +4852,11 @@
         function isDebateQuestioningPayload(payload) {
             return !!payload
                 && !Array.isArray(payload)
-                && Array.isArray(payload.questioned_roles)
                 && Array.isArray(payload.doubt_points)
-                && Object.prototype.hasOwnProperty.call(payload, 'confidence_in_doubt');
+                && (
+                    Object.prototype.hasOwnProperty.call(payload, 'confidence_in_doubt')
+                    || Array.isArray(payload.questioned_roles)
+                );
         }
 
         function isDebateVerdictPayload(payload) {
@@ -3798,14 +5025,14 @@
             return html;
         }
 
-        function formatStructuredCouncilOutput(content, sender = '') {
+        function formatStructuredCouncilOutput(content, sender = '', options = {}) {
             const payload = parseStructuredJson(content);
             if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
                 return formatMessage(content);
             }
 
             if (isTaskDistributionPayload(payload)) {
-                return renderTaskDistributionCard(payload);
+                return renderTaskDistributionCard(payload, options);
             }
             if (isDebateQuestioningPayload(payload)) {
                 return formatDebateQuestioningCard(payload, sender);
@@ -3822,7 +5049,7 @@
         function formatAIResponseContent(content, sender = '', options = {}) {
             const allowStructuredCards = !!options.allowStructuredCards;
             if (allowStructuredCards) {
-                return formatStructuredCouncilOutput(content, sender);
+                return formatStructuredCouncilOutput(content, sender, options);
             }
             return formatMessage(content);
         }
@@ -4514,6 +5741,7 @@
                 activeState.thinking_process.active_run_group_id = null;
                 activeState.thinking_process.active_container_id = null;
             }
+            closeSubroleOverlay(activeChatId);
             socket.emit('send_message', {
                 message: message,
                 chat_id: activeChatId,
@@ -4592,10 +5820,12 @@
                     state.pending_message_id = null;
                     state.is_generating = false;
                     resetThinkingProcessState(state);
+                    resetSubroleTrackingState(state);
                 }
                 if (activeId && streamingMessages[activeId]) {
                     delete streamingMessages[activeId];
                 }
+                closeSubroleOverlay(activeId);
                 socket.emit('clear_history', { chat_id: activeId });
                 
                 addConsoleLog('Conversation history and documents cleared');
@@ -4670,7 +5900,10 @@
                     <div class="message-content"><span class="stream-text"></span><span class="stream-cursor"></span></div>
                 </div>
             `;
+            const shouldHideIntermediate = !!entry.isNonFinal && !!normalizeSubroleRoleName(data.role_name);
             if (entry.isNonFinal) {
+                messageDiv.classList.toggle('subrole-hidden', shouldHideIntermediate);
+                messageDiv.setAttribute('data-subrole-hidden', shouldHideIntermediate ? 'true' : 'false');
                 const state = ensureConversation(chatId);
                 const forceNewContainer = !!state.thinking_process.new_run_pending;
                 let container = null;
@@ -4710,7 +5943,9 @@
                 thinkingBlock.style.display = '';
                 thinkingContent.textContent = entry.thinkingText;
             }
-            scrollToBottomIfNeeded(conversationWindow);
+            if (!messageDiv.classList.contains('subrole-hidden')) {
+                scrollToBottomIfNeeded(conversationWindow);
+            }
         }
 
         function appendStreamingChunk(data, options = {}) {
@@ -4732,6 +5967,20 @@
                 entry.rawText += chunkValue;
             }
 
+            const isDebateTimelineEvent = isDebateTimelineEventKind(data.event_kind)
+                || isDebateTimelineSender(data.bot_name);
+
+            if (entry.isNonFinal && !isDebateTimelineEvent) {
+                recordSubroleStreamChunk(
+                    chatId,
+                    data.run_group_id || entry.run_group_id,
+                    data.role_name,
+                    options.targetField === 'thinkingText' ? 'thinking' : 'output',
+                    chunkValue,
+                    data
+                );
+            }
+
             ensureStreamDiv(chatId, data, entry);
             if (entry.isNonFinal) {
                 updateThinkingPreviewFromEntry(chatId, entry);
@@ -4750,10 +5999,12 @@
             }
 
             const conversationWindow = document.getElementById('conversationWindow');
-            scrollToBottomIfNeeded(conversationWindow);
+            if (!entry.div.classList.contains('subrole-hidden')) {
+                scrollToBottomIfNeeded(conversationWindow);
+            }
         }
 
-        function buildAssistantStateMessage(data, entry, messageId) {
+        function buildAssistantStateMessage(data, entry, messageId, options = {}) {
             return {
                 id: messageId,
                 role: 'assistant',
@@ -4767,7 +6018,11 @@
                 role_name: data.role_name || null,
                 thinking: data.thinking || '',
                 is_final_response: (typeof data.is_final_response === 'boolean') ? data.is_final_response : false,
-                stream_status: data.stopped ? 'stopped' : 'done'
+                stream_status: data.stopped ? 'stopped' : 'done',
+                target_role: data.target_role || null,
+                debate_cycle: (data.debate_cycle !== undefined && data.debate_cycle !== null) ? data.debate_cycle : null,
+                event_kind: data.event_kind || null,
+                is_subrole_hidden: options.isSubroleHidden === true
             };
         }
 
@@ -4784,6 +6039,8 @@
                 const incomingRunGroupId = data.run_group_id || entry.run_group_id;
                 const runGroupChanged = incomingRunGroupId && state.thinking_process.active_run_group_id && incomingRunGroupId !== state.thinking_process.active_run_group_id;
                 const mustCreateNewContainer = state.thinking_process.new_run_pending || !state.thinking_process.active_container_id || runGroupChanged;
+                const isDebateTimelineEvent = isDebateTimelineEventKind(data.event_kind)
+                    || isDebateTimelineSender(data.bot_name);
                 if (mustCreateNewContainer && chatId === getActiveChatId()) {
                     const conversationWindow = getConvWindow();
                     ensureThinkingProcessContainer(conversationWindow, state, chatId, { forceNew: true }, incomingRunGroupId);
@@ -4791,7 +6048,22 @@
                 state.thinking_process.new_run_pending = false;
                 state.thinking_process.active_run_group_id = incomingRunGroupId || state.thinking_process.active_run_group_id;
                 state.thinking_process.active_source = entry.bot_name || state.thinking_process.active_source;
+
+                if (!isDebateTimelineEvent) {
+                    const subroleState = ensureSubroleRoleState(chatId, incomingRunGroupId, data.role_name);
+                    if (subroleState) {
+                        subroleState.sender = data.bot_name || subroleState.sender;
+                        subroleState.model_id = data.model_id || subroleState.model_id;
+                        subroleState.run_id = data.run_id || subroleState.run_id;
+                        subroleState.message_id = data.message_id || subroleState.message_id;
+                        if (subroleState.assigned && subroleState.status !== 'skipped') {
+                            subroleState.status = 'running';
+                        }
+                    }
+                }
+
                 refreshThinkingProcessUI(chatId);
+                refreshSubroleVisualState(chatId, incomingRunGroupId);
             }
             ensureStreamDiv(chatId, data, entry);
             if (chatId === getActiveChatId()) {
@@ -4824,10 +6096,63 @@
 
             const entry = getStreamEntry(data);
             if (!entry) return;
+
+            const runGroupId = data.run_group_id || entry.run_group_id || null;
+            const structuredPayload = parseStructuredJson(data.message || '');
+            const isTaskDistribution = isTaskDistributionPayload(structuredPayload);
+            const isDebateQuestioning = !!structuredPayload && isDebateQuestioningPayload(structuredPayload);
+            const isDebateRebuttal = !!structuredPayload && isDebateRebuttalPayload(structuredPayload);
+            const isDebateVerdict = !!structuredPayload && isDebateVerdictPayload(structuredPayload);
+            const shouldRouteDebateTimeline = isDebateTimelineEventKind(data.event_kind)
+                || isDebateTimelineSender(data.bot_name)
+                || isDebateQuestioning
+                || isDebateRebuttal
+                || isDebateVerdict;
+            const shouldHideSubroleIntermediate = !!entry.isNonFinal
+                && !isTaskDistribution
+                && !!normalizeSubroleRoleName(data.role_name);
+
+            const normalizedRole = normalizeSubroleRoleName(data.role_name);
+            if (normalizedRole && !shouldRouteDebateTimeline) {
+                finalizeSubroleOutputState(chatId, runGroupId, normalizedRole, data);
+            }
+
+            if (isDebateQuestioning) {
+                addVerifierQuestioningToSubrole(chatId, runGroupId, structuredPayload, data);
+            }
+
+            if (isDebateRebuttal) {
+                const targetRole = inferRebuttalTargetRole(data, structuredPayload);
+                if (targetRole) {
+                    addDebateRebuttalToSubrole(chatId, runGroupId, targetRole, structuredPayload, data);
+                }
+            }
+
+            if (isDebateVerdict) {
+                const targetRole = inferVerdictTargetRole(data, structuredPayload);
+                if (targetRole) {
+                    addVerifierVerdictToSubrole(chatId, runGroupId, targetRole, structuredPayload, data);
+                } else {
+                    const runState = ensureSubroleRunState(chatId, runGroupId);
+                    if (runState && Array.isArray(runState.unassigned_verdicts)) {
+                        runState.unassigned_verdicts.push({
+                            verdict: structuredPayload.verdict,
+                            reason: structuredPayload.reason,
+                            next_action: structuredPayload.next_action,
+                            updated_confidence: structuredPayload.updated_confidence,
+                            message_id: messageId,
+                            timestamp: data.timestamp || new Date().toISOString()
+                        });
+                    }
+                }
+            }
+
             ensureStreamDiv(chatId, data, entry);
             if (chatId !== getActiveChatId() || !entry.div) {
                 if (state) {
-                    state.messages.push(buildAssistantStateMessage(data, entry, messageId));
+                    state.messages.push(buildAssistantStateMessage(data, entry, messageId, {
+                        isSubroleHidden: shouldHideSubroleIntermediate
+                    }));
                 }
                 if (streamingMessages[chatId]) {
                     delete streamingMessages[chatId][messageId];
@@ -4842,7 +6167,10 @@
             const messageDiv = entry.div;
             const hasThinking = data.thinking && data.thinking.trim().length > 0;
             const formattedContent = formatAIResponseContent(data.message, data.bot_name || '', {
-                allowStructuredCards: !!entry.isNonFinal
+                allowStructuredCards: !!entry.isNonFinal,
+                chatId,
+                runGroupId,
+                roleName: data.role_name || null
             });
             const thinkingBlock = hasThinking ? `
                 <div class="thinking-block">
@@ -4864,16 +6192,33 @@
             messageDiv.setAttribute('data-thinking', data.thinking || '');
             messageDiv.setAttribute('data-is-final-response', isFinalResponse ? 'true' : 'false');
             messageDiv.setAttribute('data-message-id', messageId);
-            if (data.run_group_id || entry.run_group_id) {
-                messageDiv.setAttribute('data-run-group-id', data.run_group_id || entry.run_group_id);
+            messageDiv.setAttribute('data-subrole-hidden', shouldHideSubroleIntermediate ? 'true' : 'false');
+            if (runGroupId) {
+                messageDiv.setAttribute('data-run-group-id', runGroupId);
             }
             if (data.run_id || entry.run_id) {
                 messageDiv.setAttribute('data-run-id', data.run_id || entry.run_id);
+            }
+            if (data.role_name) {
+                messageDiv.setAttribute('data-role-name', data.role_name);
+            }
+            if (data.model_id) {
+                messageDiv.setAttribute('data-model-id', data.model_id);
+            }
+            if (data.target_role) {
+                messageDiv.setAttribute('data-target-role', data.target_role);
+            }
+            if (data.event_kind) {
+                messageDiv.setAttribute('data-event-kind', data.event_kind);
+            }
+            if (data.debate_cycle !== undefined && data.debate_cycle !== null) {
+                messageDiv.setAttribute('data-debate-cycle', String(data.debate_cycle));
             }
             if (entry.isNonFinal) {
                 messageDiv.classList.add('thinking-process-item');
                 messageDiv.setAttribute('data-council-intermediate', 'true');
             }
+            messageDiv.classList.toggle('subrole-hidden', shouldHideSubroleIntermediate);
             messageDiv.classList.remove('streaming');
             messageDiv.innerHTML = `
                 <div class="message-wrapper">
@@ -4891,9 +6236,13 @@
                 addCopyButtonsToCodeBlocks(messageDiv);
             }, 10);
             const conversationWindow = document.getElementById('conversationWindow');
-            scrollToBottomIfNeeded(conversationWindow);
+            if (!shouldHideSubroleIntermediate) {
+                scrollToBottomIfNeeded(conversationWindow);
+            }
             if (state) {
-                state.messages.push(buildAssistantStateMessage(data, entry, messageId));
+                state.messages.push(buildAssistantStateMessage(data, entry, messageId, {
+                    isSubroleHidden: shouldHideSubroleIntermediate
+                }));
             }
             if (entry.isNonFinal) {
                 updateThinkingPreviewFromEntry(chatId, entry);
@@ -4906,6 +6255,7 @@
                 delete state.streaming[messageId];
             }
             refreshThinkingProcessUI(chatId);
+            refreshSubroleVisualState(chatId, runGroupId);
             refreshInlineActionVisibility(chatId);
             loadSavedChats();
             loadTempChats();
@@ -5053,6 +6403,7 @@
                 flushPendingUploadCleanup(chatId);
             }
             refreshThinkingProcessUI(chatId || getActiveChatId());
+            refreshSubroleVisualState(chatId || getActiveChatId());
             if (!chatId || chatId === getActiveChatId()) {
                 setProcessingState(false);
             }
@@ -5085,6 +6436,17 @@
             const chatId = data.chat_id || getActiveChatId();
             const state = ensureConversation(chatId);
             if (!state) return;
+
+            const normalizedSubrole = normalizeSubroleRoleName(data.role);
+            const runGroupId = resolveSubroleRunGroupId(chatId, data.run_group_id);
+            if (normalizedSubrole && runGroupId) {
+                const roleState = ensureSubroleRoleState(chatId, runGroupId, normalizedSubrole);
+                if (roleState) {
+                    const fallbackStatus = roleState.assigned ? 'waiting' : 'skipped';
+                    roleState.status = normalizeSubroleStatus(data.status, fallbackStatus);
+                    refreshSubroleVisualState(chatId, runGroupId);
+                }
+            }
 
             if (data.status === 'running') {
                 if (data.run_group_id) {
@@ -5177,13 +6539,17 @@
             // Reset council status lights
             resetCouncilStatus();
             setProcessingState(false);
+            closeSubroleOverlay();
 
             // Remove active class from all history items
             document.querySelectorAll('.history-item').forEach(item => {
                 item.classList.remove('active');
             });
 
-            Object.values(conversations).forEach(conv => resetThinkingProcessState(conv));
+            Object.values(conversations).forEach(conv => {
+                resetThinkingProcessState(conv);
+                resetSubroleTrackingState(conv);
+            });
             Object.keys(streamingMessages).forEach(key => delete streamingMessages[key]);
         }
 
@@ -5284,6 +6650,7 @@
             if (!state) return;
             resetThinkingProcessState(state, false);
             state.thinking_process.collapsed = true;
+            resetSubroleTrackingState(state);
 
             const thinkingListsByGroup = {};
             let hasNonFinal = false;
@@ -5301,6 +6668,102 @@
 
                 const isNonFinal = isNonFinalSavedMessage(msg);
                 const runGroupId = msg.run_group_id || 'non-final';
+                const rawContent = getStoredMessageRawContent(msg);
+                const structuredPayload = (msg.type === 'ai' && isNonFinal) ? parseStructuredJson(rawContent || String(msg.content || '')) : null;
+                const isTaskDistribution = !!structuredPayload && isTaskDistributionPayload(structuredPayload);
+                const isDebateQuestioning = !!structuredPayload && isDebateQuestioningPayload(structuredPayload);
+                const isDebateRebuttal = !!structuredPayload && isDebateRebuttalPayload(structuredPayload);
+                const isDebateVerdict = !!structuredPayload && isDebateVerdictPayload(structuredPayload);
+                const shouldRouteDebateTimeline = !!(
+                    isDebateTimelineEventKind(msg.event_kind)
+                    || isDebateTimelineSender(msg.sender)
+                    || isDebateQuestioning
+                    || isDebateRebuttal
+                    || isDebateVerdict
+                );
+                const normalizedSavedRole = normalizeSubroleRoleName(msg.role_name);
+                const shouldHideSubrole = !!(
+                    msg.is_subrole_hidden
+                    || (isNonFinal && !isTaskDistribution && !!normalizedSavedRole)
+                );
+
+                if (msg.type === 'ai' && isNonFinal) {
+                    ensureSubroleRunState(chatId, runGroupId);
+
+                    if (structuredPayload && isTaskDistribution) {
+                        applyTaskDistributionState(chatId, runGroupId, structuredPayload);
+                    }
+
+                    const normalizedRole = normalizeSubroleRoleName(msg.role_name);
+                    if (normalizedRole && !shouldRouteDebateTimeline) {
+                        const roleState = ensureSubroleRoleState(chatId, runGroupId, normalizedRole);
+                        if (roleState) {
+                            roleState.output_text = String(rawContent || msg.content || roleState.output_text || '');
+                            roleState.thinking_text = String(msg.thinking || roleState.thinking_text || '');
+                            roleState.sender = msg.sender || roleState.sender;
+                            roleState.model_id = msg.model_id || roleState.model_id;
+                            roleState.run_id = msg.run_id || roleState.run_id;
+                            roleState.message_id = resolvedMessageId;
+                            roleState.stream_status = msg.stream_status || roleState.stream_status;
+                            if (roleState.assigned) {
+                                roleState.status = normalizeSubroleStatus(msg.stream_status === 'stopped' ? 'stopped' : 'done', 'done');
+                            }
+                        }
+                    }
+
+                    if (isDebateQuestioning) {
+                        addVerifierQuestioningToSubrole(chatId, runGroupId, structuredPayload, {
+                            message_id: resolvedMessageId,
+                            timestamp: msg.timestamp,
+                            debate_cycle: msg.debate_cycle,
+                            bot_name: msg.sender,
+                            event_kind: msg.event_kind
+                        });
+                    }
+
+                    if (isDebateRebuttal) {
+                        const targetRole = inferRebuttalTargetRole({
+                            bot_name: msg.sender,
+                            target_role: msg.target_role,
+                            role_name: msg.role_name,
+                            debate_cycle: msg.debate_cycle,
+                            message_id: resolvedMessageId,
+                            timestamp: msg.timestamp,
+                            event_kind: msg.event_kind
+                        }, structuredPayload);
+                        if (targetRole) {
+                            addDebateRebuttalToSubrole(chatId, runGroupId, targetRole, structuredPayload, {
+                                message_id: resolvedMessageId,
+                                timestamp: msg.timestamp,
+                                debate_cycle: msg.debate_cycle,
+                                bot_name: msg.sender,
+                                event_kind: msg.event_kind,
+                                role_name: msg.role_name,
+                                target_role: msg.target_role
+                            });
+                        }
+                    }
+
+                    if (isDebateVerdict) {
+                        const targetRole = normalizeSubroleRoleName(msg.target_role)
+                            || inferVerdictTargetRole({
+                                bot_name: msg.sender,
+                                target_role: msg.target_role,
+                                debate_cycle: msg.debate_cycle,
+                                message_id: resolvedMessageId,
+                                timestamp: msg.timestamp
+                            }, structuredPayload);
+                        if (targetRole) {
+                            addVerifierVerdictToSubrole(chatId, runGroupId, targetRole, structuredPayload, {
+                                message_id: resolvedMessageId,
+                                timestamp: msg.timestamp,
+                                debate_cycle: msg.debate_cycle,
+                                bot_name: msg.sender
+                            });
+                        }
+                    }
+                }
+
                 if (isNonFinal) {
                     hasNonFinal = true;
                     if (!thinkingListsByGroup[runGroupId]) {
@@ -5318,8 +6781,6 @@
                 if (msg.is_md_collapsed && !isNonFinal) {
                     messageDiv.classList.add('md-collapsed');
                 }
-
-                const rawContent = getStoredMessageRawContent(msg);
                 if (rawContent) {
                     messageDiv.setAttribute('data-raw-content', rawContent);
                 }
@@ -5332,12 +6793,33 @@
                     if (msg.run_id) {
                         messageDiv.setAttribute('data-run-id', msg.run_id);
                     }
+                    if (msg.role_name) {
+                        messageDiv.setAttribute('data-role-name', msg.role_name);
+                    }
+                    if (msg.model_id) {
+                        messageDiv.setAttribute('data-model-id', msg.model_id);
+                    }
+                    if (msg.target_role) {
+                        messageDiv.setAttribute('data-target-role', msg.target_role);
+                    }
+                    if (msg.event_kind) {
+                        messageDiv.setAttribute('data-event-kind', msg.event_kind);
+                    }
+                    if (msg.debate_cycle !== undefined && msg.debate_cycle !== null) {
+                        messageDiv.setAttribute('data-debate-cycle', String(msg.debate_cycle));
+                    }
+                    messageDiv.setAttribute('data-subrole-hidden', shouldHideSubrole ? 'true' : 'false');
                 }
+
+                messageDiv.classList.toggle('subrole-hidden', shouldHideSubrole);
 
                 const displaySource = rawContent || String(msg.content || '');
                 const displayContent = (msg.type === 'ai')
                     ? formatAIResponseContent(displaySource, msg.sender || '', {
-                        allowStructuredCards: isNonFinal
+                        allowStructuredCards: isNonFinal,
+                        chatId,
+                        runGroupId,
+                        roleName: msg.role_name || null
                     })
                     : formatMessage(displaySource);
 
@@ -5387,6 +6869,7 @@
                 conversationWindow.querySelectorAll('.thinking-process-container').forEach(el => el.remove());
             }
             refreshThinkingProcessUI(chatId);
+            refreshSubroleVisualState(chatId);
             refreshInlineActionVisibility(chatId);
         }
 
@@ -5401,7 +6884,10 @@
                 state.pending_message_id = null;
                 resetThinkingProcessState(state, false);
                 state.thinking_process.collapsed = true;
+                resetSubroleTrackingState(state);
             }
+
+            closeSubroleOverlay(chatId);
 
             if (streamingMessages[chatId]) {
                 delete streamingMessages[chatId];
@@ -5553,9 +7039,20 @@
                         is_md_collapsed: msg.classList.contains('md-collapsed'),
                         run_group_id: msg.getAttribute('data-run-group-id') || null,
                         run_id: msg.getAttribute('data-run-id') || null,
+                        role_name: msg.getAttribute('data-role-name') || null,
+                        model_id: msg.getAttribute('data-model-id') || null,
+                        target_role: msg.getAttribute('data-target-role') || null,
+                        event_kind: msg.getAttribute('data-event-kind') || null,
+                        debate_cycle: msg.getAttribute('data-debate-cycle') || null,
                         thinking: msg.getAttribute('data-thinking') || '',
-                        is_final_response: msg.getAttribute('data-is-final-response') === 'true'
+                        is_final_response: msg.getAttribute('data-is-final-response') === 'true',
+                        is_subrole_hidden: msg.getAttribute('data-subrole-hidden') === 'true'
                     };
+
+                    if (messageData.debate_cycle !== null) {
+                        const cycleNum = Number(messageData.debate_cycle);
+                        messageData.debate_cycle = Number.isFinite(cycleNum) ? cycleNum : null;
+                    }
                     const rawAttachments = msg.getAttribute('data-user-attachments') || '';
                     if (rawAttachments) {
                         try {
