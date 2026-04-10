@@ -42,6 +42,10 @@ DEFAULT_MD_READER_CONFIG = {
 }
 config_store = ConfigStore(base_dir='.')
 UPTEST_TIMEOUT_SECONDS = 30
+DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS = 30.0
+LONG_INPUT_TOKEN_THRESHOLD = 10000
+LONG_INPUT_FIRST_CHUNK_TIMEOUT_SECONDS = 60.0
+APPROX_CHARS_PER_TOKEN = 4.0
 SUPPORTED_UPLOAD_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png', 'docx', 'docm', 'dotx', 'dotm'}
 WORD_UPLOAD_EXTENSIONS = {'docx', 'docm', 'dotx', 'dotm'}
 
@@ -1430,6 +1434,53 @@ def _normalize_history_context_mode(value):
     return 'final_only'
 
 
+def _stringify_prompt_content(content):
+    if content is None:
+        return ''
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get('type') == 'text':
+                    parts.append(str(item.get('text') or ''))
+                elif item.get('type') == 'image_url':
+                    parts.append('[image]')
+                elif item.get('type') == 'file':
+                    file_meta = item.get('file') if isinstance(item.get('file'), dict) else {}
+                    parts.append(str(file_meta.get('filename') or '[file]'))
+                else:
+                    try:
+                        parts.append(json.dumps(item, ensure_ascii=False))
+                    except (TypeError, ValueError):
+                        parts.append(str(item))
+            else:
+                parts.append(str(item))
+        return '\n'.join(parts)
+    if isinstance(content, dict):
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(content)
+    return str(content)
+
+
+def _estimate_prompt_tokens(system_prompt, user_prompt, chat_history):
+    total_chars = len(_stringify_prompt_content(system_prompt))
+    total_chars += len(_stringify_prompt_content(user_prompt))
+
+    for message in (chat_history or []):
+        if isinstance(message, dict):
+            total_chars += len(str(message.get('role') or ''))
+            total_chars += len(_stringify_prompt_content(message.get('content')))
+        else:
+            total_chars += len(_stringify_prompt_content(message))
+
+    estimated = int(total_chars / APPROX_CHARS_PER_TOKEN) if total_chars > 0 else 0
+    return max(0, estimated)
+
+
 def _is_final_response_history_message(message):
     if not isinstance(message, dict):
         return False
@@ -2210,6 +2261,16 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         timeout_before_first_chunk = False
         first_chunk_received = False
         last_snapshot_ts = 0.0
+        estimated_input_tokens = _estimate_prompt_tokens(system_prompt, user_prompt, chat_history)
+        first_chunk_timeout_seconds = DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS
+        if estimated_input_tokens > LONG_INPUT_TOKEN_THRESHOLD:
+            first_chunk_timeout_seconds = LONG_INPUT_FIRST_CHUNK_TIMEOUT_SECONDS
+            emit_chat('console_log', {
+                'message': (
+                    f"[{timestamp}] {role_label} large prompt detected (~{estimated_input_tokens} tokens); "
+                    f"first-chunk timeout extended to {int(first_chunk_timeout_seconds)}s"
+                )
+            })
 
         stream_queue = queue.Queue()
         stream_stop_event = threading.Event()
@@ -2247,7 +2308,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 if (
                     not first_chunk_received
                     and not _timeout_fallback_used
-                    and (time.time() - stream_start_ts) >= 30.0
+                    and (time.time() - stream_start_ts) >= first_chunk_timeout_seconds
                 ):
                     timeout_before_first_chunk = True
                     stopped_early = True
@@ -2301,7 +2362,10 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
             timeout_ts = datetime.now().strftime("%H:%M:%S")
             timeout_notice = "⚠️ Timed out before first stream chunk."
             emit_chat('console_log', {
-                'message': f"[{timeout_ts}] {role_label} exceeded 30s before first stream chunk"
+                'message': (
+                    f"[{timeout_ts}] {role_label} exceeded {int(first_chunk_timeout_seconds)}s "
+                    "before first stream chunk"
+                )
             })
 
             update_message_content(
@@ -3005,116 +3069,393 @@ def handle_message_task(data, conversation_id):
         return False
 
     def run_memory_management(council_results_local=None, direct_response_text=''):
-        # Keep requests non-blocking, but emit diagnostics when memory sync fails.
+        # Expose memory extraction/editing as a visible thinking-process stream.
         try:
-            if memory_manager.is_enabled(config) and memory_manager.auto_extract_enabled(config):
-                mem_writer_model_id = config.get('MemWriter', '') or leader_model_id
+            if not (memory_manager.is_enabled(config) and memory_manager.auto_extract_enabled(config)):
+                return
 
-                # Build existing memories with IDs so the model can reference them.
-                existing_flat = memory_manager.read_flat(config)
-                if existing_flat:
-                    existing_lines = []
-                    for entry in existing_flat:
-                        existing_lines.append(f"  [ID {entry['id']}] ({entry['section']}) {entry['content']}")
-                    existing_text = '\n'.join(existing_lines)
-                else:
-                    existing_text = '(none yet)'
+            mem_writer_model_id = config.get('MemWriter', '') or leader_model_id
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            message_id = uuid.uuid4().hex
+            bot_id = f"council-memwriter-{uuid.uuid4().hex[:8]}"
+            bot_name = f"MemWriter - Memory Management ({mem_writer_model_id})"
+            thinking_chunks = []
 
-                extract_sys = MEMORY_EXTRACT_PROMPT.replace('{existing_memories}', existing_text)
-                convo_summary = f"User: {user_message}"
+            def emit_memory_thinking(text):
+                chunk = str(text or '')
+                if not chunk:
+                    return
+                if not chunk.endswith('\n'):
+                    chunk += '\n'
+                thinking_chunks.append(chunk)
+                emit_chat('ai_thinking_chunk', {
+                    'bot_id': bot_id,
+                    'chunk': chunk,
+                    'message_id': message_id,
+                    'run_id': message_id,
+                    'run_group_id': run_group_id,
+                    'role_name': 'MemWriter',
+                    'model_id': mem_writer_model_id,
+                    'is_final_response': False,
+                    'event_kind': 'memory_management'
+                })
 
-                if direct_response_text:
-                    convo_summary += f"\nLeader: {direct_response_text[:500]}"
+            def finalize_memory_stream(output_text, status='done'):
+                output = str(output_text or '').strip() or 'Memory management completed.'
+                thinking_text = ''.join(thinking_chunks).strip()
 
-                if isinstance(council_results_local, dict):
-                    for key in ['Researcher', 'Creator', 'Analyzer', 'Verifier']:
-                        if key in council_results_local:
-                            convo_summary += f"\n{key}: {council_results_local[key][:500]}"
+                update_message_content(
+                    conversation_id,
+                    message_id,
+                    f"[{bot_name}] {output}"
+                )
+                update_message_fields(
+                    conversation_id,
+                    message_id,
+                    raw_markdown=output,
+                    thinking=thinking_text,
+                    stream_status=status,
+                    role_name='MemWriter',
+                    model_id=mem_writer_model_id,
+                    event_kind='memory_management'
+                )
 
-                try:
-                    extract_raw = completion_response(
-                        model=mem_writer_model_id,
-                        system_prompt=extract_sys,
-                        user_prompt=convo_summary,
-                        temperature=0.3
-                    )
-                    extracted_json_str = extract_json_from_text(extract_raw)
-                    if not extracted_json_str or not extracted_json_str.strip():
-                        _log_internal_error('run_memory_management empty extractor response', 
-                                          f"extract_raw: {repr(extract_raw[:200])}\nextracted_json_str: {repr(extracted_json_str[:200] if extracted_json_str else '')}")
-                        emit_chat('console_log', {
-                            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: empty extractor output"
-                        })
+                emit_chat('ai_response_end', {
+                    'bot_name': bot_name,
+                    'bot_id': bot_id,
+                    'message': output,
+                    'thinking': thinking_text,
+                    'timestamp': datetime.now().strftime("%H:%M:%S"),
+                    'message_id': message_id,
+                    'run_id': message_id,
+                    'run_group_id': run_group_id,
+                    'role_name': 'MemWriter',
+                    'model_id': mem_writer_model_id,
+                    'is_final_response': False,
+                    'event_kind': 'memory_management'
+                })
+
+                if conv.get('pending_message_id') == message_id:
+                    conv['pending_message_id'] = None
+
+                auto_save_chat()
+
+            append_conversation_message(
+                conversation_id,
+                role='assistant',
+                content=f"[{bot_name}] ",
+                raw_markdown='',
+                id=message_id,
+                bot_name=bot_name,
+                bot_id=bot_id,
+                run_group_id=run_group_id,
+                run_id=message_id,
+                role_name='MemWriter',
+                model_id=mem_writer_model_id,
+                thinking='',
+                stream_status='running',
+                is_final_response=False,
+                event_kind='memory_management'
+            )
+            conv['pending_message_id'] = message_id
+
+            emit_chat('ai_response_start', {
+                'bot_name': bot_name,
+                'bot_id': bot_id,
+                'timestamp': timestamp,
+                'message_id': message_id,
+                'run_id': message_id,
+                'run_group_id': run_group_id,
+                'role_name': 'MemWriter',
+                'model_id': mem_writer_model_id,
+                'is_final_response': False,
+                'event_kind': 'memory_management'
+            })
+
+            emit_memory_thinking('Preparing memory extraction context.')
+
+            # Build existing memories with IDs so the model can reference them.
+            existing_flat = memory_manager.read_flat(config)
+            emit_memory_thinking(f"Loaded {len(existing_flat)} existing memories.")
+
+            if existing_flat:
+                existing_lines = []
+                for entry in existing_flat:
+                    existing_lines.append(f"  [ID {entry['id']}] ({entry['section']}) {entry['content']}")
+                existing_text = '\n'.join(existing_lines)
+            else:
+                existing_text = '(none yet)'
+
+            extract_sys = MEMORY_EXTRACT_PROMPT.replace('{existing_memories}', existing_text)
+            convo_summary = f"User: {user_message}"
+
+            if direct_response_text:
+                convo_summary += f"\nLeader: {direct_response_text[:500]}"
+
+            if isinstance(council_results_local, dict):
+                for key in ['Researcher', 'Creator', 'Analyzer', 'Verifier']:
+                    if key in council_results_local:
+                        convo_summary += f"\n{key}: {council_results_local[key][:500]}"
+
+            emit_memory_thinking('Requesting MemWriter memory-edit proposal.')
+
+            try:
+                extract_raw = completion_response(
+                    model=mem_writer_model_id,
+                    system_prompt=extract_sys,
+                    user_prompt=convo_summary,
+                    temperature=0.3
+                )
+                extracted_json_str = extract_json_from_text(extract_raw)
+                if not extracted_json_str or not extracted_json_str.strip():
+                    _log_internal_error('run_memory_management empty extractor response', 
+                                      f"extract_raw: {repr(extract_raw[:200])}\nextracted_json_str: {repr(extracted_json_str[:200] if extracted_json_str else '')}")
+                    emit_chat('console_log', {
+                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: empty extractor output"
+                    })
+                    emit_memory_thinking('Extractor returned empty payload; no edits applied.')
+                    finalize_memory_stream('Memory extraction skipped: empty extractor output.', status='error')
+                    return
+                extract_payload = json.loads(extracted_json_str)
+            except json.JSONDecodeError as exc:
+                _log_internal_error('run_memory_management invalid extractor JSON', exc)
+                emit_chat('console_log', {
+                    'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: invalid extractor output"
+                })
+                emit_memory_thinking('Extractor returned invalid JSON; no edits applied.')
+                finalize_memory_stream('Memory extraction skipped: invalid extractor output.', status='error')
+                return
+            except Exception as exc:
+                _log_internal_error('run_memory_management extractor request failed', exc)
+                emit_chat('console_log', {
+                    'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: extractor unavailable"
+                })
+                emit_memory_thinking('Extractor request failed; no edits applied.')
+                finalize_memory_stream('Memory extraction skipped: extractor unavailable.', status='error')
+                return
+
+            try:
+                added = 0
+                updated = 0
+                deleted = 0
+                applied_updates = []
+                applied_deletes = []
+
+                def _preview_text(value, limit=160):
+                    cleaned = ' '.join(str(value or '').split())
+                    if len(cleaned) <= limit:
+                        return cleaned
+                    return cleaned[:limit - 3] + '...'
+
+                def _build_counts(flat_entries):
+                    counts = {}
+                    for entry in (flat_entries or []):
+                        section = str(entry.get('section', 'Key Facts') or 'Key Facts').strip() or 'Key Facts'
+                        content = str(entry.get('content', '') or '').strip()
+                        if not content:
+                            continue
+                        key = (section, content)
+                        counts[key] = counts.get(key, 0) + 1
+                    return counts
+
+                def _decrement_count(counts, key):
+                    current = int(counts.get(key, 0) or 0)
+                    if current <= 0:
                         return
-                    extract_payload = json.loads(extracted_json_str)
-                except json.JSONDecodeError as exc:
-                    _log_internal_error('run_memory_management invalid extractor JSON', exc)
-                    emit_chat('console_log', {
-                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: invalid extractor output"
-                    })
-                    return
-                except Exception as exc:
-                    _log_internal_error('run_memory_management extractor request failed', exc)
-                    emit_chat('console_log', {
-                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: extractor unavailable"
-                    })
-                    return
+                    if current == 1:
+                        counts.pop(key, None)
+                    else:
+                        counts[key] = current - 1
 
-                try:
-                    added = 0
-                    updated = 0
-                    deleted = 0
+                existing_by_id = {}
+                for entry in existing_flat:
+                    try:
+                        existing_by_id[int(entry.get('id'))] = {
+                            'section': str(entry.get('section', 'Key Facts') or 'Key Facts').strip() or 'Key Facts',
+                            'content': str(entry.get('content', '') or '').strip()
+                        }
+                    except (TypeError, ValueError):
+                        continue
 
-                    # Process updates first (updates don't shift indices).
-                    updated_memories = extract_payload.get('updated_memories', [])
-                    if isinstance(updated_memories, list):
-                        for item in updated_memories:
-                            if not isinstance(item, dict):
-                                continue
-                            mid = item.get('id')
-                            content = item.get('content', '').strip()
-                            if mid is None or not content:
-                                continue
-                            try:
-                                memory_manager.update_memory(int(mid), content, config)
+                updated_memories = extract_payload.get('updated_memories', [])
+                deleted_ids = extract_payload.get('deleted_memory_ids', [])
+                new_memories = extract_payload.get('new_memories', [])
+
+                emit_memory_thinking(
+                    f"Extractor proposed changes: +{len(new_memories) if isinstance(new_memories, list) else 0} "
+                    f"new, ~{len(updated_memories) if isinstance(updated_memories, list) else 0} "
+                    f"updates, -{len(deleted_ids) if isinstance(deleted_ids, list) else 0} deletes."
+                )
+
+                # Process updates first (updates don't shift indices).
+                if isinstance(updated_memories, list):
+                    for item in updated_memories:
+                        if not isinstance(item, dict):
+                            continue
+                        mid = item.get('id')
+                        content = item.get('content', '').strip()
+                        if mid is None or not content:
+                            continue
+                        try:
+                            mid_int = int(mid)
+                            prev_info = existing_by_id.get(mid_int, {
+                                'section': 'Key Facts',
+                                'content': ''
+                            })
+                            memory_manager.update_memory(mid_int, content, config)
+                            if prev_info.get('content', '') != content:
                                 updated += 1
-                            except (ValueError, TypeError, memory_manager.MemoryStoreError) as exc:
-                                _log_internal_error('run_memory_management update skipped', exc)
+                                applied_updates.append({
+                                    'id': mid_int,
+                                    'section': prev_info.get('section', 'Key Facts'),
+                                    'before': prev_info.get('content', ''),
+                                    'after': content
+                                })
+                            existing_by_id[mid_int] = {
+                                'section': prev_info.get('section', 'Key Facts'),
+                                'content': content
+                            }
+                        except (ValueError, TypeError, memory_manager.MemoryStoreError) as exc:
+                            _log_internal_error('run_memory_management update skipped', exc)
 
-                    # Process deletions (highest IDs first to avoid index shifting).
-                    deleted_ids = extract_payload.get('deleted_memory_ids', [])
-                    if isinstance(deleted_ids, list):
-                        for mid in sorted(deleted_ids, reverse=True):
-                            try:
-                                memory_manager.delete_memory(int(mid), config)
-                                deleted += 1
-                            except (ValueError, TypeError, memory_manager.MemoryStoreError) as exc:
-                                _log_internal_error('run_memory_management delete skipped', exc)
+                # Process deletions (highest IDs first to avoid index shifting).
+                if isinstance(deleted_ids, list):
+                    for mid in sorted(deleted_ids, reverse=True):
+                        try:
+                            mid_int = int(mid)
+                            prev_info = existing_by_id.get(mid_int, {
+                                'section': 'Key Facts',
+                                'content': ''
+                            })
+                            memory_manager.delete_memory(mid_int, config)
+                            deleted += 1
+                            applied_deletes.append({
+                                'id': mid_int,
+                                'section': prev_info.get('section', 'Key Facts'),
+                                'content': prev_info.get('content', '')
+                            })
+                            existing_by_id.pop(mid_int, None)
+                        except (ValueError, TypeError, memory_manager.MemoryStoreError) as exc:
+                            _log_internal_error('run_memory_management delete skipped', exc)
 
-                    # Process additions.
-                    new_memories = extract_payload.get('new_memories', [])
-                    if isinstance(new_memories, list) and new_memories:
-                        memory_manager.add_memories_bulk(new_memories, config)
-                        added = len(new_memories)
+                # Process additions.
+                if isinstance(new_memories, list) and new_memories:
+                    memory_manager.add_memories_bulk(new_memories, config)
 
-                    # Log summary.
-                    parts = []
-                    if added:
-                        parts.append(f"+{added} added")
-                    if updated:
-                        parts.append(f"~{updated} updated")
-                    if deleted:
-                        parts.append(f"-{deleted} removed")
-                    if parts:
-                        emit_chat('console_log', {
-                            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory managed ({', '.join(parts)})"
+                pre_counts = _build_counts(existing_flat)
+                post_flat = memory_manager.read_flat(config)
+                post_counts = _build_counts(post_flat)
+
+                added_counts = {}
+                removed_counts = {}
+
+                for key, post_count in post_counts.items():
+                    delta = int(post_count or 0) - int(pre_counts.get(key, 0) or 0)
+                    if delta > 0:
+                        added_counts[key] = delta
+
+                for key, pre_count in pre_counts.items():
+                    delta = int(pre_count or 0) - int(post_counts.get(key, 0) or 0)
+                    if delta > 0:
+                        removed_counts[key] = delta
+
+                # Updates naturally look like remove+add in multiset diff; neutralize them.
+                for change in applied_updates:
+                    section = str(change.get('section', 'Key Facts') or 'Key Facts').strip() or 'Key Facts'
+                    before_key = (section, str(change.get('before', '') or '').strip())
+                    after_key = (section, str(change.get('after', '') or '').strip())
+                    if before_key[1]:
+                        _decrement_count(removed_counts, before_key)
+                    if after_key[1]:
+                        _decrement_count(added_counts, after_key)
+
+                applied_additions = []
+                for key, count in added_counts.items():
+                    section, content_value = key
+                    for _ in range(int(count or 0)):
+                        applied_additions.append({
+                            'section': section,
+                            'content': content_value
                         })
-                        emit_chat('memory_updated', {'added': added, 'updated': updated, 'deleted': deleted})
-                except memory_manager.MemoryStoreError as exc:
-                    _log_internal_error('run_memory_management storage error', exc)
+
+                added = len(applied_additions)
+
+                parts = []
+                if added:
+                    parts.append(f"+{added} added")
+                if updated:
+                    parts.append(f"~{updated} updated")
+                if deleted:
+                    parts.append(f"-{deleted} removed")
+                if parts:
                     emit_chat('console_log', {
-                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: storage unavailable"
+                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory managed ({', '.join(parts)})"
                     })
+                    emit_chat('memory_updated', {'added': added, 'updated': updated, 'deleted': deleted})
+
+                current_count = len(post_flat)
+
+                compact_lines = []
+                for item in applied_additions[:20]:
+                    compact_lines.append(
+                        f"[ADD] ({item.get('section', 'Key Facts')}) {_preview_text(item.get('content', ''), limit=220)}"
+                    )
+                for item in applied_updates[:20]:
+                    compact_lines.append(
+                        f"[EDIT] ID {item.get('id')} ({item.get('section', 'Key Facts')}) "
+                        f"{_preview_text(item.get('before', ''), limit=90)} -> {_preview_text(item.get('after', ''), limit=90)}"
+                    )
+                for item in applied_deletes[:20]:
+                    compact_lines.append(
+                        f"[REMOVE] ID {item.get('id')} ({item.get('section', 'Key Facts')}) {_preview_text(item.get('content', ''), limit=220)}"
+                    )
+
+                overflow = (
+                    max(0, len(applied_additions) - 20)
+                    + max(0, len(applied_updates) - 20)
+                    + max(0, len(applied_deletes) - 20)
+                )
+                if overflow > 0:
+                    compact_lines.append(f"[EDIT] ... and {overflow} more memory changes")
+
+                if not compact_lines:
+                    compact_lines.append('[EDIT] No memory changes')
+
+                report_text = '\n'.join(compact_lines)
+
+                if added:
+                    first_added = applied_additions[0]
+                    emit_memory_thinking(
+                        f"Added sample: ({first_added.get('section', 'Key Facts')}) "
+                        f"{_preview_text(first_added.get('content', ''), limit=100)}"
+                    )
+                if updated:
+                    first_updated = applied_updates[0]
+                    emit_memory_thinking(
+                        f"Edited sample ID {first_updated.get('id')}: "
+                        f"{_preview_text(first_updated.get('before', ''), limit=60)} -> "
+                        f"{_preview_text(first_updated.get('after', ''), limit=60)}"
+                    )
+                if deleted:
+                    first_deleted = applied_deletes[0]
+                    emit_memory_thinking(
+                        f"Removed sample ID {first_deleted.get('id')}: "
+                        f"{_preview_text(first_deleted.get('content', ''), limit=100)}"
+                    )
+
+                if parts:
+                    emit_memory_thinking(f"Applied memory edits: {', '.join(parts)}. Current total: {current_count}.")
+                    finalize_memory_stream(report_text)
+                else:
+                    emit_memory_thinking(f"No memory edits needed. Current total: {current_count}.")
+                    finalize_memory_stream(report_text)
+            except memory_manager.MemoryStoreError as exc:
+                _log_internal_error('run_memory_management storage error', exc)
+                emit_chat('console_log', {
+                    'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: storage unavailable"
+                })
+                emit_memory_thinking('Memory storage error encountered while applying edits.')
+                finalize_memory_stream('Memory extraction skipped: storage unavailable.', status='error')
         except Exception as e:
             _log_internal_error('run_memory_management unexpected error', e)
             emit_chat('console_log', {

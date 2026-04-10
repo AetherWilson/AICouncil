@@ -1442,6 +1442,70 @@
             background: linear-gradient(90deg, #4ec9b0, #9cdcfe);
         }
 
+        .memory-compact-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin: 4px 0;
+        }
+
+        .memory-compact-line {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+            font-size: 0.87em;
+            line-height: 1.35;
+            color: #d6dde7;
+            word-break: break-word;
+        }
+
+        .memory-tag {
+            display: inline-block;
+            min-width: 0;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.82em;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            white-space: nowrap;
+        }
+
+        .memory-tag.add {
+            color: #b8dcff;
+            border: 1px solid #315a86;
+            border-radius: 999px;
+            background: rgba(20, 39, 64, 0.42);
+            padding: 2px 9px;
+            font-size: 0.76em;
+            letter-spacing: 0.08em;
+        }
+
+        .memory-tag.edit {
+            color: #cfe4ff;
+            border: 1px solid #4b6389;
+            border-radius: 999px;
+            background: rgba(28, 40, 59, 0.42);
+            padding: 2px 9px;
+            font-size: 0.76em;
+            letter-spacing: 0.08em;
+        }
+
+        .memory-tag.remove {
+            color: #ffd2d2;
+            border: 1px solid #8f3f4a;
+            border-radius: 999px;
+            background: rgba(62, 23, 28, 0.4);
+            padding: 2px 9px;
+            font-size: 0.76em;
+            letter-spacing: 0.08em;
+        }
+
+        .memory-line-body {
+            flex: 1;
+            min-width: 0;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
         /* ── Unified Thinking Process container (all non-final output) ── */
         .thinking-process-container {
             background: transparent;
@@ -2691,15 +2755,37 @@
         }
 
         function normalizeSubroleRoleName(role) {
-            const raw = String(role || '').trim().toLowerCase().replace(/\s+/g, '_');
+            const raw = String(role || '').trim().toLowerCase();
+            if (!raw) return '';
+
+            const normalized = raw
+                .replace(/[^a-z0-9_\s-]/g, ' ')
+                .replace(/[\s-]+/g, '_')
+                .replace(/_+/g, '_')
+                .replace(/^_+|_+$/g, '');
+
             const mapping = {
                 researcher: 'Researcher',
+                research: 'Researcher',
                 creator: 'Creator',
                 creative_writer: 'Creator',
+                creative: 'Creator',
                 analyzer: 'Analyzer',
-                verifier: 'Verifier'
+                analysis: 'Analyzer',
+                verifier: 'Verifier',
+                verify: 'Verifier'
             };
-            return mapping[raw] || '';
+
+            if (mapping[normalized]) {
+                return mapping[normalized];
+            }
+
+            if (normalized.includes('research')) return 'Researcher';
+            if (normalized.includes('creat')) return 'Creator';
+            if (normalized.includes('analy')) return 'Analyzer';
+            if (normalized.includes('verif')) return 'Verifier';
+
+            return '';
         }
 
         function getConfiguredSubroleModelName(roleName) {
@@ -3259,15 +3345,36 @@
             if (!payload || !Array.isArray(payload.doubt_points)) return;
 
             const cycle = inferDebateCycle(data);
+            const fallbackQuestionedRoles = Array.isArray(payload.questioned_roles)
+                ? payload.questioned_roles
+                    .map((role) => normalizeSubroleRoleName(role))
+                    .filter((role) => !!role)
+                : [];
+
             const groupedByRole = {};
             payload.doubt_points.forEach((point) => {
-                const normalized = normalizeDoubtPoint(point);
+                const fallbackRole = fallbackQuestionedRoles.length === 1
+                    ? fallbackQuestionedRoles[0]
+                    : '';
+                const normalized = normalizeDoubtPoint(point, fallbackRole);
                 if (!normalized.target_role) return;
                 if (!groupedByRole[normalized.target_role]) {
                     groupedByRole[normalized.target_role] = [];
                 }
                 groupedByRole[normalized.target_role].push(normalized);
             });
+
+            // Some model outputs omit `target_role` in doubt points; if only one role
+            // was questioned, attach those doubts to that role so timeline stays aligned.
+            if (Object.keys(groupedByRole).length === 0 && fallbackQuestionedRoles.length === 1) {
+                const singleRole = fallbackQuestionedRoles[0];
+                const fallbackPoints = payload.doubt_points
+                    .map((point) => normalizeDoubtPoint(point, singleRole))
+                    .filter((point) => !!point.target_role);
+                if (fallbackPoints.length > 0) {
+                    groupedByRole[singleRole] = fallbackPoints;
+                }
+            }
 
             Object.entries(groupedByRole).forEach(([targetRole, rolePoints]) => {
                 const roleState = ensureSubroleRoleState(chatId, runGroupId, targetRole);
@@ -3408,7 +3515,7 @@
             const botId = (data.bot_id || '').toLowerCase();
             if (botId.startsWith('council-')) return true;
             const sender = (data.bot_name || '').toLowerCase();
-            const roleHints = ['leader', 'markreader', 'researcher', 'creator', 'creative writer', 'analyzer', 'verifier'];
+            const roleHints = ['leader', 'markreader', 'researcher', 'creator', 'creative writer', 'analyzer', 'verifier', 'memwriter', 'memory management'];
             return roleHints.some(hint => sender.includes(hint));
         }
 
@@ -3419,7 +3526,7 @@
             const sender = (msg.sender || '').toLowerCase().trim();
             if (sender === 'system') return false;
             if (msg.is_council_intermediate === true) return true;
-            const roleHints = ['leader', 'markreader', 'researcher', 'creator', 'creative writer', 'analyzer', 'verifier'];
+            const roleHints = ['leader', 'markreader', 'researcher', 'creator', 'creative writer', 'analyzer', 'verifier', 'memwriter', 'memory management'];
             return roleHints.some(hint => sender.includes(hint));
         }
 
@@ -4852,11 +4959,7 @@
         function isDebateQuestioningPayload(payload) {
             return !!payload
                 && !Array.isArray(payload)
-                && Array.isArray(payload.doubt_points)
-                && (
-                    Object.prototype.hasOwnProperty.call(payload, 'confidence_in_doubt')
-                    || Array.isArray(payload.questioned_roles)
-                );
+                && Array.isArray(payload.doubt_points);
         }
 
         function isDebateVerdictPayload(payload) {
@@ -5025,7 +5128,43 @@
             return html;
         }
 
+        function formatMemoryManagementCompact(content) {
+            const lines = String(content || '')
+                .split(/\r?\n/)
+                .map((line) => String(line || '').trim())
+                .filter((line) => line.length > 0);
+
+            if (lines.length === 0) {
+                return '';
+            }
+
+            const rows = lines.map((line) => {
+                const match = line.match(/^\[(ADD|EDIT|REMOVE)\]\s*(.*)$/i);
+                if (!match) {
+                    return `<div class="memory-compact-line"><span class="memory-line-body">${escapeHtml(line)}</span></div>`;
+                }
+
+                const kind = String(match[1] || '').toUpperCase();
+                const body = String(match[2] || '').trim();
+                const kindClass = kind === 'ADD'
+                    ? 'add'
+                    : (kind === 'EDIT' ? 'edit' : 'remove');
+
+                return `
+                    <div class="memory-compact-line">
+                        <span class="memory-tag ${kindClass}">${escapeHtml(kind)}</span>
+                        <span class="memory-line-body">${escapeHtml(body)}</span>
+                    </div>`;
+            });
+
+            return `<div class="memory-compact-list">${rows.join('')}</div>`;
+        }
+
         function formatStructuredCouncilOutput(content, sender = '', options = {}) {
+            if (String(options.eventKind || '').toLowerCase() === 'memory_management') {
+                return formatMemoryManagementCompact(content) || formatMessage(content);
+            }
+
             const payload = parseStructuredJson(content);
             if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
                 return formatMessage(content);
@@ -6170,7 +6309,8 @@
                 allowStructuredCards: !!entry.isNonFinal,
                 chatId,
                 runGroupId,
-                roleName: data.role_name || null
+                roleName: data.role_name || null,
+                eventKind: data.event_kind || null
             });
             const thinkingBlock = hasThinking ? `
                 <div class="thinking-block">
@@ -6819,7 +6959,8 @@
                         allowStructuredCards: isNonFinal,
                         chatId,
                         runGroupId,
-                        roleName: msg.role_name || null
+                        roleName: msg.role_name || null,
+                        eventKind: msg.event_kind || null
                     })
                     : formatMessage(displaySource);
 
