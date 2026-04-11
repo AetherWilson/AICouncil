@@ -118,6 +118,62 @@ def _format_chat_history_for_log(chat_history):
 
     return '\n\n'.join(blocks)
 
+
+def _redact_message_content_for_log(content):
+    if isinstance(content, list):
+        redacted_items = []
+        for item in content:
+            if not isinstance(item, dict):
+                redacted_items.append(item)
+                continue
+
+            item_type = str(item.get('type') or '').strip().lower()
+            if item_type == 'file':
+                file_meta = item.get('file') if isinstance(item.get('file'), dict) else {}
+                filename = str(file_meta.get('filename') or '[file]')
+                file_data = str(file_meta.get('file_data') or '')
+                redacted_items.append({
+                    'type': 'file',
+                    'file': {
+                        'filename': filename,
+                        'file_data': f'[REDACTED_PDF_DATA:{len(file_data)} chars]'
+                    }
+                })
+                continue
+
+            if item_type == 'image_url':
+                image_meta = item.get('image_url') if isinstance(item.get('image_url'), dict) else {}
+                url = str(image_meta.get('url') or '')
+                redacted_items.append({
+                    'type': 'image_url',
+                    'image_url': {
+                        'url': '[REDACTED_IMAGE_DATA]' if url.startswith('data:') else url
+                    }
+                })
+                continue
+
+            redacted_items.append(item)
+
+        return redacted_items
+
+    return content
+
+
+def _format_messages_for_log(messages):
+    safe_messages = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            safe_messages.append(message)
+            continue
+        safe = dict(message)
+        safe['content'] = _redact_message_content_for_log(safe.get('content'))
+        safe_messages.append(safe)
+
+    try:
+        return json.dumps(safe_messages, ensure_ascii=False, indent=2)
+    except Exception:
+        return _stringify_history_content(safe_messages)
+
 def _build_user_content(user_prompt, image_urls=None, pdf_inputs=None):
     """Build multi-modal user content blocks for the OpenAI-compatible API."""
     content = [{"type": "text", "text": user_prompt}]
@@ -218,6 +274,7 @@ def completion_response(model, system_prompt, user_prompt, chat_history = None, 
     content = response.choices[0].message.content
     
     formatted_history = _format_chat_history_for_log(chat_history)
+    formatted_messages = _format_messages_for_log(messages)
 
     # Prepare log content with input and output clearly labeled
     log_content = f"""{'='*80}
@@ -231,6 +288,9 @@ User Prompt:
 
 Chat History:
 {formatted_history}
+
+Request Messages (redacted):
+{formatted_messages}
 
 {'='*80}
 OUTPUT
@@ -348,6 +408,7 @@ def completion_response_stream(model, system_prompt, user_prompt, chat_history=N
     # Only log when the stream finished naturally (not when stopped early)
     if completed:
         formatted_history = _format_chat_history_for_log(chat_history)
+        formatted_messages = _format_messages_for_log(messages)
         log_content = f"""{'='*80}
 INPUT
 {'='*80}
@@ -359,6 +420,9 @@ User Prompt:
 
 Chat History:
 {formatted_history}
+
+Request Messages (redacted):
+{formatted_messages}
 
 {'='*80}
 THINKING

@@ -1506,6 +1506,529 @@
             overflow-wrap: anywhere;
         }
 
+        .agent-step-summary-text {
+            margin-bottom: 6px;
+            color: #d6dde7;
+            line-height: 1.45;
+        }
+
+        .agent-step-preview {
+            margin: 8px 0 0;
+            padding: 8px 10px;
+            border: 1px solid #2f3948;
+            border-radius: 8px;
+            background: rgba(16, 21, 30, 0.6);
+        }
+
+        .agent-step-preview-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 6px;
+        }
+
+        .agent-step-preview-chip {
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid #3a4b61;
+            background: rgba(48, 67, 94, 0.35);
+            color: #b7cff1;
+            font-size: 0.74em;
+            letter-spacing: 0.03em;
+        }
+
+        .agent-step-preview-chip.chip-step-type {
+            color: #c6dfff;
+            border-color: #516887;
+            background: rgba(38, 52, 74, 0.44);
+        }
+
+        .agent-step-preview-chip.chip-action {
+            color: #ffd9a8;
+            border-color: #7a5b2f;
+            background: rgba(82, 57, 23, 0.42);
+        }
+
+        .agent-step-preview-chip.chip-skill {
+            color: #9be0c7;
+            border-color: #2f6a57;
+            background: rgba(20, 62, 47, 0.42);
+        }
+
+        .agent-step-preview-chip.chip-model {
+            color: #9fd0ff;
+            border-color: #2f587e;
+            background: rgba(20, 42, 68, 0.42);
+        }
+
+        .agent-step-preview-chip.chip-confidence {
+            color: #e3d6ff;
+            border-color: #5a468a;
+            background: rgba(45, 31, 72, 0.45);
+        }
+
+        .agent-step-preview-chip.chip-verifier {
+            color: #ffc9d4;
+            border-color: #7f3b54;
+            background: rgba(69, 23, 38, 0.44);
+        }
+
+        .agent-step-preview-text {
+            color: #aab7ca;
+            font-size: 0.84em;
+            line-height: 1.35;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .agent-step-payload {
+            margin-top: 8px;
+            border: 1px solid #2f3948;
+            border-radius: 8px;
+            background: rgba(15, 19, 27, 0.74);
+            overflow: hidden;
+            display: none;
+        }
+
+        .agent-step-payload.open {
+            display: block;
+        }
+
+        .agent-step-payload > summary {
+            cursor: pointer;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 8px 10px;
+            font-size: 0.79em;
+            font-weight: 700;
+            color: #b6c7dd;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            background: rgba(25, 32, 43, 0.8);
+        }
+
+        .agent-step-payload > summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .agent-step-payload-summary {
+            color: #8fa6c4;
+            font-size: 0.76em;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            text-transform: none;
+            max-width: 50%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .agent-step-payload-content {
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .agent-payload-section {
+            border: 1px solid #2f3948;
+            border-radius: 8px;
+            background: rgba(20, 26, 36, 0.62);
+            padding: 8px;
+        }
+
+        .agent-payload-section-title {
+            color: #9cb5d4;
+            font-size: 0.72em;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .agent-payload-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 6px;
+        }
+
+        .agent-payload-row {
+            display: grid;
+            grid-template-columns: minmax(84px, auto) 1fr;
+            gap: 8px;
+            align-items: start;
+        }
+
+        .agent-payload-key {
+            color: #86a5ca;
+            font-size: 0.7em;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            font-weight: 700;
+            padding-top: 2px;
+        }
+
+        .agent-payload-value {
+            color: #d6dde7;
+            font-size: 0.86em;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .agent-payload-nested {
+            border: 1px dashed #3a4a5e;
+            border-radius: 6px;
+            padding: 6px;
+            background: rgba(11, 15, 21, 0.5);
+        }
+
+        .agent-payload-nested > summary {
+            cursor: pointer;
+            color: #9eb5d1;
+            font-size: 0.78em;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .agent-payload-raw {
+            margin-top: 2px;
+        }
+
+        .agent-payload-raw > summary {
+            cursor: pointer;
+            color: #8ea8c6;
+            font-size: 0.78em;
+            font-weight: 600;
+        }
+
+        .agent-payload-raw pre {
+            margin-top: 6px;
+            padding: 8px;
+            border-radius: 6px;
+            border: 1px solid #2f3948;
+            background: rgba(8, 12, 18, 0.75);
+            color: #cfd8e5;
+            font-size: 0.82em;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .agent-step-card {
+            margin: 10px 0;
+            position: relative;
+            padding-left: 20px;
+        }
+
+        .agent-step-card::before {
+            content: '';
+            position: absolute;
+            left: 7px;
+            top: -10px;
+            bottom: -10px;
+            width: 2px;
+            background: linear-gradient(180deg, rgba(45, 62, 85, 0.08), rgba(56, 78, 106, 0.78), rgba(45, 62, 85, 0.12));
+        }
+
+        .agent-step-card:first-child::before {
+            top: 20px;
+        }
+
+        .agent-step-card:last-child::before {
+            bottom: calc(100% - 22px);
+        }
+
+        .agent-step-card::after {
+            content: '';
+            position: absolute;
+            left: 2px;
+            top: 18px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid #0f1520;
+            background: #41597a;
+            box-shadow: 0 0 0 3px rgba(39, 54, 73, 0.5);
+            z-index: 2;
+        }
+
+        .agent-step-card.agent-step-active::after {
+            background: #79b5ff;
+            box-shadow: 0 0 0 4px rgba(48, 86, 134, 0.5);
+        }
+
+        .agent-step-card .message-wrapper {
+            border: 1px solid #2f3948;
+            border-left-width: 3px;
+            border-radius: 10px;
+            padding: 10px 12px;
+            background: linear-gradient(180deg, rgba(14, 19, 28, 0.86), rgba(8, 12, 19, 0.82));
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+        }
+
+        .agent-step-card.agent-step-active .message-wrapper {
+            box-shadow: 0 0 0 1px rgba(85, 130, 188, 0.26);
+        }
+
+        .agent-step-card.agent-step-collapsed .message-wrapper {
+            opacity: 0.88;
+        }
+
+        .agent-step-title-band {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding: 6px 9px;
+            border-radius: 8px;
+            border: 1px solid #355173;
+            background: rgba(28, 45, 67, 0.56);
+            color: #bfdcff;
+            font-size: 0.75em;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            font-weight: 700;
+        }
+
+        .agent-step-title-band-toggle {
+            width: 100%;
+            text-align: left;
+            appearance: none;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        .agent-step-title-band-toggle:focus-visible {
+            outline: 2px solid rgba(126, 176, 245, 0.75);
+            outline-offset: 1px;
+        }
+
+        .agent-step-type-pill {
+            min-width: 26px;
+            height: 22px;
+            padding: 0 6px;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(16, 26, 38, 0.56);
+            color: inherit;
+            font-size: 0.86em;
+            font-weight: 700;
+        }
+
+        .agent-step-type-label {
+            font-weight: 700;
+            color: inherit;
+            white-space: nowrap;
+        }
+
+        .agent-step-payload-toggle {
+            margin-left: auto;
+            font-size: 0.72em;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: rgba(223, 236, 255, 0.9);
+            opacity: 0.92;
+        }
+
+        .agent-step-header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 2px;
+        }
+
+        .agent-step-status-badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            border: 1px solid #42536a;
+            padding: 2px 10px;
+            font-size: 0.72em;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            white-space: nowrap;
+            margin-left: 8px;
+        }
+
+        .agent-step-card.agent-step-collapsed .agent-step-flow,
+        .agent-step-card.agent-step-collapsed .agent-step-payload {
+            display: none;
+        }
+
+        .agent-step-card {
+            padding-left: 0;
+        }
+
+        .agent-step-card::before,
+        .agent-step-card::after {
+            display: none;
+        }
+
+        .agent-step-flow {
+            margin: 7px 0 0;
+            padding: 8px 10px;
+            border: 1px solid #2f3948;
+            border-radius: 8px;
+            background: rgba(10, 15, 23, 0.65);
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .agent-step-flow-row {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 8px;
+            align-items: baseline;
+        }
+
+        .agent-step-flow-label {
+            font-size: 0.7em;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #88a8cf;
+        }
+
+        .agent-step-flow-text {
+            font-size: 0.84em;
+            color: #b8c6d9;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
+
+        .agent-step-card.agent-step-status-running .message-wrapper {
+            border-color: #386ba6;
+            border-left-color: #5ca4ff;
+        }
+
+        .agent-step-card.agent-step-status-running .agent-step-title-band {
+            border-color: #3d6ea1;
+            background: rgba(27, 52, 81, 0.6);
+            color: #c7e2ff;
+        }
+
+        .agent-step-card.agent-step-status-running .agent-step-status-badge {
+            color: #c4e2ff;
+            border-color: #3f6ea0;
+            background: rgba(25, 49, 77, 0.7);
+        }
+
+        .agent-step-card.agent-step-status-done .message-wrapper {
+            border-color: #2f6e54;
+            border-left-color: #50d3a0;
+        }
+
+        .agent-step-card.agent-step-status-done .agent-step-title-band {
+            border-color: #3f7e64;
+            background: rgba(23, 57, 45, 0.62);
+            color: #c4f4df;
+        }
+
+        .agent-step-card.agent-step-status-done .agent-step-status-badge {
+            color: #bdf1de;
+            border-color: #3f7e64;
+            background: rgba(21, 58, 44, 0.75);
+        }
+
+        .agent-step-card.agent-step-status-error .message-wrapper {
+            border-color: #7d3e53;
+            border-left-color: #ff7f9f;
+        }
+
+        .agent-step-card.agent-step-status-error .agent-step-title-band {
+            border-color: #8f4f64;
+            background: rgba(67, 24, 37, 0.62);
+            color: #ffd2de;
+        }
+
+        .agent-step-card.agent-step-status-error .agent-step-status-badge {
+            color: #ffd1dc;
+            border-color: #8f4f64;
+            background: rgba(73, 27, 40, 0.76);
+        }
+
+        .agent-step-card.agent-step-status-notice .message-wrapper,
+        .agent-step-card.agent-step-status-queued .message-wrapper {
+            border-color: #7a6436;
+            border-left-color: #f1c86f;
+        }
+
+        .agent-step-card.agent-step-status-notice .agent-step-title-band,
+        .agent-step-card.agent-step-status-queued .agent-step-title-band {
+            border-color: #8a7446;
+            background: rgba(80, 62, 30, 0.64);
+            color: #ffe3b2;
+        }
+
+        .agent-step-card.agent-step-status-notice .agent-step-status-badge,
+        .agent-step-card.agent-step-status-queued .agent-step-status-badge {
+            color: #ffe2ad;
+            border-color: #8b7544;
+            background: rgba(79, 62, 29, 0.72);
+        }
+
+        .agent-step-card.agent-step-type-leader-plan .agent-step-title-band {
+            border-color: #695293;
+            background: rgba(57, 37, 82, 0.64);
+            color: #e4d1ff;
+        }
+
+        .agent-step-card.agent-step-type-skill-call .agent-step-title-band {
+            border-color: #2c6481;
+            background: rgba(24, 54, 74, 0.62);
+            color: #c6e9ff;
+        }
+
+        .agent-step-card.agent-step-type-verifier-trigger .agent-step-title-band {
+            border-color: #834b5a;
+            background: rgba(69, 31, 43, 0.64);
+            color: #ffd3de;
+        }
+
+        .agent-step-card.agent-step-type-memory-read .agent-step-title-band,
+        .agent-step-card.agent-step-type-memory-write .agent-step-title-band {
+            border-color: #3e735d;
+            background: rgba(27, 58, 45, 0.64);
+            color: #c8f0df;
+        }
+
+        .agent-step-card.agent-step-type-redirect-input .agent-step-title-band,
+        .agent-step-card.agent-step-type-iteration-warning .agent-step-title-band {
+            border-color: #8a7447;
+            background: rgba(73, 57, 30, 0.63);
+            color: #ffe6ba;
+        }
+
+        .agent-step-card.agent-step-type-skill-call .agent-step-flow-label {
+            color: #8bc9ff;
+        }
+
+        .agent-step-card.agent-step-type-leader-plan .agent-step-flow-label {
+            color: #dfb3ff;
+        }
+
+        .agent-step-card.agent-step-type-memory-read .agent-step-flow-label,
+        .agent-step-card.agent-step-type-memory-write .agent-step-flow-label {
+            color: #9ee9c9;
+        }
+
+        .agent-step-card.agent-step-type-verifier-trigger .agent-step-flow-label {
+            color: #ffd0d9;
+        }
+
         /* ── Unified Thinking Process container (all non-final output) ── */
         .thinking-process-container {
             background: transparent;
@@ -2732,6 +3255,13 @@
                             run_group_id: null,
                             role_name: null
                         }
+                    },
+                    agent_tracking: {
+                        runs: {}
+                    },
+                    run_tracking: {
+                        current_run_group_id: null,
+                        last_completed_run_group_id: null
                     }
                 };
             }
@@ -3546,6 +4076,54 @@
             state.thinking_process.collapsed = keepCollapsed ? prevCollapsed : false;
         }
 
+        function buildRuntimeRunGroupId(prefix = 'rungrp-local') {
+            return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        }
+
+        function collapseOtherThinkingContainers(chatId, keepRunGroupId = null) {
+            if (!chatId || chatId !== getActiveChatId()) return;
+            const conversationWindow = getConvWindow();
+            if (!conversationWindow) return;
+
+            const keepKey = keepRunGroupId ? String(keepRunGroupId) : '';
+            conversationWindow.querySelectorAll('.thinking-process-container').forEach((container) => {
+                const runGroupId = String(container.getAttribute('data-run-group-id') || '');
+                if (keepKey && runGroupId === keepKey) {
+                    return;
+                }
+                container.classList.add('collapsed');
+            });
+        }
+
+        function resolveEventRunGroupId(chatId, incomingRunGroupId = null) {
+            const state = ensureConversation(chatId);
+            if (!state) return null;
+
+            const incoming = String(incomingRunGroupId || '').trim();
+            if (incoming) {
+                if (state.run_tracking) {
+                    state.run_tracking.current_run_group_id = incoming;
+                }
+                return incoming;
+            }
+
+            const fromTracking = String(state.run_tracking && state.run_tracking.current_run_group_id || '').trim();
+            if (fromTracking) {
+                return fromTracking;
+            }
+
+            const fromThinking = String(state.thinking_process && state.thinking_process.active_run_group_id || '').trim();
+            if (fromThinking) {
+                return fromThinking;
+            }
+
+            const fallback = buildRuntimeRunGroupId();
+            if (state.run_tracking) {
+                state.run_tracking.current_run_group_id = fallback;
+            }
+            return fallback;
+        }
+
         function ensureThinkingProcessContainer(conversationWindow, state, chatIdForToggle, options = {}, runGroupId = null) {
             if (!conversationWindow || !state) return null;
             const forceNew = !!options.forceNew;
@@ -3640,6 +4218,696 @@
             }
 
             return normalized.length > 90 ? `${normalized.slice(0, 90)}...` : normalized;
+        }
+
+        function formatAgentPayloadKey(key) {
+            const raw = String(key || '').trim();
+            if (!raw) return 'Field';
+            return raw
+                .replace(/_/g, ' ')
+                .replace(/\b\w/g, (ch) => ch.toUpperCase());
+        }
+
+        function truncatePayloadText(text, maxLen = 140) {
+            const preview = extractFirstSentencePreview(String(text || ''));
+            if (!preview) return '';
+            return preview.length > maxLen ? `${preview.slice(0, maxLen - 3)}...` : preview;
+        }
+
+        function summarizePayloadValue(value, maxLen = 140) {
+            if (value === null) return 'null';
+            if (value === undefined) return 'undefined';
+
+            if (typeof value === 'string') {
+                const normalized = value.replace(/\s+/g, ' ').trim();
+                if (!normalized) return '(empty text)';
+                return normalized.length > maxLen ? `${normalized.slice(0, maxLen - 3)}...` : normalized;
+            }
+
+            if (typeof value === 'number' || typeof value === 'boolean') {
+                return String(value);
+            }
+
+            if (Array.isArray(value)) {
+                return `${value.length} item${value.length === 1 ? '' : 's'}`;
+            }
+
+            if (typeof value === 'object') {
+                const count = Object.keys(value).length;
+                return `${count} field${count === 1 ? '' : 's'}`;
+            }
+
+            return String(value);
+        }
+
+        function summarizePayloadObject(value, maxLen = 140) {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) {
+                return summarizePayloadValue(value, maxLen);
+            }
+
+            const preferredKeys = [
+                'id', 'skill_id', 'skill', 'name', 'title', 'type',
+                'model', 'path', 'reason', 'description', 'result'
+            ];
+            const parts = [];
+
+            preferredKeys.forEach((key) => {
+                if (parts.length >= 3) return;
+                if (!Object.prototype.hasOwnProperty.call(value, key)) return;
+                const raw = value[key];
+                if (raw === null || raw === undefined) return;
+                if (typeof raw === 'object') return;
+                const cleaned = String(raw).replace(/\s+/g, ' ').trim();
+                if (!cleaned) return;
+                parts.push(cleaned);
+            });
+
+            if (parts.length === 0) {
+                const fallbackKeys = Object.keys(value).filter((key) => {
+                    const raw = value[key];
+                    return raw !== null && raw !== undefined && typeof raw !== 'object' && String(raw).trim().length > 0;
+                }).slice(0, 2);
+
+                fallbackKeys.forEach((key) => {
+                    const cleaned = String(value[key]).replace(/\s+/g, ' ').trim();
+                    parts.push(`${formatAgentPayloadKey(key)}: ${cleaned}`);
+                });
+            }
+
+            if (parts.length === 0) {
+                return `${Object.keys(value).length} field${Object.keys(value).length === 1 ? '' : 's'}`;
+            }
+
+            const merged = parts.join(' | ');
+            return merged.length > maxLen ? `${merged.slice(0, maxLen - 3)}...` : merged;
+        }
+
+        function buildAgentPayloadPreview(payload, stepType) {
+            const chips = [];
+            const info = {
+                chips,
+                text: ''
+            };
+
+            if (!payload || typeof payload !== 'object') {
+                info.text = truncatePayloadText(String(payload || ''));
+                return info;
+            }
+
+            if (stepType) {
+                chips.push(formatAgentStepTypeLabel(stepType));
+            }
+
+            if (typeof payload.confidence === 'number' && Number.isFinite(payload.confidence)) {
+                const pct = Math.max(0, Math.min(100, Math.round(payload.confidence * 100)));
+                chips.push(`${pct}% confidence`);
+            }
+
+            if (payload.requires_verifier === true || payload.verifier_trigger === true) {
+                chips.push('Verifier');
+            }
+
+            const action = (payload.action && typeof payload.action === 'object') ? payload.action : null;
+            if (action && action.type) {
+                chips.push(`Action: ${String(action.type)}`);
+            }
+            if (action && action.skill) {
+                chips.push(String(action.skill));
+            }
+
+            if (payload.skill) {
+                chips.push(String(payload.skill));
+            }
+
+            if (payload.model) {
+                chips.push(String(payload.model));
+            }
+
+            const previewCandidates = [
+                action && action.text,
+                action && action.reason,
+                action && action.args && action.args.task,
+                payload.summary,
+                payload.thought,
+                payload.reason,
+                payload.args && payload.args.task,
+                payload.result && payload.result.result,
+                payload.result
+            ];
+
+            const previewText = previewCandidates
+                .map((item) => (typeof item === 'string' ? item.trim() : ''))
+                .find((item) => item.length > 0);
+
+            if (previewText) {
+                info.text = truncatePayloadText(previewText, 160);
+            } else {
+                const keys = Object.keys(payload).slice(0, 4);
+                info.text = keys.length > 0 ? `Fields: ${keys.join(', ')}` : 'Structured payload';
+            }
+
+            info.chips = chips.slice(0, 5);
+            return info;
+        }
+
+        function renderAgentPayloadPreview(payload, stepType) {
+            const preview = buildAgentPayloadPreview(payload, stepType);
+            const chipsHtml = preview.chips.length > 0
+                ? `<div class="agent-step-preview-chips">${preview.chips.map((chip) => {
+                    const chipClass = getAgentPreviewChipClass(chip);
+                    return `<span class="agent-step-preview-chip ${chipClass}">${escapeHtml(String(chip))}</span>`;
+                }).join('')}</div>`
+                : '';
+            const textHtml = preview.text
+                ? `<div class="agent-step-preview-text">${escapeHtml(preview.text)}</div>`
+                : '';
+            return `<div class="agent-step-preview">${chipsHtml}${textHtml}</div>`;
+        }
+
+        function getAgentPreviewChipClass(chip) {
+            const text = String(chip || '').toLowerCase();
+            if (['leader plan', 'skill call', 'verifier', 'memory read', 'memory write', 'redirect input', 'iteration warning', 'skills catalog'].includes(text)) {
+                return 'chip-step-type';
+            }
+            if (text.includes('action:')) return 'chip-action';
+            if (text.includes('confidence')) return 'chip-confidence';
+            if (text === 'verifier') return 'chip-verifier';
+            if (text.includes('skill')) return 'chip-skill';
+            if (text.includes('gpt') || text.includes('claude') || text.includes('gemini') || text.includes('grok') || text.includes('model')) {
+                return 'chip-model';
+            }
+            return '';
+        }
+
+        function normalizeAgentStepStatus(status) {
+            const normalized = String(status || '').trim().toLowerCase();
+            if (!normalized) return 'info';
+            if (['running', 'done', 'error', 'notice', 'queued', 'applied', 'ready'].includes(normalized)) {
+                return normalized;
+            }
+            return 'info';
+        }
+
+        function shouldDisplayAgentStepType(stepType) {
+            const normalized = String(stepType || '').trim().toLowerCase();
+            return normalized !== 'local_tools' && normalized !== 'local_tool';
+        }
+
+        function formatAgentStepTypeLabel(stepType) {
+            const normalized = String(stepType || '').trim().toLowerCase();
+            const mapping = {
+                leader_plan: 'Leader Plan',
+                skill_call: 'Skill Call',
+                verifier_trigger: 'Verifier',
+                memory_read: 'Memory Read',
+                memory_write: 'Memory Write',
+                redirect_input: 'Redirect Input',
+                iteration_warning: 'Iteration Warning',
+                skills_catalog: 'Skills Catalog'
+            };
+            if (mapping[normalized]) {
+                return mapping[normalized];
+            }
+            return String(stepType || 'Step')
+                .replace(/_/g, ' ')
+                .replace(/\b\w/g, (ch) => ch.toUpperCase());
+        }
+
+        function getAgentStepTypeMeta(stepType) {
+            const normalized = String(stepType || '').trim().toLowerCase();
+            const mapping = {
+                leader_plan: { label: 'Leader Plan', token: 'LP' },
+                skill_call: { label: 'Skill Call', token: 'SK' },
+                verifier_trigger: { label: 'Verifier', token: 'VF' },
+                memory_read: { label: 'Memory Read', token: 'MR' },
+                memory_write: { label: 'Memory Write', token: 'MW' },
+                redirect_input: { label: 'Redirect Input', token: 'RD' },
+                iteration_warning: { label: 'Iteration Warning', token: 'WR' },
+                skills_catalog: { label: 'Skills Catalog', token: 'SC' }
+            };
+            if (mapping[normalized]) {
+                return mapping[normalized];
+            }
+            return {
+                label: formatAgentStepTypeLabel(stepType),
+                token: 'ST'
+            };
+        }
+
+        function toAgentStepTypeClass(stepType) {
+            return String(stepType || 'step')
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '') || 'step';
+        }
+
+        function getAgentStepKey(runGroupId, stepType, iteration, payload) {
+            const safeRunGroup = String(runGroupId || 'unknown');
+            const safeType = String(stepType || 'step').trim().toLowerCase() || 'step';
+            const parsedIteration = Number(iteration);
+            const safeIteration = Number.isFinite(parsedIteration) ? `it-${parsedIteration}` : 'it-x';
+
+            let skillId = '';
+            if (payload && typeof payload === 'object') {
+                skillId = String(payload.skill || '').trim();
+                if (!skillId && payload.action && typeof payload.action === 'object') {
+                    skillId = String(payload.action.skill || '').trim();
+                }
+            }
+            if (!skillId) {
+                skillId = 'no-skill';
+            }
+
+            return `${safeRunGroup}::${safeType}::${safeIteration}::${skillId}`;
+        }
+
+        function ensureAgentTrackingState(state) {
+            if (!state.agent_tracking || typeof state.agent_tracking !== 'object') {
+                state.agent_tracking = { runs: {}, step_cards: {} };
+            }
+            if (!state.agent_tracking.runs || typeof state.agent_tracking.runs !== 'object') {
+                state.agent_tracking.runs = {};
+            }
+            if (!state.agent_tracking.step_cards || typeof state.agent_tracking.step_cards !== 'object') {
+                state.agent_tracking.step_cards = {};
+            }
+            return state.agent_tracking;
+        }
+
+        function upsertAgentStepCardRecord(state, data, runGroupId, stepType, status, summary) {
+            const tracking = ensureAgentTrackingState(state);
+            const stepKey = getAgentStepKey(runGroupId, stepType, data.iteration, data.payload);
+            const payload = (data.payload !== undefined) ? data.payload : null;
+            const timestamp = new Date().toISOString();
+
+            if (!tracking.step_cards[stepKey]) {
+                tracking.step_cards[stepKey] = {
+                    step_key: stepKey,
+                    run_group_id: runGroupId,
+                    step_type: stepType,
+                    status,
+                    summary,
+                    iteration: data.iteration,
+                    payload,
+                    payload_open: false,
+                    events: []
+                };
+            }
+
+            const record = tracking.step_cards[stepKey];
+            record.status = status;
+            record.summary = summary;
+            record.iteration = data.iteration;
+            record.run_group_id = runGroupId;
+            record.step_type = stepType;
+            if (payload !== null) {
+                record.payload = payload;
+            }
+            if (typeof record.payload_open !== 'boolean') {
+                record.payload_open = false;
+            }
+
+            const event = {
+                status,
+                summary: summary || '(no summary)',
+                timestamp
+            };
+            const last = record.events.length > 0 ? record.events[record.events.length - 1] : null;
+            if (!last || last.status !== event.status || last.summary !== event.summary) {
+                record.events.push(event);
+            } else {
+                last.timestamp = timestamp;
+            }
+            if (record.events.length > 4) {
+                record.events = record.events.slice(-4);
+            }
+
+            return record;
+        }
+
+        function toSerializableAgentStepRecord(record) {
+            const safeRecord = record && typeof record === 'object' ? record : {};
+            const safeStatus = normalizeAgentStepStatus(safeRecord.status || 'info');
+            const safeSummary = String(safeRecord.summary || '').trim();
+            const safeEvents = Array.isArray(safeRecord.events)
+                ? safeRecord.events.slice(-4).map((event) => ({
+                    status: normalizeAgentStepStatus((event && event.status) || safeStatus),
+                    summary: String((event && event.summary) || safeSummary || '(no summary)'),
+                    timestamp: String((event && event.timestamp) || new Date().toISOString())
+                }))
+                : [];
+
+            return {
+                step_key: String(safeRecord.step_key || ''),
+                run_group_id: String(safeRecord.run_group_id || ''),
+                step_type: String(safeRecord.step_type || 'step'),
+                status: safeStatus,
+                summary: safeSummary,
+                iteration: safeRecord.iteration,
+                payload: (safeRecord.payload !== undefined) ? safeRecord.payload : null,
+                payload_open: !!safeRecord.payload_open,
+                events: safeEvents
+            };
+        }
+
+        function applyAgentStepCardDataAttributes(messageDiv, record) {
+            if (!messageDiv || !record) return;
+            const safeRecord = toSerializableAgentStepRecord(record);
+
+            if (!safeRecord.step_key) {
+                safeRecord.step_key = getAgentStepKey(
+                    safeRecord.run_group_id,
+                    safeRecord.step_type,
+                    safeRecord.iteration,
+                    safeRecord.payload
+                );
+            }
+
+            messageDiv.setAttribute('data-council-intermediate', 'true');
+            messageDiv.setAttribute('data-event-kind', 'agent_step');
+            messageDiv.setAttribute('data-run-group-id', safeRecord.run_group_id || '');
+            messageDiv.setAttribute('data-agent-step-key', safeRecord.step_key);
+            messageDiv.setAttribute('data-agent-step-status', safeRecord.status);
+            messageDiv.setAttribute('data-agent-step-type', safeRecord.step_type);
+            messageDiv.setAttribute('data-is-final-response', 'false');
+            messageDiv.setAttribute('data-subrole-hidden', 'false');
+            messageDiv.setAttribute('data-raw-content', safeRecord.summary || '(no summary)');
+            if (safeRecord.iteration !== undefined && safeRecord.iteration !== null) {
+                messageDiv.setAttribute('data-agent-step-iteration', String(safeRecord.iteration));
+            } else {
+                messageDiv.removeAttribute('data-agent-step-iteration');
+            }
+
+            try {
+                messageDiv.setAttribute('data-agent-step-record', JSON.stringify(safeRecord));
+            } catch (err) {
+                console.warn('Failed to serialize agent-step record:', err);
+                messageDiv.removeAttribute('data-agent-step-record');
+            }
+        }
+
+        function bindAgentStepPayloadToggle(messageDiv, list, record) {
+            if (!messageDiv || !record) return;
+            const payloadToggleBtn = messageDiv.querySelector('[data-agent-payload-toggle="true"]');
+            if (!payloadToggleBtn) return;
+
+            payloadToggleBtn.addEventListener('click', function() {
+                record.payload_open = !Boolean(record.payload_open);
+                messageDiv.innerHTML = renderAgentStepCardMarkup(record);
+                applyAgentStepCardDataAttributes(messageDiv, record);
+                setActiveAgentStepCard(list, messageDiv);
+                bindAgentStepPayloadToggle(messageDiv, list, record);
+                const nextToggleBtn = messageDiv.querySelector('[data-agent-payload-toggle="true"]');
+                if (nextToggleBtn) {
+                    nextToggleBtn.focus({ preventScroll: true });
+                }
+                autoSaveTempChat();
+            });
+        }
+
+        function buildAgentStepRecordFromSavedMessage(msg, runGroupId) {
+            let savedRecord = null;
+            const rawSavedRecord = msg ? msg.agent_step_record : null;
+
+            if (rawSavedRecord && typeof rawSavedRecord === 'object') {
+                savedRecord = JSON.parse(JSON.stringify(rawSavedRecord));
+            } else if (typeof rawSavedRecord === 'string' && rawSavedRecord.trim()) {
+                try {
+                    savedRecord = JSON.parse(rawSavedRecord);
+                } catch (err) {
+                    savedRecord = null;
+                }
+            }
+
+            if (!savedRecord || typeof savedRecord !== 'object') {
+                const fallbackSummary = String(getStoredMessageRawContent(msg) || msg.content || '').trim();
+                const fallbackType = String(msg.agent_step_type || 'step');
+                const fallbackStatus = normalizeAgentStepStatus(msg.agent_step_status || 'done');
+                const fallbackIteration = (msg.agent_step_iteration !== undefined && msg.agent_step_iteration !== null)
+                    ? msg.agent_step_iteration
+                    : msg.iteration;
+                const fallbackPayload = (msg.agent_step_payload !== undefined)
+                    ? msg.agent_step_payload
+                    : null;
+
+                savedRecord = {
+                    step_key: msg.agent_step_key || getAgentStepKey(runGroupId, fallbackType, fallbackIteration, fallbackPayload),
+                    run_group_id: runGroupId,
+                    step_type: fallbackType,
+                    status: fallbackStatus,
+                    summary: fallbackSummary,
+                    iteration: fallbackIteration,
+                    payload: fallbackPayload,
+                    payload_open: false,
+                    events: [{
+                        status: fallbackStatus,
+                        summary: fallbackSummary || '(no summary)',
+                        timestamp: String(msg.timestamp || new Date().toISOString())
+                    }]
+                };
+            }
+
+            savedRecord.run_group_id = String(savedRecord.run_group_id || runGroupId || '');
+            savedRecord.step_type = String(savedRecord.step_type || 'step');
+            savedRecord.status = normalizeAgentStepStatus(savedRecord.status || 'done');
+            savedRecord.summary = String(savedRecord.summary || '').trim();
+            savedRecord.step_key = String(
+                savedRecord.step_key
+                || getAgentStepKey(savedRecord.run_group_id, savedRecord.step_type, savedRecord.iteration, savedRecord.payload)
+            );
+
+            return toSerializableAgentStepRecord(savedRecord);
+        }
+
+        function renderAgentStepFlow(record) {
+            const events = Array.isArray(record.events) ? record.events : [];
+            if (events.length === 0) {
+                return '';
+            }
+
+            const rows = events.map((event) => `
+                <div class="agent-step-flow-row">
+                    <div class="agent-step-flow-label">${escapeHtml(String(event.status || 'info'))}</div>
+                    <div class="agent-step-flow-text">${escapeHtml(String(event.summary || '(no summary)'))}</div>
+                </div>
+            `).join('');
+
+            return `<div class="agent-step-flow">${rows}</div>`;
+        }
+
+        function renderAgentStepCardMarkup(record) {
+            const stepType = String(record.step_type || 'step');
+            const status = normalizeAgentStepStatus(record.status);
+            const stepMeta = getAgentStepTypeMeta(stepType);
+            const hasPayload = record.payload !== null && record.payload !== undefined;
+            const payloadOpen = hasPayload && !!record.payload_open;
+            const payloadPreviewHtml = hasPayload
+                ? renderAgentPayloadPreview(record.payload, stepType)
+                : '';
+            const payloadSummaryText = hasPayload
+                ? summarizePayloadValue(record.payload, 90)
+                : '';
+            const payloadToggleLabel = hasPayload
+                ? `${payloadOpen ? 'Hide payload' : 'Show payload'} • ${payloadSummaryText}`
+                : '';
+            const payloadHtml = hasPayload
+                ? `
+                    <div class="agent-step-payload ${payloadOpen ? 'open' : ''}" data-agent-step-payload="true">
+                        <div class="agent-step-payload-content">${renderAgentPayloadExpanded(record.payload)}</div>
+                    </div>
+                  `
+                : '';
+
+            const titleBandInner = `
+                <span class="agent-step-type-pill">${escapeHtml(stepMeta.token)}</span>
+                <span class="agent-step-type-label">${escapeHtml(stepMeta.label)}</span>
+                ${hasPayload ? `<span class="agent-step-payload-toggle">${escapeHtml(payloadToggleLabel)}</span>` : ''}
+                <span class="agent-step-status-badge">${escapeHtml(status)}</span>
+            `;
+
+            const titleBandHtml = hasPayload
+                ? `<button type="button" class="agent-step-title-band agent-step-title-band-toggle" data-agent-payload-toggle="true" aria-expanded="${payloadOpen ? 'true' : 'false'}">${titleBandInner}</button>`
+                : `<div class="agent-step-title-band">${titleBandInner}</div>`;
+
+            return `
+                <div class="message-wrapper">
+                    ${titleBandHtml}
+                    <div class="message-content">
+                        <div class="agent-step-summary-text">${escapeHtml(String(record.summary || '(no summary)'))}</div>
+                        ${renderAgentStepFlow(record)}
+                        ${payloadPreviewHtml}
+                        ${payloadHtml}
+                    </div>
+                </div>
+            `;
+        }
+
+        function setActiveAgentStepCard(list, activeCard) {
+            if (!list || !activeCard) return;
+            list.querySelectorAll('.agent-step-card').forEach((card) => {
+                const isActive = card === activeCard;
+                card.classList.toggle('agent-step-active', isActive);
+                card.classList.toggle('agent-step-collapsed', !isActive);
+            });
+        }
+
+        function renderAgentPayloadValue(value, depth = 0, options = {}) {
+            const forceExpand = !!(options && options.forceExpand);
+
+            if (value === null || value === undefined) {
+                return `<div class="agent-payload-value">${escapeHtml(String(value))}</div>`;
+            }
+
+            if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+                return `<div class="agent-payload-value">${escapeHtml(String(value))}</div>`;
+            }
+
+            if (Array.isArray(value)) {
+                if (value.length === 0) {
+                    return '<div class="agent-payload-value">(empty list)</div>';
+                }
+
+                if (depth >= 2) {
+                    return `<div class="agent-payload-value">${escapeHtml(`${value.length} items`)}</div>`;
+                }
+
+                const rows = value.slice(0, 5).map((item, index) => {
+                    const isObjectItem = item && typeof item === 'object';
+                    const itemBody = isObjectItem
+                        ? `
+                            <details class="agent-payload-nested">
+                                <summary>${escapeHtml(summarizePayloadObject(item, 110))}</summary>
+                                ${renderAgentPayloadValue(item, depth + 1, { forceExpand: true })}
+                            </details>
+                          `
+                        : renderAgentPayloadValue(item, depth + 1);
+
+                    return `
+                        <div class="agent-payload-row">
+                            <div class="agent-payload-key">#${index + 1}</div>
+                            <div>${itemBody}</div>
+                        </div>
+                    `;
+                }).join('');
+                const extra = value.length > 5
+                    ? `<div class="agent-payload-value">+${value.length - 5} more item${value.length - 5 === 1 ? '' : 's'}</div>`
+                    : '';
+                return `<div class="agent-payload-grid">${rows}${extra}</div>`;
+            }
+
+            if (typeof value === 'object') {
+                const keys = Object.keys(value);
+                if (keys.length === 0) {
+                    return '<div class="agent-payload-value">(empty object)</div>';
+                }
+
+                if (depth >= 2 && !forceExpand) {
+                    return `<div class="agent-payload-value">${escapeHtml(summarizePayloadObject(value, 120))}</div>`;
+                }
+
+                const rows = keys.slice(0, 8).map((key) => {
+                    const nested = value[key];
+                    const nestedIsObject = nested && typeof nested === 'object';
+                    const nestedBody = nestedIsObject
+                        ? `
+                            <details class="agent-payload-nested">
+                                                                <summary>${escapeHtml(Array.isArray(nested) ? summarizePayloadValue(nested, 90) : summarizePayloadObject(nested, 110))}</summary>
+                                                                ${renderAgentPayloadValue(nested, depth + 1, { forceExpand: true })}
+                            </details>
+                          `
+                        : renderAgentPayloadValue(nested, depth + 1);
+
+                    return `
+                        <div class="agent-payload-row">
+                            <div class="agent-payload-key">${escapeHtml(formatAgentPayloadKey(key))}</div>
+                            <div>${nestedBody}</div>
+                        </div>
+                    `;
+                }).join('');
+
+                const extra = keys.length > 8
+                    ? `<div class="agent-payload-value">+${keys.length - 8} more field${keys.length - 8 === 1 ? '' : 's'}</div>`
+                    : '';
+
+                return `<div class="agent-payload-grid">${rows}${extra}</div>`;
+            }
+
+            return `<div class="agent-payload-value">${escapeHtml(String(value))}</div>`;
+        }
+
+        function renderAgentPayloadSection(title, value) {
+            return `
+                <div class="agent-payload-section">
+                    <div class="agent-payload-section-title">${escapeHtml(title)}</div>
+                    ${renderAgentPayloadValue(value)}
+                </div>
+            `;
+        }
+
+        function renderAgentPayloadExpanded(payload) {
+            if (!payload || typeof payload !== 'object') {
+                return renderAgentPayloadSection('Payload', payload);
+            }
+
+            const sections = [];
+            const consumed = new Set();
+
+            if (typeof payload.thought === 'string' && payload.thought.trim()) {
+                sections.push(renderAgentPayloadSection('Thought', payload.thought));
+                consumed.add('thought');
+            }
+
+            if (Object.prototype.hasOwnProperty.call(payload, 'confidence')) {
+                sections.push(renderAgentPayloadSection('Confidence', payload.confidence));
+                consumed.add('confidence');
+            }
+
+            if (Object.prototype.hasOwnProperty.call(payload, 'requires_verifier')) {
+                sections.push(renderAgentPayloadSection('Requires Verifier', payload.requires_verifier));
+                consumed.add('requires_verifier');
+            }
+
+            if (payload.action !== undefined) {
+                sections.push(renderAgentPayloadSection('Action', payload.action));
+                consumed.add('action');
+            }
+
+            if (payload.args !== undefined) {
+                sections.push(renderAgentPayloadSection('Args', payload.args));
+                consumed.add('args');
+            }
+
+            if (payload.result !== undefined) {
+                sections.push(renderAgentPayloadSection('Result', payload.result));
+                consumed.add('result');
+            }
+
+            if (payload.notes !== undefined) {
+                sections.push(renderAgentPayloadSection('Notes', payload.notes));
+                consumed.add('notes');
+            }
+
+            const other = {};
+            Object.keys(payload).forEach((key) => {
+                if (!consumed.has(key)) {
+                    other[key] = payload[key];
+                }
+            });
+
+            if (Object.keys(other).length > 0) {
+                sections.push(renderAgentPayloadSection('Other Fields', other));
+            }
+
+            const rawJson = JSON.stringify(payload, null, 2);
+            sections.push(`
+                <details class="agent-payload-raw">
+                    <summary>Raw JSON</summary>
+                    <pre><code>${escapeHtml(rawJson)}</code></pre>
+                </details>
+            `);
+
+            return sections.join('');
         }
 
         function refreshThinkingProcessUI(chatId) {
@@ -5847,6 +7115,14 @@
             }
 
             const activeChatId = currentSessionId || tempChatId;
+            const hasPendingUploadsForChat = Array.from(pendingUploadKeys).some((key) =>
+                String(key || '').startsWith(`${activeChatId}:`)
+            );
+            if (hasPendingUploadsForChat) {
+                addConsoleLog('Please wait for file uploads to finish before sending.');
+                return;
+            }
+
             if (activeChatId) {
                 const historySnapshot = getCurrentMessages().filter((msg) => {
                     const sender = String((msg && msg.sender) || '').trim().toLowerCase();
@@ -5879,12 +7155,16 @@
                 activeState.thinking_process.preview_text = '';
                 activeState.thinking_process.active_run_group_id = null;
                 activeState.thinking_process.active_container_id = null;
+                if (activeState.run_tracking) {
+                    activeState.run_tracking.current_run_group_id = null;
+                }
             }
             closeSubroleOverlay(activeChatId);
             socket.emit('send_message', {
                 message: message,
                 chat_id: activeChatId,
-                workflow_mode: workflowMode
+                workflow_mode: workflowMode,
+                attachments: messageAttachments
             });
 
             if (messageAttachments.length > 0 && activeChatId) {
@@ -6175,7 +7455,7 @@
             const entry = getStreamEntry(data);
             if (!entry) return;
             if (entry.isNonFinal) {
-                const incomingRunGroupId = data.run_group_id || entry.run_group_id;
+                const incomingRunGroupId = resolveEventRunGroupId(chatId, data.run_group_id || entry.run_group_id);
                 const runGroupChanged = incomingRunGroupId && state.thinking_process.active_run_group_id && incomingRunGroupId !== state.thinking_process.active_run_group_id;
                 const mustCreateNewContainer = state.thinking_process.new_run_pending || !state.thinking_process.active_container_id || runGroupChanged;
                 const isDebateTimelineEvent = isDebateTimelineEventKind(data.event_kind)
@@ -6186,6 +7466,7 @@
                 }
                 state.thinking_process.new_run_pending = false;
                 state.thinking_process.active_run_group_id = incomingRunGroupId || state.thinking_process.active_run_group_id;
+                collapseOtherThinkingContainers(chatId, state.thinking_process.active_run_group_id);
                 state.thinking_process.active_source = entry.bot_name || state.thinking_process.active_source;
 
                 if (!isDebateTimelineEvent) {
@@ -6236,7 +7517,9 @@
             const entry = getStreamEntry(data);
             if (!entry) return;
 
-            const runGroupId = data.run_group_id || entry.run_group_id || null;
+            const runGroupId = isNonFinal
+                ? resolveEventRunGroupId(chatId, data.run_group_id || entry.run_group_id)
+                : (data.run_group_id || entry.run_group_id || null);
             const structuredPayload = parseStructuredJson(data.message || '');
             const isTaskDistribution = isTaskDistributionPayload(structuredPayload);
             const isDebateQuestioning = !!structuredPayload && isDebateQuestioningPayload(structuredPayload);
@@ -6286,7 +7569,28 @@
                 }
             }
 
-            ensureStreamDiv(chatId, data, entry);
+            try {
+                ensureStreamDiv(chatId, data, entry);
+            } catch (err) {
+                console.error('Failed to ensure streaming div for ai_response_end:', err, data);
+            }
+
+            if (chatId === getActiveChatId() && !entry.div) {
+                const fallbackWindow = getConvWindow();
+                if (fallbackWindow) {
+                    const fallbackDiv = document.createElement('div');
+                    fallbackDiv.className = 'message ai';
+                    fallbackDiv.innerHTML = `
+                        <div class="message-wrapper">
+                            <div class="message-header">${escapeHtml(data.bot_name || 'AI')}</div>
+                            <div class="message-content"></div>
+                        </div>
+                    `;
+                    fallbackWindow.appendChild(fallbackDiv);
+                    entry.div = fallbackDiv;
+                }
+            }
+
             if (chatId !== getActiveChatId() || !entry.div) {
                 if (state) {
                     state.messages.push(buildAssistantStateMessage(data, entry, messageId, {
@@ -6301,6 +7605,7 @@
                 }
                 loadSavedChats();
                 loadTempChats();
+                autoSaveTempChat();
                 return;
             }
             const messageDiv = entry.div;
@@ -6311,7 +7616,7 @@
                 runGroupId,
                 roleName: data.role_name || null,
                 eventKind: data.event_kind || null
-            });
+            }); 
             const thinkingBlock = hasThinking ? `
                 <div class="thinking-block">
                     <div class="thinking-header" onclick="toggleThinking(this)">
@@ -6539,6 +7844,9 @@
                     state.thinking_process.active_source = '';
                     state.thinking_process.new_run_pending = false;
                     state.thinking_process.active_run_group_id = null;
+                    if (state.run_tracking) {
+                        state.run_tracking.current_run_group_id = null;
+                    }
                 }
                 flushPendingUploadCleanup(chatId);
             }
@@ -6549,6 +7857,41 @@
             }
             loadSavedChats();
             loadTempChats();
+        });
+
+        socket.on('run_group_start', function(data) {
+            if (!data) return;
+
+            const chatId = data.chat_id || getActiveChatId();
+            const state = ensureConversation(chatId);
+            if (!state) return;
+
+            const runGroupId = resolveEventRunGroupId(chatId, data.run_group_id);
+            state.thinking_process.new_run_pending = true;
+            state.thinking_process.active_run_group_id = runGroupId;
+            state.thinking_process.active_source = '';
+            state.thinking_process.preview_text = '';
+
+            if (chatId === getActiveChatId()) {
+                collapseOtherThinkingContainers(chatId, runGroupId);
+            }
+            refreshThinkingProcessUI(chatId);
+        });
+
+        socket.on('run_group_end', function(data) {
+            if (!data) return;
+
+            const chatId = data.chat_id || getActiveChatId();
+            const state = ensureConversation(chatId);
+            if (!state) return;
+
+            const runGroupId = resolveEventRunGroupId(chatId, data.run_group_id);
+            if (state.run_tracking) {
+                state.run_tracking.last_completed_run_group_id = runGroupId;
+                if (state.run_tracking.current_run_group_id === runGroupId) {
+                    state.run_tracking.current_run_group_id = null;
+                }
+            }
         });
 
         function toggleCouncilCollapse(msgDiv) {
@@ -6604,6 +7947,88 @@
             }
 
             refreshThinkingProcessUI(chatId);
+        });
+
+        socket.on('agent_step', function(data) {
+            if (!data) return;
+
+            const chatId = data.chat_id || getActiveChatId();
+            const state = ensureConversation(chatId);
+            if (!state) return;
+            const tracking = ensureAgentTrackingState(state);
+
+            const runGroupId = resolveEventRunGroupId(chatId, data.run_group_id);
+            if (!tracking.runs[runGroupId]) {
+                tracking.runs[runGroupId] = [];
+            }
+
+            tracking.runs[runGroupId].push({
+                step_type: data.step_type || '',
+                status: data.status || '',
+                summary: data.summary || '',
+                payload: data.payload || null,
+                iteration: data.iteration,
+                timestamp: new Date().toISOString()
+            });
+
+            const stepType = String(data.step_type || 'step');
+            if (!shouldDisplayAgentStepType(stepType)) {
+                return;
+            }
+            const status = normalizeAgentStepStatus(data.status || 'info');
+            const summary = String(data.summary || '').trim();
+            const line = `[${status}] ${stepType}${summary ? ': ' + summary : ''}`;
+            addConsoleLog(line);
+
+            const record = upsertAgentStepCardRecord(state, data, runGroupId, stepType, status, summary);
+
+            const isActiveChat = chatId === getActiveChatId();
+            if (!isActiveChat) return;
+
+            const conversationWindow = getConvWindow();
+            if (!conversationWindow) return;
+
+            let container = null;
+            container = getThinkingProcessContainer(chatId, true, runGroupId);
+            if (!container) {
+                container = ensureThinkingProcessContainer(conversationWindow, state, chatId, { forceNew: false }, runGroupId);
+            }
+            const list = container ? container.querySelector('.thinking-process-list') : null;
+            if (!list) return;
+
+            const stepKey = record.step_key;
+            const selector = `.agent-step-card[data-agent-step-key="${escapeForAttributeSelector(stepKey)}"]`;
+            let messageDiv = list.querySelector(selector);
+            if (messageDiv) {
+                const existingPayload = messageDiv.querySelector('.agent-step-payload');
+                if (existingPayload) {
+                    record.payload_open = existingPayload.classList.contains('open');
+                }
+            }
+
+            if (!messageDiv) {
+                messageDiv = document.createElement('div');
+                messageDiv.className = 'message ai thinking-process-item agent-step-card';
+                messageDiv.setAttribute('data-council-intermediate', 'true');
+                messageDiv.setAttribute('data-run-group-id', runGroupId);
+                messageDiv.setAttribute('data-agent-step-key', stepKey);
+                list.appendChild(messageDiv);
+            }
+
+            messageDiv.className = `message ai thinking-process-item agent-step-card agent-step-status-${toAgentStepTypeClass(status)} agent-step-type-${toAgentStepTypeClass(stepType)}`;
+            applyAgentStepCardDataAttributes(messageDiv, record);
+
+            messageDiv.innerHTML = renderAgentStepCardMarkup(record);
+            setActiveAgentStepCard(list, messageDiv);
+            bindAgentStepPayloadToggle(messageDiv, list, record);
+
+            state.thinking_process.active_run_group_id = runGroupId;
+            collapseOtherThinkingContainers(chatId, runGroupId);
+            state.thinking_process.active_source = `Agent/${formatAgentStepTypeLabel(stepType)}`;
+            state.thinking_process.preview_text = summary || state.thinking_process.preview_text;
+            refreshThinkingProcessUI(chatId);
+            scrollToBottomIfNeeded(conversationWindow);
+            autoSaveTempChat();
         });
 
         // Event listeners
@@ -6689,6 +8114,10 @@
             Object.values(conversations).forEach(conv => {
                 resetThinkingProcessState(conv);
                 resetSubroleTrackingState(conv);
+                if (conv && conv.run_tracking) {
+                    conv.run_tracking.current_run_group_id = null;
+                    conv.run_tracking.last_completed_run_group_id = null;
+                }
             });
             Object.keys(streamingMessages).forEach(key => delete streamingMessages[key]);
         }
@@ -6794,6 +8223,8 @@
 
             const thinkingListsByGroup = {};
             let hasNonFinal = false;
+            let fallbackRunGroupCounter = 0;
+            let currentFallbackRunGroupId = null;
 
             messages.forEach(msg => {
                 const messageDiv = document.createElement('div');
@@ -6807,9 +8238,31 @@
                 }
 
                 const isNonFinal = isNonFinalSavedMessage(msg);
-                const runGroupId = msg.run_group_id || 'non-final';
+                let runGroupId = msg.run_group_id || null;
+                if (msg.type === 'user') {
+                    currentFallbackRunGroupId = null;
+                }
+                if (isNonFinal && !runGroupId) {
+                    if (!currentFallbackRunGroupId) {
+                        fallbackRunGroupCounter += 1;
+                        currentFallbackRunGroupId = `legacy-rungrp-${fallbackRunGroupCounter}`;
+                    }
+                    runGroupId = currentFallbackRunGroupId;
+                }
+                if (!runGroupId && isNonFinal) {
+                    runGroupId = buildRuntimeRunGroupId('loaded-rungrp');
+                }
                 const rawContent = getStoredMessageRawContent(msg);
-                const structuredPayload = (msg.type === 'ai' && isNonFinal) ? parseStructuredJson(rawContent || String(msg.content || '')) : null;
+                const isSavedAgentStep = !!(
+                    msg.type === 'ai'
+                    && (
+                        msg.event_kind === 'agent_step'
+                        || msg.agent_step_record
+                    )
+                );
+                const structuredPayload = (msg.type === 'ai' && isNonFinal && !isSavedAgentStep)
+                    ? parseStructuredJson(rawContent || String(msg.content || ''))
+                    : null;
                 const isTaskDistribution = !!structuredPayload && isTaskDistributionPayload(structuredPayload);
                 const isDebateQuestioning = !!structuredPayload && isDebateQuestioningPayload(structuredPayload);
                 const isDebateRebuttal = !!structuredPayload && isDebateRebuttalPayload(structuredPayload);
@@ -6827,7 +8280,7 @@
                     || (isNonFinal && !isTaskDistribution && !!normalizedSavedRole)
                 );
 
-                if (msg.type === 'ai' && isNonFinal) {
+                if (msg.type === 'ai' && isNonFinal && !isSavedAgentStep) {
                     ensureSubroleRunState(chatId, runGroupId);
 
                     if (structuredPayload && isTaskDistribution) {
@@ -6918,6 +8371,10 @@
                     }
                 }
 
+                if (msg.type === 'ai' && msg.is_final_response === true) {
+                    currentFallbackRunGroupId = null;
+                }
+
                 if (msg.is_md_collapsed && !isNonFinal) {
                     messageDiv.classList.add('md-collapsed');
                 }
@@ -6952,6 +8409,47 @@
                 }
 
                 messageDiv.classList.toggle('subrole-hidden', shouldHideSubrole);
+
+                if (isSavedAgentStep) {
+                    const savedRecord = buildAgentStepRecordFromSavedMessage(msg, runGroupId);
+                    if (!shouldDisplayAgentStepType(savedRecord.step_type)) {
+                        return;
+                    }
+                    const tracking = ensureAgentTrackingState(state);
+                    tracking.step_cards[savedRecord.step_key] = savedRecord;
+                    if (!tracking.runs[runGroupId]) {
+                        tracking.runs[runGroupId] = [];
+                    }
+                    tracking.runs[runGroupId].push({
+                        step_type: savedRecord.step_type,
+                        status: savedRecord.status,
+                        summary: savedRecord.summary,
+                        payload: savedRecord.payload,
+                        iteration: savedRecord.iteration,
+                        timestamp: (Array.isArray(savedRecord.events) && savedRecord.events.length > 0)
+                            ? savedRecord.events[savedRecord.events.length - 1].timestamp
+                            : new Date().toISOString()
+                    });
+
+                    messageDiv.className = `message ai thinking-process-item agent-step-card agent-step-status-${toAgentStepTypeClass(savedRecord.status)} agent-step-type-${toAgentStepTypeClass(savedRecord.step_type)}`;
+                    applyAgentStepCardDataAttributes(messageDiv, savedRecord);
+                    messageDiv.innerHTML = renderAgentStepCardMarkup(savedRecord);
+
+                    if (isNonFinal && thinkingListsByGroup[runGroupId]) {
+                        thinkingListsByGroup[runGroupId].appendChild(messageDiv);
+                        setActiveAgentStepCard(thinkingListsByGroup[runGroupId], messageDiv);
+                        bindAgentStepPayloadToggle(messageDiv, thinkingListsByGroup[runGroupId], savedRecord);
+                    } else {
+                        conversationWindow.appendChild(messageDiv);
+                        bindAgentStepPayloadToggle(messageDiv, null, savedRecord);
+                    }
+
+                    setTimeout(() => {
+                        renderLatex(messageDiv);
+                        addCopyButtonsToCodeBlocks(messageDiv);
+                    }, 10);
+                    return;
+                }
 
                 const displaySource = rawContent || String(msg.content || '');
                 const displayContent = (msg.type === 'ai')
@@ -7026,6 +8524,10 @@
                 resetThinkingProcessState(state, false);
                 state.thinking_process.collapsed = true;
                 resetSubroleTrackingState(state);
+                if (state.run_tracking) {
+                    state.run_tracking.current_run_group_id = null;
+                    state.run_tracking.last_completed_run_group_id = null;
+                }
             }
 
             closeSubroleOverlay(chatId);
@@ -7070,6 +8572,70 @@
             });
         }
 
+        function getSavedAgentStepKey(message) {
+            if (!message || typeof message !== 'object') return '';
+            if (message.agent_step_key) return String(message.agent_step_key);
+            if (message.agent_step_record && typeof message.agent_step_record === 'object' && message.agent_step_record.step_key) {
+                return String(message.agent_step_record.step_key);
+            }
+            return '';
+        }
+
+        function mergeLoadedMessagesWithCachedAgentSteps(chatId, messages) {
+            const baseMessages = Array.isArray(messages) ? messages.slice() : [];
+            const state = conversations[chatId];
+            if (!state || !state.agent_tracking || !state.agent_tracking.step_cards) {
+                return baseMessages;
+            }
+
+            const existingStepKeys = new Set();
+            baseMessages.forEach((msg) => {
+                const key = getSavedAgentStepKey(msg);
+                if (key) existingStepKeys.add(key);
+            });
+
+            const cachedRecords = Object.values(state.agent_tracking.step_cards)
+                .map((record) => toSerializableAgentStepRecord(record))
+                .filter((record) => (
+                    record
+                    && record.step_key
+                    && !existingStepKeys.has(record.step_key)
+                    && shouldDisplayAgentStepType(record.step_type)
+                ));
+
+            if (cachedRecords.length === 0) {
+                return baseMessages;
+            }
+
+            cachedRecords.sort((a, b) => {
+                const tsA = (Array.isArray(a.events) && a.events.length > 0) ? Date.parse(a.events[a.events.length - 1].timestamp || '') : NaN;
+                const tsB = (Array.isArray(b.events) && b.events.length > 0) ? Date.parse(b.events[b.events.length - 1].timestamp || '') : NaN;
+                if (Number.isFinite(tsA) && Number.isFinite(tsB)) return tsA - tsB;
+                if (Number.isFinite(tsA)) return -1;
+                if (Number.isFinite(tsB)) return 1;
+                return String(a.step_key).localeCompare(String(b.step_key));
+            });
+
+            const syntheticMessages = cachedRecords.map((record, index) => ({
+                id: `cached-agent-step-${record.step_key}-${index}`,
+                type: 'ai',
+                sender: 'Agent Step',
+                content: record.summary || '(no summary)',
+                raw_markdown: record.summary || '(no summary)',
+                is_council_intermediate: true,
+                run_group_id: record.run_group_id || null,
+                event_kind: 'agent_step',
+                is_final_response: false,
+                agent_step_key: record.step_key,
+                agent_step_status: record.status,
+                agent_step_type: record.step_type,
+                agent_step_iteration: record.iteration,
+                agent_step_record: record
+            }));
+
+            return baseMessages.concat(syntheticMessages);
+        }
+
         function loadChat(chatId) {
             fetch(`/api/load_chat/${chatId}`)
                 .then(response => response.json())
@@ -7080,16 +8646,17 @@
                         const prepared = prepareConversationForLoad(currentSessionId);
                         if (!prepared) return;
                         const { conversationWindow, state: loadedState } = prepared;
+                        const mergedMessages = mergeLoadedMessagesWithCachedAgentSteps(currentSessionId, data.chat.messages || []);
                         
                         // Load messages with unified non-final grouping
-                        renderLoadedMessages(conversationWindow, data.chat.messages || [], currentSessionId);
+                        renderLoadedMessages(conversationWindow, mergedMessages, currentSessionId);
                         
                         restoreLoadedDocuments(data.chat);
 
                         // Update current session info
                         document.getElementById('currentSessionName').innerHTML = `<span>${currentSessionName}</span>`;
                         if (loadedState) {
-                            loadedState.messages = data.chat.messages || [];
+                            loadedState.messages = mergedMessages;
                             loadedState.is_generating = !!data.chat.isGenerating;
                         }
                         setProcessingState(!!data.chat.isGenerating);
@@ -7102,7 +8669,7 @@
                             socket.emit('join_chat', { chat_id: activeChatId });
                             socket.emit('load_chat_history', {
                                 chat_id: activeChatId,
-                                messages: data.chat.messages || []
+                                messages: mergedMessages
                             });
                         }
                         
@@ -7166,6 +8733,9 @@
                     headerClone.querySelectorAll('button').forEach(btn => btn.remove());
                     senderText = headerClone.textContent.trim();
                 }
+                if (!senderText && msg.classList.contains('agent-step-card')) {
+                    senderText = 'Agent Step';
+                }
                 
                 if (content) {
                     const rawContent = msg.getAttribute('data-raw-content') || content.innerText || content.textContent || '';
@@ -7189,6 +8759,41 @@
                         is_final_response: msg.getAttribute('data-is-final-response') === 'true',
                         is_subrole_hidden: msg.getAttribute('data-subrole-hidden') === 'true'
                     };
+
+                    const rawAgentStepRecord = msg.getAttribute('data-agent-step-record');
+                    if (rawAgentStepRecord) {
+                        try {
+                            messageData.agent_step_record = JSON.parse(rawAgentStepRecord);
+                        } catch (err) {
+                            messageData.agent_step_record = null;
+                        }
+                    }
+
+                    if (msg.classList.contains('agent-step-card') || messageData.agent_step_record) {
+                        messageData.event_kind = 'agent_step';
+                        messageData.agent_step_key = msg.getAttribute('data-agent-step-key') || (messageData.agent_step_record ? messageData.agent_step_record.step_key : null);
+                        messageData.agent_step_status = msg.getAttribute('data-agent-step-status') || (messageData.agent_step_record ? messageData.agent_step_record.status : null);
+                        messageData.agent_step_type = msg.getAttribute('data-agent-step-type') || (messageData.agent_step_record ? messageData.agent_step_record.step_type : null);
+                        const stepIterationAttr = msg.getAttribute('data-agent-step-iteration');
+                        if (stepIterationAttr !== null && stepIterationAttr !== '') {
+                            const parsedIteration = Number(stepIterationAttr);
+                            messageData.agent_step_iteration = Number.isFinite(parsedIteration) ? parsedIteration : stepIterationAttr;
+                        } else if (messageData.agent_step_record && messageData.agent_step_record.iteration !== undefined) {
+                            messageData.agent_step_iteration = messageData.agent_step_record.iteration;
+                        }
+
+                        if ((!messageData.content || !String(messageData.content).trim()) && messageData.agent_step_record) {
+                            messageData.content = String(messageData.agent_step_record.summary || '(no summary)');
+                            messageData.raw_markdown = messageData.content;
+                        }
+                    }
+
+                    if (!messageData.run_group_id && messageData.is_council_intermediate) {
+                        const parentContainer = msg.closest('.thinking-process-container');
+                        if (parentContainer) {
+                            messageData.run_group_id = parentContainer.getAttribute('data-run-group-id') || null;
+                        }
+                    }
 
                     if (messageData.debate_cycle !== null) {
                         const cycleNum = Number(messageData.debate_cycle);
@@ -7225,16 +8830,15 @@
                 clearTimeout(autoSaveTimeout);
             }
 
-            // Don't auto-save if this is already a saved chat
-            if (currentSessionId && !currentSessionId.startsWith('temp_')) {
-                return;
-            }
+            const isSavedSession = !!(currentSessionId && !currentSessionId.startsWith('temp_'));
 
             // Snapshot current temp chat state now, so quick chat switching won't save the wrong DOM.
             const snapshotMessages = getCurrentMessages();
             const snapshotUploadedDocuments = [...uploadedPDFs];
-            const snapshotTempId = tempChatId || ('temp_' + Date.now().toString());
-            if (!tempChatId) {
+            const snapshotTempId = isSavedSession
+                ? currentSessionId
+                : (tempChatId || ('temp_' + Date.now().toString()));
+            if (!isSavedSession && !tempChatId) {
                 tempChatId = snapshotTempId;
             }
 
@@ -7242,6 +8846,26 @@
             autoSaveTimeout = setTimeout(() => {
                 // Only save if there are messages
                 if (snapshotMessages.length > 1) { // More than just the welcome message
+                    if (isSavedSession) {
+                        const sessionData = {
+                            id: snapshotTempId,
+                            name: currentSessionName || 'Saved Chat',
+                            messages: snapshotMessages,
+                            timestamp: new Date().toISOString(),
+                            selectedBots: [],
+                            uploadedDocuments: snapshotUploadedDocuments
+                        };
+
+                        fetch('/api/save_chat', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify(sessionData)
+                        }).catch(error => {
+                            console.error('Error auto-saving saved chat:', error);
+                        });
+                        return;
+                    }
+
                     const sessionData = {
                         id: snapshotTempId,
                         messages: snapshotMessages,
@@ -7318,14 +8942,15 @@
                         const prepared = prepareConversationForLoad(tempChatId);
                         if (!prepared) return;
                         const { conversationWindow, state: tempState } = prepared;
+                        const mergedMessages = mergeLoadedMessagesWithCachedAgentSteps(tempChatId, data.chat.messages || []);
                         
                         // Load messages with unified non-final grouping
-                        renderLoadedMessages(conversationWindow, data.chat.messages || [], tempChatId);
+                        renderLoadedMessages(conversationWindow, mergedMessages, tempChatId);
                         
                         // Update temp chat tracking
                         document.getElementById('currentSessionName').innerHTML = `<span>Temporary Chat</span>`;
                         if (tempState) {
-                            tempState.messages = data.chat.messages || [];
+                            tempState.messages = mergedMessages;
                             tempState.is_generating = !!data.chat.isGenerating;
                         }
                         setProcessingState(!!data.chat.isGenerating);
@@ -7340,7 +8965,7 @@
                             socket.emit('join_chat', { chat_id: activeChatId });
                             socket.emit('load_chat_history', {
                                 chat_id: activeChatId,
-                                messages: data.chat.messages || []
+                                messages: mergedMessages
                             });
                         }
                         

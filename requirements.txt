@@ -8,3 +8,4 @@ Pillow
 python-docx
 easyocr
 opencc
+pypdf

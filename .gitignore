@@ -7,7 +7,16 @@ gpt_responses/
 !gpt_responses/.gitkeep
 uploads/
 !uploads/.gitkeep
-skills/
+# Skills: ignore everything under skills except core runtime skills
+skills/*
+!skills/analyzer-skill/
+!skills/analyzer-skill/**
+!skills/creator-skill/
+!skills/creator-skill/**
+!skills/verifier-skill/
+!skills/verifier-skill/**
+!skills/researcher-skill/
+!skills/researcher-skill/**
 
 # Python environment and cache
 .venv/

@@ -9,6 +9,8 @@ import importlib
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from datetime import datetime
 import re
+import subprocess
+import sys
 from GPT_handle import completion_response, completion_response_stream, convert_to_traditional_chinese, client
 import os
 from werkzeug.utils import secure_filename
@@ -16,7 +18,7 @@ from PIL import Image, UnidentifiedImageError
 import base64
 import logging
 from services.config_store import ConfigStore, get_model_info as resolve_model_info
-from services import memory_manager
+from services import memory_manager, skill_registry
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -26,13 +28,26 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 socketio = SocketIO(app, cors_allowed_origins="*")
 logger = logging.getLogger(__name__)
 
-COUNCIL_ROLES = ['MarkReader', 'Leader', 'Researcher', 'Creator', 'Analyzer', 'Verifier']
+COUNCIL_ROLES = ['Leader']
+AGENT_SKILL_ROLE_NAMES = {
+    'researcher-skill': 'ResearcherSkill',
+    'creator-skill': 'CreatorSkill',
+    'analyzer-skill': 'AnalyzerSkill',
+    'verifier-skill': 'VerifierSkill'
+}
 DEFAULT_SKILLS_CONFIG = {
     'enabled': True,
     'folder': 'skills',
     'max_files': 3,
     'max_chars_per_file': 2500,
     'max_total_chars': 7000
+}
+DEFAULT_SKILL_LOCAL_TOOLS_CONFIG = {
+    'enabled': False,
+    'require_explicit_approval': False,
+    'timeout_seconds': 90,
+    'max_output_chars': 12000,
+    'allowlist': {}
 }
 DEFAULT_MD_READER_CONFIG = {
     'enabled': True,
@@ -77,7 +92,8 @@ def _new_conversation_state():
         'abort_event': threading.Event(),
         'uploaded_documents': {},
         'run_group_counter': 0,
-        'current_run_group_id': None
+        'current_run_group_id': None,
+        'agent_redirect_message': ''
     }
 
 
@@ -545,6 +561,62 @@ Rules:
 
 Respond directly. Do NOT prefix with your role name."""
 
+LEADER_AGENT_ACTION_PROMPT = """You are a single AI agent that plans actions and can call skills.
+
+Rules:
+- Return ONLY one JSON object.
+- Choose either a skill call or a final response in each turn.
+- Use skills when factual grounding, analysis, or quality checks are needed.
+- Prefer verifier-skill for logic/math content or when confidence is low.
+
+Required JSON schema:
+{
+    "thought": "short planning thought",
+    "requires_verifier": true,
+    "confidence": 0.0,
+    "action": {
+        "type": "skill_call",
+        "skill": "researcher-skill",
+        "args": {
+            "task": "what to do"
+        },
+        "reason": "why this skill is needed"
+    }
+}
+
+Or for final answer:
+{
+    "thought": "short planning thought",
+    "requires_verifier": false,
+    "confidence": 0.0,
+    "action": {
+        "type": "final_response",
+        "text": "final answer for the user in markdown"
+    }
+}
+"""
+
+SKILL_EXECUTION_PROMPT_TEMPLATE = """You are executing one skill for an orchestrating Leader agent.
+
+Skill id: {skill_id}
+Skill description: {skill_description}
+
+Skill instructions:
+{skill_content}
+
+Execution requirement:
+- Complete the task using the skill guidance above.
+- Return only one JSON object.
+- Keep content concise and machine-usable.
+
+JSON schema:
+{{
+    "result": "main output",
+    "confidence": 0.0,
+    "notes": ["optional notes"]
+}}
+"""
+
 MARK_READER_PROMPT = """You are the MarkReader in an AI council. Your only job is to choose which markdown skill files are relevant for the Leader.
 
 Rules:
@@ -718,19 +790,57 @@ def cleanup_old_temp_chats():
         print(f"Error cleaning up temporary chats: {e}")
 
 
+def _extract_pdf_text_with_pypdf(filepath, max_chars=20000):
+    """Best-effort PDF text extraction for model context fallback."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return '', None
+
+    try:
+        reader = PdfReader(filepath)
+        page_count = len(reader.pages)
+    except Exception as exc:
+        _log_internal_error(f'pdf parse failed for {filepath}', exc)
+        return '', None
+
+    chunks = []
+    total_chars = 0
+    for page in reader.pages:
+        if total_chars >= max_chars:
+            break
+        try:
+            text = (page.extract_text() or '').strip()
+        except Exception:
+            text = ''
+
+        if not text:
+            continue
+
+        remaining = max_chars - total_chars
+        snippet = text[:remaining]
+        chunks.append(snippet)
+        total_chars += len(snippet)
+
+    return '\n\n'.join(chunks).strip(), page_count
+
+
 def _extract_document_payload(filepath, filename, pages_hint=None):
     """Extract normalized metadata/content for a stored document file."""
     file_size = os.path.getsize(filepath)
     file_ext = filename.lower().split('.')[-1]
 
     if file_ext == 'pdf':
+        extracted_text, parsed_pages = _extract_pdf_text_with_pypdf(filepath)
+        page_count = pages_hint if pages_hint is not None else parsed_pages
         return {
             'filename': filename,
             'content': '[PDF uploaded]',
             'filepath': filepath,
-            'pages': pages_hint,
+            'pages': page_count,
             'size': file_size,
-            'type': 'pdf'
+            'type': 'pdf',
+            'text': extracted_text
         }
 
     if file_ext in WORD_UPLOAD_EXTENSIONS:
@@ -799,6 +909,60 @@ def _build_document_response(doc_payload):
         'width': doc_payload.get('width'),
         'height': doc_payload.get('height')
     }
+
+
+def _coerce_message_attachments(raw_attachments):
+    normalized = []
+    if not isinstance(raw_attachments, list):
+        return normalized
+
+    for item in raw_attachments[:30]:
+        if not isinstance(item, dict):
+            continue
+        filename = str(item.get('filename') or '').strip()
+        if not filename:
+            continue
+        normalized.append({
+            'filename': filename,
+            'type': str(item.get('type') or '').strip().lower(),
+            'pages': item.get('pages')
+        })
+    return normalized
+
+
+def _rehydrate_uploaded_documents_from_attachments(conv, attachments):
+    if not isinstance(conv, dict):
+        return 0
+
+    uploaded_docs = conv.get('uploaded_documents')
+    if not isinstance(uploaded_docs, dict):
+        conv['uploaded_documents'] = {}
+        uploaded_docs = conv['uploaded_documents']
+
+    restored_count = 0
+    for doc_meta in attachments:
+        filename = str(doc_meta.get('filename') or '').strip()
+        if not filename or filename in uploaded_docs:
+            continue
+
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if not os.path.isfile(filepath):
+            continue
+
+        try:
+            doc_payload = _extract_document_payload(
+                filepath,
+                filename,
+                pages_hint=doc_meta.get('pages')
+            )
+        except (OSError, UnidentifiedImageError, ValueError) as exc:
+            _log_internal_error(f'rehydrate_documents skipped {filename}', exc)
+            continue
+
+        uploaded_docs[filename] = doc_payload
+        restored_count += 1
+
+    return restored_count
 
 @app.route('/')
 def index():
@@ -1167,10 +1331,9 @@ def load_chat(chat_id):
         except OSError as exc:
             _log_internal_error(f'load_chat migration write failed for {normalized_chat_id}', exc)
 
-    live_conv = conversations.get(normalized_chat_id)
-    if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
-        chat_data['messages'] = _history_to_ui_messages(normalized_chat_id)
-        chat_data['uploadedDocuments'] = _conversation_documents_to_ui(normalized_chat_id)
+    # Keep persisted message payload as source of truth for UI rendering.
+    # Frontend-only thinking timeline entries are stored in chat JSON and would be
+    # lost if we swapped to backend in-memory history here.
 
     target_conv = get_conversation(normalized_chat_id)
     if not target_conv.get('is_generating'):
@@ -1300,10 +1463,9 @@ def load_temp_chat(chat_id):
         except OSError as exc:
             _log_internal_error(f'load_temp_chat migration write failed for {normalized_chat_id}', exc)
 
-    live_conv = conversations.get(normalized_chat_id)
-    if live_conv and (live_conv.get('messages') or live_conv.get('is_generating')):
-        chat_data['messages'] = _history_to_ui_messages(normalized_chat_id)
-        chat_data['uploadedDocuments'] = _conversation_documents_to_ui(normalized_chat_id)
+    # Keep persisted message payload as source of truth for UI rendering.
+    # Frontend-only thinking timeline entries are stored in chat JSON and would be
+    # lost if we swapped to backend in-memory history here.
 
     target_conv = get_conversation(normalized_chat_id)
     if not target_conv.get('is_generating'):
@@ -1422,9 +1584,206 @@ def _is_skip_task(task_value):
 
 def _normalize_workflow_mode(value):
     normalized = str(value or '').strip().lower()
-    if normalized in {'auto', 'fast', 'heavy'}:
+    if normalized in {'agent', 'auto', 'fast', 'heavy'}:
+        return 'agent'
+    return 'agent'
+
+
+def _extract_json_objects(text):
+    if not isinstance(text, str):
+        return []
+
+    stripped = text.strip()
+    if not stripped:
+        return []
+
+    candidates = []
+    in_string = False
+    escape = False
+    depth = 0
+    start_idx = None
+
+    for idx, ch in enumerate(stripped):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+
+        if ch == '{':
+            if depth == 0:
+                start_idx = idx
+            depth += 1
+            continue
+
+        if ch == '}':
+            if depth <= 0:
+                continue
+            depth -= 1
+            if depth == 0 and start_idx is not None:
+                candidates.append(stripped[start_idx:idx + 1])
+                start_idx = None
+
+    return candidates
+
+
+def _normalize_script_name(value):
+    raw = str(value or '').strip().replace('\\', '/')
+    if not raw:
+        return ''
+
+    if '/' in raw:
+        return ''
+
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+\.py', raw):
+        return ''
+
+    return raw
+
+
+def _normalize_local_tool_action(value):
+    if not isinstance(value, dict):
+        return None
+
+    script_name = _normalize_script_name(value.get('script'))
+    if not script_name:
+        return None
+
+    args = []
+    raw_args = value.get('args', [])
+    if isinstance(raw_args, list):
+        for item in raw_args[:20]:
+            if item is None:
+                continue
+            arg = str(item).strip()
+            if arg:
+                args.append(arg[:400])
+    elif isinstance(raw_args, str):
+        arg = raw_args.strip()
+        if arg:
+            args.append(arg[:400])
+
+    return {
+        'script': script_name,
+        'args': args
+    }
+
+
+def _parse_agent_action_payload(raw_text):
+    fallback = {
+        'thought': 'Fallback: return best effort answer.',
+        'requires_verifier': False,
+        'confidence': 0.35,
+        'action': {
+            'type': 'final_response',
+            'text': str(raw_text or '').strip() or 'I could not generate a structured plan, so this is a best-effort answer.'
+        }
+    }
+
+    for candidate in reversed(_extract_json_objects(raw_text)):
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            continue
+
+        if not isinstance(payload, dict):
+            continue
+
+        action = payload.get('action')
+        if not isinstance(action, dict):
+            continue
+
+        action_type = str(action.get('type') or '').strip().lower()
+        if action_type not in {'skill_call', 'final_response'}:
+            continue
+
+        normalized = {
+            'thought': str(payload.get('thought') or '').strip(),
+            'requires_verifier': bool(payload.get('requires_verifier', False)),
+            'confidence': _clamp_confidence(payload.get('confidence'), default=0.5),
+            'action': {
+                'type': action_type
+            }
+        }
+
+        if action_type == 'skill_call':
+            skill_id = str(action.get('skill') or '').strip()
+            args = action.get('args') if isinstance(action.get('args'), dict) else {}
+            if not skill_id:
+                continue
+            normalized['action']['skill'] = skill_id
+            normalized['action']['args'] = args
+            normalized['action']['reason'] = str(action.get('reason') or '').strip()
+            local_tool = _normalize_local_tool_action(action.get('local_tool'))
+            if local_tool:
+                normalized['action']['local_tool'] = local_tool
+        else:
+            text = str(action.get('text') or '').strip()
+            if not text:
+                continue
+            normalized['action']['text'] = text
+
         return normalized
-    return 'auto'
+
+    return fallback
+
+
+def _is_logic_or_math_request(text):
+    lowered = str(text or '').lower()
+    if not lowered:
+        return False
+
+    hints = [
+        'math', 'mathematics', 'calculate', 'equation', 'proof', 'solve',
+        'logic', 'reasoning', 'derive', 'formula', 'probability', 'statistic'
+    ]
+    return any(hint in lowered for hint in hints)
+
+
+def _build_skill_inventory_text(skills):
+    lines = []
+    for skill in skills:
+        lines.append(
+            f"- {skill.skill_id}: {skill.description}"
+        )
+    return '\n'.join(lines)
+
+
+def _redact_sensitive_payload(value):
+    sensitive_keys = {
+        'api_key', 'apikey', 'authorization', 'token', 'access_token',
+        'password', 'secret', 'file_data', 'bearer'
+    }
+
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            normalized_key = str(key or '').strip().lower()
+            if normalized_key in sensitive_keys:
+                redacted[key] = '[REDACTED]'
+            else:
+                redacted[key] = _redact_sensitive_payload(item)
+        return redacted
+
+    if isinstance(value, list):
+        return [_redact_sensitive_payload(item) for item in value]
+
+    if isinstance(value, str):
+        text = value.strip()
+        if re.search(r'(sk-[A-Za-z0-9]{16,}|Bearer\s+[A-Za-z0-9\-\._~\+\/]+=*)', text):
+            return '[REDACTED]'
+        if text.startswith('data:') and len(text) > 128:
+            return '[REDACTED_BLOB]'
+        return value
+
+    return value
 
 
 def _normalize_history_context_mode(value):
@@ -1761,6 +2120,75 @@ def _normalized_skills_config(config):
     return merged
 
 
+def _normalized_skill_local_tools_config(config):
+    skills_config = config.get('skills', {}) if isinstance(config, dict) else {}
+    if not isinstance(skills_config, dict):
+        skills_config = {}
+
+    local_tools = skills_config.get('local_tools', {})
+    if not isinstance(local_tools, dict):
+        local_tools = {}
+
+    default_allowlist = {
+        str(skill_id).strip().lower(): [script for script in scripts]
+        for skill_id, scripts in DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['allowlist'].items()
+    }
+
+    merged = {
+        'enabled': False,
+        'require_explicit_approval': _coerce_bool(
+            local_tools.get('require_explicit_approval'),
+            DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['require_explicit_approval']
+        ),
+        'timeout_seconds': _coerce_int(
+            local_tools.get('timeout_seconds'),
+            DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['timeout_seconds']
+        ),
+        'max_output_chars': _coerce_int(
+            local_tools.get('max_output_chars'),
+            DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['max_output_chars']
+        ),
+        'allowlist': default_allowlist
+    }
+
+    allowlist = local_tools.get('allowlist', {})
+    if isinstance(allowlist, dict):
+        normalized_allowlist = {}
+        for raw_skill_id, raw_scripts in allowlist.items():
+            skill_id = str(raw_skill_id or '').strip().lower()
+            if not skill_id:
+                continue
+            scripts = []
+            if isinstance(raw_scripts, list):
+                for item in raw_scripts:
+                    script_name = _normalize_script_name(item)
+                    if script_name and script_name not in scripts:
+                        scripts.append(script_name)
+            normalized_allowlist[skill_id] = scripts
+        if normalized_allowlist:
+            merged['allowlist'] = normalized_allowlist
+
+    return merged
+
+
+def _build_local_tools_inventory_text(local_tools_config):
+    if not local_tools_config.get('enabled'):
+        return '(local tools disabled)'
+
+    lines = []
+    allowlist = local_tools_config.get('allowlist', {})
+    for skill_id in sorted(allowlist.keys()):
+        scripts = allowlist.get(skill_id) or []
+        if not scripts:
+            continue
+        lines.append(f"- {skill_id}: {', '.join(scripts)}")
+
+    if lines:
+        return '\n'.join(lines)
+
+    return '(no explicit allowlist; any existing .py file in the selected skill directory is permitted)'
+
+
 def _resolve_skills_dir(config):
     skills_config = _normalized_skills_config(config)
     if not skills_config['enabled']:
@@ -2005,14 +2433,26 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
                 continue
 
             if doc_type == 'pdf':
+                if not context_text:
+                    context_text = "\n\n===== AVAILABLE DOCUMENTS =====\n"
+
+                context_text += f"\n--- PDF: {filename} ---\n"
+                extracted_pdf_text = str(doc_info.get('text') or '').strip()
+                if extracted_pdf_text:
+                    context_text += extracted_pdf_text[:12000]
+                    if len(extracted_pdf_text) > 12000:
+                        context_text += "\n[... content truncated ...]"
+                    context_text += "\n"
+                else:
+                    context_text += "[PDF uploaded, but no extractable text was found.]\n"
+
                 if support_pdf_input and doc_info.get('filepath'):
                     pdf_inputs.append({
                         'filename': filename,
                         'filepath': doc_info['filepath']
                     })
-                    continue
-
-                unsupported_pdf_filenames.append(filename)
+                else:
+                    unsupported_pdf_filenames.append(filename)
                 continue
 
             if not context_text:
@@ -3019,7 +3459,30 @@ def handle_message_wrapper(data):
     chat_id = data.get('chat_id')
     conversation_id = chat_id if chat_id else request.sid
     conv = get_conversation(conversation_id)
+    attachments = _coerce_message_attachments(data.get('attachments'))
+    restored_docs = _rehydrate_uploaded_documents_from_attachments(conv, attachments)
+    if restored_docs > 0:
+        emit('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Restored {restored_docs} uploaded source(s) for this run",
+            'chat_id': conversation_id
+        }, to=conversation_id)
+
     if conv.get('is_generating'):
+        redirect_message = str(data.get('message') or '').strip()
+        if redirect_message:
+            conv['agent_redirect_message'] = redirect_message
+            emit('console_log', {
+                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Redirect instruction queued for active run",
+                'chat_id': conversation_id
+            }, to=conversation_id)
+            socketio.emit('agent_step', {
+                'chat_id': conversation_id,
+                'run_group_id': conv.get('current_run_group_id'),
+                'step_type': 'redirect_input',
+                'status': 'queued',
+                'summary': redirect_message
+            }, to=conversation_id)
+            return
         emit('console_log', {
             'message': f"[{datetime.now().strftime('%H:%M:%S')}] Generation already running for this chat",
             'chat_id': conversation_id
@@ -3032,12 +3495,636 @@ def handle_message_wrapper(data):
     conv['active_stream_task'] = task
 
 
+def _emit_agent_step(emit_chat, run_group_id, step_type, status, summary, payload=None, iteration=None):
+    event_payload = {
+        'run_group_id': run_group_id,
+        'step_type': step_type,
+        'status': status,
+        'summary': str(summary or '')
+    }
+    if iteration is not None:
+        event_payload['iteration'] = int(iteration)
+    if payload is not None:
+        event_payload['payload'] = _redact_sensitive_payload(payload)
+    emit_chat('agent_step', event_payload)
+
+
+def _parse_skill_result_payload(raw_text):
+    fallback = {
+        'result': str(raw_text or '').strip(),
+        'confidence': 0.4,
+        'notes': []
+    }
+
+    for candidate in reversed(_extract_json_objects(raw_text)):
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            continue
+
+        if not isinstance(payload, dict):
+            continue
+
+        result = str(payload.get('result') or '').strip()
+        if not result:
+            continue
+
+        notes = payload.get('notes')
+        if not isinstance(notes, list):
+            notes = []
+
+        return {
+            'result': result,
+            'confidence': _clamp_confidence(payload.get('confidence'), default=0.5),
+            'notes': [str(item) for item in notes]
+        }
+
+    return fallback
+
+
+def _truncate_tool_output(text, max_chars):
+    rendered = str(text or '')
+    if len(rendered) <= max_chars:
+        return rendered
+    return rendered[:max_chars] + '\n[... output truncated ...]'
+
+
+def _resolve_local_skill_script_path(skill_dir, script_name):
+    """Resolve script name to an existing Python file inside a skill directory."""
+    scripts_dir = os.path.abspath(os.path.join(skill_dir, 'scripts'))
+    direct_path = os.path.abspath(os.path.join(skill_dir, script_name))
+    scripts_path = os.path.abspath(os.path.join(scripts_dir, script_name))
+
+    for candidate in (scripts_path, direct_path):
+        parent = os.path.dirname(candidate)
+        if os.path.commonpath([skill_dir, parent]) != skill_dir:
+            continue
+        if os.path.isfile(candidate):
+            return candidate
+
+    return ''
+
+
+def _run_local_skill_tool(config, skill_def, local_tool, user_approved):
+    local_tools_config = _normalized_skill_local_tools_config(config)
+    if not local_tools_config.get('enabled'):
+        return {
+            'ok': False,
+            'error': 'Local skill tools are disabled by config.'
+        }
+
+    if local_tools_config.get('require_explicit_approval') and not user_approved:
+        return {
+            'ok': False,
+            'error': 'Local tool execution requires explicit approval for this message.'
+        }
+
+    if not isinstance(local_tool, dict):
+        return {
+            'ok': False,
+            'error': 'Invalid local_tool payload.'
+        }
+
+    script_name = _normalize_script_name(local_tool.get('script'))
+    if not script_name:
+        return {
+            'ok': False,
+            'error': 'Invalid script name.'
+        }
+
+    skill_id = str(skill_def.skill_id or '').strip().lower()
+    allowlist = local_tools_config.get('allowlist', {})
+    allowed_scripts = allowlist.get(skill_id, [])
+    if allowed_scripts and script_name not in allowed_scripts:
+        return {
+            'ok': False,
+            'error': f'Script is not allowlisted for skill {skill_id}: {script_name}'
+        }
+
+    skill_dir = os.path.abspath(os.path.dirname(skill_def.path))
+    workspace_root = os.path.abspath('.')
+    if os.path.commonpath([workspace_root, skill_dir]) != workspace_root:
+        return {
+            'ok': False,
+            'error': 'Skill path is outside the workspace and cannot execute local tools.'
+        }
+
+    script_path = _resolve_local_skill_script_path(skill_dir, script_name)
+    if not script_path:
+        return {
+            'ok': False,
+            'error': f'Script file was not found in skill directory: {script_name}'
+        }
+
+    command = [sys.executable, script_path]
+    raw_args = local_tool.get('args', [])
+    if isinstance(raw_args, list):
+        for item in raw_args[:20]:
+            if item is None:
+                continue
+            command.append(str(item))
+    elif isinstance(raw_args, str) and raw_args.strip():
+        command.append(raw_args.strip())
+
+    timeout_seconds = local_tools_config.get('timeout_seconds', DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['timeout_seconds'])
+    max_output_chars = local_tools_config.get('max_output_chars', DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['max_output_chars'])
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=skill_dir,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            'ok': False,
+            'error': f'Local tool timed out after {timeout_seconds} seconds.',
+            'script': script_name,
+            'command': command
+        }
+    except OSError as exc:
+        return {
+            'ok': False,
+            'error': f'Failed to run local tool: {exc}',
+            'script': script_name,
+            'command': command
+        }
+
+    stdout_text = _truncate_tool_output(completed.stdout, max_output_chars)
+    stderr_text = _truncate_tool_output(completed.stderr, max_output_chars)
+
+    return {
+        'ok': completed.returncode == 0,
+        'script': script_name,
+        'command': command,
+        'exit_code': completed.returncode,
+        'stdout': stdout_text,
+        'stderr': stderr_text,
+        'error': '' if completed.returncode == 0 else 'Local tool returned a non-zero exit code.'
+    }
+
+
+def _run_memory_management_agent(config, model_id, user_message, final_response):
+    result = {
+        'added': 0,
+        'updated': 0,
+        'deleted': 0,
+        'payload': {}
+    }
+
+    if not (memory_manager.is_enabled(config) and memory_manager.auto_extract_enabled(config)):
+        return result
+
+    existing_flat = memory_manager.read_flat(config)
+    existing_lines = []
+    for entry in existing_flat:
+        existing_lines.append(f"[ID {entry['id']}] ({entry['section']}) {entry['content']}")
+    existing_text = '\n'.join(existing_lines) if existing_lines else '(none yet)'
+
+    extract_sys = MEMORY_EXTRACT_PROMPT.replace('{existing_memories}', existing_text)
+    extract_user = f"User: {user_message}\nLeader: {str(final_response or '')[:1200]}"
+
+    extract_raw = completion_response(
+        model=model_id,
+        system_prompt=extract_sys,
+        user_prompt=extract_user,
+        temperature=0.2
+    )
+    extracted_json = extract_json_from_text(extract_raw)
+    payload = json.loads(extracted_json) if extracted_json else {}
+    result['payload'] = payload
+
+    updated_items = payload.get('updated_memories', [])
+    deleted_ids = payload.get('deleted_memory_ids', [])
+    new_memories = payload.get('new_memories', [])
+
+    if isinstance(updated_items, list):
+        for item in updated_items:
+            if not isinstance(item, dict):
+                continue
+            mem_id = item.get('id')
+            content = str(item.get('content') or '').strip()
+            if mem_id is None or not content:
+                continue
+            try:
+                memory_manager.update_memory(int(mem_id), content, config)
+                result['updated'] += 1
+            except Exception:
+                continue
+
+    if isinstance(deleted_ids, list):
+        for mem_id in sorted(deleted_ids, reverse=True):
+            try:
+                memory_manager.delete_memory(int(mem_id), config)
+                result['deleted'] += 1
+            except Exception:
+                continue
+
+    if isinstance(new_memories, list) and new_memories:
+        before = len(memory_manager.read_flat(config))
+        memory_manager.add_memories_bulk(new_memories, config)
+        after = len(memory_manager.read_flat(config))
+        result['added'] += max(0, after - before)
+
+    return result
+
+
+def _build_model_document_inputs(conversation_id, model_id, system_prompt):
+    """Attach uploaded document context and multimodal inputs for a specific model."""
+    model_info = get_model_info(model_id)
+    support_images = bool(model_info.get('support_images', False))
+    support_pdf_input = bool(model_info.get('support_pdf_input', False))
+    return build_document_context(
+        conversation_id,
+        system_prompt,
+        support_images=support_images,
+        support_pdf_input=support_pdf_input
+    )
+
+
+def _completion_response_with_doc_fallback(
+    *,
+    model,
+    system_prompt,
+    user_prompt,
+    chat_history=None,
+    temperature=0.2,
+    image_urls=None,
+    pdf_inputs=None
+):
+    """Run model completion with graceful retries when multimodal payloads are rejected."""
+    try:
+        return completion_response(
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            chat_history=chat_history,
+            temperature=temperature,
+            image_urls=image_urls,
+            pdf_inputs=pdf_inputs
+        )
+    except Exception as first_exc:
+        logger.warning(
+            "Agent completion failed with document inputs (model=%s): %s",
+            model,
+            str(first_exc)
+        )
+        if pdf_inputs:
+            try:
+                logger.warning("Retrying agent completion without PDF binary inputs (model=%s)", model)
+                return completion_response(
+                    model=model,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    chat_history=chat_history,
+                    temperature=temperature,
+                    image_urls=image_urls,
+                    pdf_inputs=None
+                )
+            except Exception:
+                pass
+
+        if image_urls:
+            try:
+                logger.warning("Retrying agent completion without image/PDF binary inputs (model=%s)", model)
+                return completion_response(
+                    model=model,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    chat_history=chat_history,
+                    temperature=temperature,
+                    image_urls=None,
+                    pdf_inputs=None
+                )
+            except Exception:
+                pass
+
+        raise first_exc
+
+
+def _run_agent_single_leader_workflow(
+    *,
+    conv,
+    config,
+    user_message,
+    user_system_prompt,
+    chat_history,
+    conversation_id,
+    run_group_id,
+    emit_chat,
+    auto_save_chat,
+    stop_if_aborted,
+    user_approved_local_tools
+):
+    leader_model_id = str(config.get('Leader') or '').strip()
+    skills_cfg = config.get('skills', {}) if isinstance(config.get('skills', {}), dict) else {}
+    skills_root = str(skills_cfg.get('folder') or 'skills').strip() or 'skills'
+    allow_legacy_flat = bool(skills_cfg.get('allow_legacy_flat', True))
+    discovered_skills = skill_registry.discover_skills(skills_root, allow_legacy_flat=allow_legacy_flat)
+    skill_catalog = skill_registry.build_skill_catalog(discovered_skills)
+
+    _emit_agent_step(
+        emit_chat,
+        run_group_id,
+        'skills_catalog',
+        'ready',
+        f'Discovered {len(discovered_skills)} skills',
+        payload={'skills': skill_catalog}
+    )
+
+    if not discovered_skills:
+        return "No skills were discovered. Please add skills/<name>/SKILL.md files."
+
+    memory_context = memory_manager.build_memory_context(config)
+    _emit_agent_step(
+        emit_chat,
+        run_group_id,
+        'memory_read',
+        'done',
+        'Loaded persistent memory context',
+        payload={'memory_context': memory_context}
+    )
+
+    model_map = skills_cfg.get('model_map', {}) if isinstance(skills_cfg.get('model_map', {}), dict) else {}
+    warning_interval = int((config.get('agent_loop', {}) or {}).get('warning_interval', 10) or 10)
+    warning_interval = max(1, warning_interval)
+
+    loop_observations = []
+    iteration = 0
+    logic_task = _is_logic_or_math_request(user_message)
+
+    while True:
+        if stop_if_aborted():
+            return ''
+
+        redirect_message = str(conv.get('agent_redirect_message') or '').strip()
+        if redirect_message:
+            conv['agent_redirect_message'] = ''
+            loop_observations.append(f"[redirect] {redirect_message}")
+            _emit_agent_step(
+                emit_chat,
+                run_group_id,
+                'redirect_input',
+                'applied',
+                redirect_message,
+                iteration=iteration
+            )
+
+        if iteration > 0 and (iteration % warning_interval) == 0:
+            _emit_agent_step(
+                emit_chat,
+                run_group_id,
+                'iteration_warning',
+                'notice',
+                f'Iteration {iteration} reached configured warning interval ({warning_interval})',
+                iteration=iteration
+            )
+
+        skill_inventory_text = _build_skill_inventory_text(discovered_skills)
+        context_lines = [
+            'User request:',
+            user_message,
+            '',
+            'Available skills:',
+            skill_inventory_text,
+            '',
+            'Observed results so far:'
+        ]
+        context_lines.extend(loop_observations[-12:] if loop_observations else ['(none yet)'])
+        context_text = '\n'.join(context_lines)
+
+        planner_system = LEADER_AGENT_ACTION_PROMPT
+        if memory_context:
+            planner_system += f"\n\n{memory_context}"
+        if user_system_prompt:
+            planner_system = f"{user_system_prompt}\n\n{planner_system}"
+
+        planner_system, planner_image_urls, planner_pdf_inputs = _build_model_document_inputs(
+            conversation_id,
+            leader_model_id,
+            planner_system
+        )
+
+        planner_raw = _completion_response_with_doc_fallback(
+            model=leader_model_id,
+            system_prompt=planner_system,
+            user_prompt=context_text,
+            chat_history=chat_history,
+            temperature=0.2,
+            image_urls=planner_image_urls or None,
+            pdf_inputs=planner_pdf_inputs or None
+        )
+        action_payload = _parse_agent_action_payload(planner_raw)
+
+        _emit_agent_step(
+            emit_chat,
+            run_group_id,
+            'leader_plan',
+            'done',
+            action_payload.get('thought') or 'Plan generated',
+            payload=action_payload,
+            iteration=iteration
+        )
+
+        action = action_payload.get('action', {})
+        action_type = str(action.get('type') or '').strip().lower()
+
+        if action_type == 'final_response':
+            final_text = str(action.get('text') or '').strip()
+            if not final_text:
+                final_text = 'I could not generate a complete answer yet.'
+
+            try:
+                memory_result = _run_memory_management_agent(
+                    config,
+                    leader_model_id,
+                    user_message,
+                    final_text
+                )
+                _emit_agent_step(
+                    emit_chat,
+                    run_group_id,
+                    'memory_write',
+                    'done',
+                    f"Memory updated (+{memory_result['added']} ~{memory_result['updated']} -{memory_result['deleted']})",
+                    payload=memory_result
+                )
+            except Exception as exc:
+                _emit_agent_step(
+                    emit_chat,
+                    run_group_id,
+                    'memory_write',
+                    'error',
+                    f'Memory update failed: {str(exc)}',
+                    payload={'error': str(exc)}
+                )
+
+            return final_text
+
+        if action_type != 'skill_call':
+            loop_observations.append('[planner] Invalid action type returned; retrying.')
+            iteration += 1
+            continue
+
+        skill_id = str(action.get('skill') or '').strip()
+        skill_args = action.get('args') if isinstance(action.get('args'), dict) else {}
+        reason = str(action.get('reason') or '').strip()
+        local_tool = action.get('local_tool') if isinstance(action.get('local_tool'), dict) else None
+
+        skill_def = skill_registry.get_skill_by_id(discovered_skills, skill_id)
+        if not skill_def:
+            loop_observations.append(f"[skill-error] Skill not found: {skill_id}")
+            _emit_agent_step(
+                emit_chat,
+                run_group_id,
+                'skill_call',
+                'error',
+                f'Skill not found: {skill_id}',
+                payload={'skill': skill_id, 'args': skill_args},
+                iteration=iteration
+            )
+            iteration += 1
+            continue
+
+        skill_model_id = str(model_map.get(skill_def.skill_id) or leader_model_id).strip() or leader_model_id
+
+        _emit_agent_step(
+            emit_chat,
+            run_group_id,
+            'skill_call',
+            'running',
+            f"Calling {skill_def.skill_id}",
+            payload={
+                'skill': skill_def.skill_id,
+                'reason': reason,
+                'args': skill_args,
+                'model': skill_model_id,
+                'local_tool': local_tool
+            },
+            iteration=iteration
+        )
+
+        if local_tool:
+            loop_observations.append(
+                f"[local-tool-disabled:{skill_def.skill_id}] Local tool request was ignored."
+            )
+
+        skill_system_prompt = SKILL_EXECUTION_PROMPT_TEMPLATE.format(
+            skill_id=skill_def.skill_id,
+            skill_description=skill_def.description,
+            skill_content=skill_def.content
+        )
+        skill_system_prompt, skill_image_urls, skill_pdf_inputs = _build_model_document_inputs(
+            conversation_id,
+            skill_model_id,
+            skill_system_prompt
+        )
+        skill_user_prompt = json.dumps({
+            'task': skill_args.get('task') or user_message,
+            'args': skill_args,
+            'reason': reason
+        }, ensure_ascii=False, indent=2)
+
+        skill_result_raw = _completion_response_with_doc_fallback(
+            model=skill_model_id,
+            system_prompt=skill_system_prompt,
+            user_prompt=skill_user_prompt,
+            chat_history=None,
+            temperature=0.2,
+            image_urls=skill_image_urls or None,
+            pdf_inputs=skill_pdf_inputs or None
+        )
+        parsed_skill_result = _parse_skill_result_payload(skill_result_raw)
+
+        _emit_agent_step(
+            emit_chat,
+            run_group_id,
+            'skill_call',
+            'done',
+            f"{skill_def.skill_id} completed",
+            payload={
+                'skill': skill_def.skill_id,
+                'args': skill_args,
+                'result': parsed_skill_result,
+                'model': skill_model_id,
+                'verifier_trigger': logic_task and skill_def.skill_id != 'verifier-skill'
+            },
+            iteration=iteration
+        )
+
+        loop_observations.append(
+            f"[skill:{skill_def.skill_id}] {parsed_skill_result.get('result', '')[:800]}"
+        )
+
+        should_trigger_verifier = (
+            (logic_task or action_payload.get('requires_verifier'))
+            and skill_def.skill_id != 'verifier-skill'
+            and skill_registry.get_skill_by_id(discovered_skills, 'verifier-skill') is not None
+        )
+        if should_trigger_verifier:
+            verifier_def = skill_registry.get_skill_by_id(discovered_skills, 'verifier-skill')
+            verifier_model_id = str(model_map.get('verifier-skill') or leader_model_id).strip() or leader_model_id
+            verifier_system = SKILL_EXECUTION_PROMPT_TEMPLATE.format(
+                skill_id=verifier_def.skill_id,
+                skill_description=verifier_def.description,
+                skill_content=verifier_def.content
+            )
+            verifier_system, verifier_image_urls, verifier_pdf_inputs = _build_model_document_inputs(
+                conversation_id,
+                verifier_model_id,
+                verifier_system
+            )
+            verifier_user = json.dumps({
+                'task': 'Verify the latest analytical output for logical correctness and factual consistency.',
+                'latest_result': parsed_skill_result,
+                'source_skill': skill_def.skill_id
+            }, ensure_ascii=False, indent=2)
+
+            _emit_agent_step(
+                emit_chat,
+                run_group_id,
+                'verifier_trigger',
+                'running',
+                'LogicCheck Triggered',
+                payload={'source_skill': skill_def.skill_id, 'model': verifier_model_id},
+                iteration=iteration
+            )
+
+            verifier_raw = _completion_response_with_doc_fallback(
+                model=verifier_model_id,
+                system_prompt=verifier_system,
+                user_prompt=verifier_user,
+                chat_history=None,
+                temperature=0.2,
+                image_urls=verifier_image_urls or None,
+                pdf_inputs=verifier_pdf_inputs or None
+            )
+            verifier_result = _parse_skill_result_payload(verifier_raw)
+            loop_observations.append(f"[skill:verifier-skill] {verifier_result.get('result', '')[:800]}")
+            _emit_agent_step(
+                emit_chat,
+                run_group_id,
+                'verifier_trigger',
+                'done',
+                'Verifier completed',
+                payload={'result': verifier_result},
+                iteration=iteration
+            )
+
+        iteration += 1
+
+
 def handle_message_task(data, conversation_id):
     """Handle user message and run the council workflow"""
     user_message = data.get('message', '')
     user_system_prompt = data.get('system_prompt', '')
     existing_user_message_id = str(data.get('existing_user_message_id') or '').strip()
     workflow_mode = _normalize_workflow_mode(data.get('workflow_mode'))
+    user_approved_local_tools = _coerce_bool(data.get('allow_local_skill_tools'), False)
+    leader_model_id = ''
     
     def emit_chat(event, payload=None):
         enriched = dict(payload or {})
@@ -3585,10 +4672,113 @@ def handle_message_task(data, conversation_id):
     timestamp = datetime.now().strftime("%H:%M:%S")
     emit_chat('console_log', {
         'message': (
-            f"[{timestamp}] Council workflow started (mode: {workflow_mode}, "
-            f"history: {history_context_mode})"
+            f"[{timestamp}] Leader-agent workflow started "
+            f"(mode: {workflow_mode}, history: {history_context_mode})"
         )
     })
+
+    try:
+        final_response = _run_agent_single_leader_workflow(
+            conv=conv,
+            config=config,
+            user_message=user_message,
+            user_system_prompt=user_system_prompt,
+            chat_history=chat_history,
+            conversation_id=conversation_id,
+            run_group_id=run_group_id,
+            emit_chat=emit_chat,
+            auto_save_chat=auto_save_chat,
+            stop_if_aborted=stop_if_aborted,
+            user_approved_local_tools=user_approved_local_tools
+        )
+    except Exception as exc:
+        _log_internal_error('leader agent workflow failed', exc)
+        final_response = 'I encountered an internal error while running the agent workflow.'
+
+    if stop_if_aborted():
+        return
+
+    final_response = str(final_response or '').strip()
+    if not final_response:
+        final_response = 'I could not generate a final answer this time.'
+
+    final_message_id = uuid.uuid4().hex
+    final_bot_id = f"agent-leader-final-{uuid.uuid4().hex[:8]}"
+    final_model_id = str(config.get('Leader') or '')
+    final_label = f"Leader - Final Response ({final_model_id.strip()})"
+    final_ts = datetime.now().strftime("%H:%M:%S")
+
+    try:
+        append_conversation_message(
+            conversation_id,
+            role='assistant',
+            content=f"[{final_label}] {final_response}",
+            raw_markdown=final_response,
+            id=final_message_id,
+            bot_name=final_label,
+            bot_id=final_bot_id,
+            run_group_id=run_group_id,
+            run_id=final_message_id,
+            role_name='Leader',
+            model_id=final_model_id,
+            thinking='',
+            stream_status='done',
+            is_final_response=True
+        )
+
+        emit_chat('ai_response_start', {
+            'bot_name': final_label,
+            'bot_id': final_bot_id,
+            'timestamp': final_ts,
+            'message_id': final_message_id,
+            'run_id': final_message_id,
+            'run_group_id': run_group_id,
+            'role_name': 'Leader',
+            'model_id': final_model_id,
+            'is_final_response': True
+        })
+        emit_chat('ai_response_end', {
+            'bot_name': final_label,
+            'bot_id': final_bot_id,
+            'message': final_response,
+            'thinking': '',
+            'timestamp': final_ts,
+            'message_id': final_message_id,
+            'run_id': final_message_id,
+            'run_group_id': run_group_id,
+            'role_name': 'Leader',
+            'model_id': final_model_id,
+            'is_final_response': True
+        })
+    except Exception as exc:
+        _log_internal_error('leader final response emit failed', exc)
+        emit_chat('console_log', {
+            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Final response emit fallback engaged"
+        })
+        emit_chat('ai_response_end', {
+            'bot_name': final_label,
+            'bot_id': final_bot_id,
+            'message': final_response,
+            'thinking': '',
+            'timestamp': final_ts,
+            'message_id': final_message_id,
+            'run_id': final_message_id,
+            'run_group_id': run_group_id,
+            'role_name': 'Leader',
+            'model_id': final_model_id,
+            'is_final_response': True
+        })
+
+    emit_chat('council_status', {
+        'role': 'Leader',
+        'status': 'done',
+        'run_group_id': run_group_id
+    })
+
+    auto_save_chat()
+    complete_workflow(include_run_group_end=True)
+    return
+
     leader_skills_context = ''
 
     # ── Inject cross-chat memory into system prompt (always-on, like ChatGPT/Grok) ──

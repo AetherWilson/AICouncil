@@ -2,24 +2,43 @@ import json
 import os
 import time
 import logging
+import re
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_COUNCIL_CONFIG = {
-    'MarkReader': 'gpt-4o',
     'Leader': 'gpt-4o',
-    'Researcher': 'gpt-4o',
-    'Creator': 'gpt-4o',
-    'Analyzer': 'gpt-4o',
-    'Verifier': 'gpt-4o',
-    'MemWriter': 'gpt-5'
+    'history_context_mode': 'final_only',
+    'skills': {
+        'enabled': True,
+        'folder': 'skills',
+        'allow_legacy_flat': True,
+        'model_map': {
+            'researcher-skill': 'gpt-4o-mini',
+            'creator-skill': 'gpt-4o',
+            'analyzer-skill': 'gpt-4o',
+            'verifier-skill': 'gpt-4o'
+        }
+    },
+    'agent_loop': {
+        'warning_interval': 10
+    },
+    'memory': {
+        'enabled': True,
+        'auto_extract': True,
+        'path': os.path.join('skills', 'memories', 'memory.md')
+    }
 }
 
-LEGACY_ROLE_KEY_MAP = {
-    'MD_Reader': 'MarkReader',
-    'Creative_Writer': 'Creator'
-}
+
+def _deep_merge(base: Any, override: Any) -> Any:
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            merged[key] = _deep_merge(merged.get(key), value)
+        return merged
+    return override if override is not None else base
 
 
 class ConfigStore:
@@ -60,16 +79,11 @@ class ConfigStore:
         }
         return value
 
-    def load_config(self) -> Dict[str, str]:
+    def load_config(self) -> Dict[str, Any]:
         config = self._read_json_cached('config.json', dict(DEFAULT_COUNCIL_CONFIG))
         if not isinstance(config, dict):
             return dict(DEFAULT_COUNCIL_CONFIG)
-        merged = dict(DEFAULT_COUNCIL_CONFIG)
-        for legacy_key, modern_key in LEGACY_ROLE_KEY_MAP.items():
-            # Keep old config files working after role key rename.
-            if modern_key not in config and legacy_key in config:
-                config[modern_key] = config[legacy_key]
-        merged.update(config)
+        merged = _deep_merge(DEFAULT_COUNCIL_CONFIG, config)
         return merged
 
     def load_models(self) -> List[Dict[str, Any]]:
@@ -94,19 +108,71 @@ def infer_model_support_images(model_id: str) -> bool:
     return any(hint in model_lower for hint in vision_hints)
 
 
-def get_model_info(models: List[Dict[str, Any]], model_id: str) -> Dict[str, Any]:
+def infer_model_support_pdf_input(model_id: str) -> bool:
+    """Best-effort PDF-input capability detection when model metadata is unavailable."""
+    model_lower = (model_id or '').lower()
+    if not model_lower:
+        return False
+
+    pdf_hints = [
+        'claude', 'gemini', 'grok', 'deepseek', 'qwen', 'kimi', 'glm',
+        'gpt-4o', 'gpt-4.1', 'gpt-5', 'o1', 'o3'
+    ]
+    return any(hint in model_lower for hint in pdf_hints)
+
+
+def _normalize_model_alias(model_id: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(model_id or '').strip().lower())
+
+
+def _resolve_model_alias(models: List[Dict[str, Any]], model_id: str) -> Dict[str, Any]:
+    target = str(model_id or '').strip()
+    if not target:
+        return {}
+
     for model in models:
-        if model.get('id') == model_id:
-            normalized = dict(model)
-            if 'support_images' not in normalized:
-                normalized['support_images'] = infer_model_support_images(model_id)
-            if 'support_pdf_input' not in normalized:
-                normalized['support_pdf_input'] = False
-            return normalized
+        if str(model.get('id') or '').strip() == target:
+            return model
+
+    target_norm = _normalize_model_alias(target)
+    if not target_norm:
+        return {}
+
+    candidates = []
+    for model in models:
+        candidate_id = str(model.get('id') or '').strip()
+        candidate_norm = _normalize_model_alias(candidate_id)
+        if not candidate_norm:
+            continue
+
+        if candidate_norm == target_norm:
+            return model
+
+        if candidate_norm.startswith(target_norm) or target_norm.startswith(candidate_norm):
+            delta = abs(len(candidate_norm) - len(target_norm))
+            candidates.append((delta, len(candidate_norm), model))
+
+    if not candidates:
+        return {}
+
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return candidates[0][2]
+
+
+def get_model_info(models: List[Dict[str, Any]], model_id: str) -> Dict[str, Any]:
+    resolved = _resolve_model_alias(models, model_id)
+    if resolved:
+        normalized = dict(resolved)
+        normalized['id'] = str(model_id or normalized.get('id') or '')
+        if 'support_images' not in normalized:
+            normalized['support_images'] = infer_model_support_images(model_id)
+        if 'support_pdf_input' not in normalized:
+            normalized['support_pdf_input'] = infer_model_support_pdf_input(model_id)
+        return normalized
 
     return {
         'id': model_id,
         'name': model_id,
         'support_images': infer_model_support_images(model_id),
-        'support_pdf_input': False
+        'support_pdf_input': infer_model_support_pdf_input(model_id)
     }
