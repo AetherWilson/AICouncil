@@ -20,7 +20,6 @@ import os
 import re
 import threading
 import logging
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -142,10 +141,6 @@ def _serialize_sections(sections):
             lines.append(f'- {entry}')
         lines.append('')
     return '\n'.join(lines)
-
-
-def _today():
-    return datetime.now().strftime('%Y-%m-%d')
 
 
 # ─── Public API ──────────────────────────────────────────────────────

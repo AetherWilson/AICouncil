@@ -2640,21 +2640,6 @@
             background: #5fd9c0;
         }
 
-        .status-indicator {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #4ec9b0;
-            margin-left: 10px;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-
         .council-role-item {
             padding: 10px 12px;
             display: flex;
@@ -3233,9 +3218,7 @@
                 conversations[chatId] = {
                     messages: [],
                     is_generating: false,
-                    active_stream_task: null,
                     pending_message_id: null,
-                    cancel_flag: false,
                     uploaded_documents: [],
                     streaming: {},
                     thinking_process: {

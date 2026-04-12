@@ -9,8 +9,6 @@ import importlib
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from datetime import datetime
 import re
-import subprocess
-import sys
 from GPT_handle import completion_response, completion_response_stream, convert_to_traditional_chinese, client
 import os
 from werkzeug.utils import secure_filename
@@ -42,13 +40,6 @@ DEFAULT_SKILLS_CONFIG = {
     'max_chars_per_file': 2500,
     'max_total_chars': 7000
 }
-DEFAULT_SKILL_LOCAL_TOOLS_CONFIG = {
-    'enabled': False,
-    'require_explicit_approval': False,
-    'timeout_seconds': 90,
-    'max_output_chars': 12000,
-    'allowlist': {}
-}
 DEFAULT_MD_READER_CONFIG = {
     'enabled': True,
     'max_inventory_files': 40,
@@ -70,7 +61,6 @@ WORD_UPLOAD_EXTENSIONS = {'docx', 'docm', 'dotx', 'dotm'}
 #   conversation_id: {
 #     messages: list,
 #     is_generating: bool,
-#     active_stream_task: handle,
 #     pending_message_id: str | None,
 #     abort_event: threading.Event,
 #     uploaded_documents: dict[str, dict]
@@ -88,7 +78,6 @@ def _new_conversation_state():
     return {
         'messages': [],
         'is_generating': False,
-        'active_stream_task': None,
         'pending_message_id': None,
         'abort_event': threading.Event(),
         'uploaded_documents': {},
@@ -327,14 +316,6 @@ def migrate_chat_files_once():
                 updated += 1
     if scanned:
         print(f"Chat schema migration checked {scanned} file(s), updated {updated}.")
-
-
-def get_message_content(conversation_id, message_id):
-    conv = get_conversation(conversation_id)
-    for msg in conv['messages']:
-        if msg.get('id') == message_id:
-            return msg.get('content', '')
-    return ''
 
 
 def should_continue_streaming(conversation_id, pending_message_id):
@@ -2129,75 +2110,6 @@ def _normalized_skills_config(config):
     return merged
 
 
-def _normalized_skill_local_tools_config(config):
-    skills_config = config.get('skills', {}) if isinstance(config, dict) else {}
-    if not isinstance(skills_config, dict):
-        skills_config = {}
-
-    local_tools = skills_config.get('local_tools', {})
-    if not isinstance(local_tools, dict):
-        local_tools = {}
-
-    default_allowlist = {
-        str(skill_id).strip().lower(): [script for script in scripts]
-        for skill_id, scripts in DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['allowlist'].items()
-    }
-
-    merged = {
-        'enabled': False,
-        'require_explicit_approval': _coerce_bool(
-            local_tools.get('require_explicit_approval'),
-            DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['require_explicit_approval']
-        ),
-        'timeout_seconds': _coerce_int(
-            local_tools.get('timeout_seconds'),
-            DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['timeout_seconds']
-        ),
-        'max_output_chars': _coerce_int(
-            local_tools.get('max_output_chars'),
-            DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['max_output_chars']
-        ),
-        'allowlist': default_allowlist
-    }
-
-    allowlist = local_tools.get('allowlist', {})
-    if isinstance(allowlist, dict):
-        normalized_allowlist = {}
-        for raw_skill_id, raw_scripts in allowlist.items():
-            skill_id = str(raw_skill_id or '').strip().lower()
-            if not skill_id:
-                continue
-            scripts = []
-            if isinstance(raw_scripts, list):
-                for item in raw_scripts:
-                    script_name = _normalize_script_name(item)
-                    if script_name and script_name not in scripts:
-                        scripts.append(script_name)
-            normalized_allowlist[skill_id] = scripts
-        if normalized_allowlist:
-            merged['allowlist'] = normalized_allowlist
-
-    return merged
-
-
-def _build_local_tools_inventory_text(local_tools_config):
-    if not local_tools_config.get('enabled'):
-        return '(local tools disabled)'
-
-    lines = []
-    allowlist = local_tools_config.get('allowlist', {})
-    for skill_id in sorted(allowlist.keys()):
-        scripts = allowlist.get(skill_id) or []
-        if not scripts:
-            continue
-        lines.append(f"- {skill_id}: {', '.join(scripts)}")
-
-    if lines:
-        return '\n'.join(lines)
-
-    return '(no explicit allowlist; any existing .py file in the selected skill directory is permitted)'
-
-
 def _resolve_skills_dir(config):
     skills_config = _normalized_skills_config(config)
     if not skills_config['enabled']:
@@ -2577,21 +2489,6 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
         print(f"Snapshot save error for {session_id}: {e}")
 
 
-def _conversation_documents_to_ui(conversation_id):
-    """Convert in-memory uploaded document metadata into UI payload format."""
-    conv = get_conversation(conversation_id)
-    return [
-        {
-            'filename': doc.get('filename'),
-            'type': doc.get('type'),
-            'size': doc.get('size'),
-            'pages': doc.get('pages'),
-            'width': doc.get('width'),
-            'height': doc.get('height')
-        }
-        for doc in conv.get('uploaded_documents', {}).values()
-    ]
-
 def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, support_pdf_input=False, on_stream_progress=None, _retry=False, _timeout_fallback_used=False, _fallback_used=False, internal_orchestration=False, stream_context=None):
     safe_stream_context = {
         key: value
@@ -2919,7 +2816,6 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
         # Clean up self-references
         import re
         full_response = re.sub(r'^\s*\[.*?\]\s*', '', full_response.strip())
-
 
         # Convert to Traditional Chinese
         converted_response = convert_to_traditional_chinese(full_response)
@@ -3489,8 +3385,7 @@ def handle_message_wrapper(data):
 
     conv['abort_event'].clear()
     conv['is_generating'] = True
-    task = socketio.start_background_task(handle_message_task, data, conversation_id)
-    conv['active_stream_task'] = task
+    socketio.start_background_task(handle_message_task, data, conversation_id)
 
 
 def _emit_agent_step(emit_chat, run_group_id, step_type, status, summary, payload=None, iteration=None):
@@ -3538,131 +3433,6 @@ def _parse_skill_result_payload(raw_text):
         }
 
     return fallback
-
-
-def _truncate_tool_output(text, max_chars):
-    rendered = str(text or '')
-    if len(rendered) <= max_chars:
-        return rendered
-    return rendered[:max_chars] + '\n[... output truncated ...]'
-
-
-def _resolve_local_skill_script_path(skill_dir, script_name):
-    """Resolve script name to an existing Python file inside a skill directory."""
-    scripts_dir = os.path.abspath(os.path.join(skill_dir, 'scripts'))
-    direct_path = os.path.abspath(os.path.join(skill_dir, script_name))
-    scripts_path = os.path.abspath(os.path.join(scripts_dir, script_name))
-
-    for candidate in (scripts_path, direct_path):
-        parent = os.path.dirname(candidate)
-        if os.path.commonpath([skill_dir, parent]) != skill_dir:
-            continue
-        if os.path.isfile(candidate):
-            return candidate
-
-    return ''
-
-
-def _run_local_skill_tool(config, skill_def, local_tool, user_approved):
-    local_tools_config = _normalized_skill_local_tools_config(config)
-    if not local_tools_config.get('enabled'):
-        return {
-            'ok': False,
-            'error': 'Local skill tools are disabled by config.'
-        }
-
-    if local_tools_config.get('require_explicit_approval') and not user_approved:
-        return {
-            'ok': False,
-            'error': 'Local tool execution requires explicit approval for this message.'
-        }
-
-    if not isinstance(local_tool, dict):
-        return {
-            'ok': False,
-            'error': 'Invalid local_tool payload.'
-        }
-
-    script_name = _normalize_script_name(local_tool.get('script'))
-    if not script_name:
-        return {
-            'ok': False,
-            'error': 'Invalid script name.'
-        }
-
-    skill_id = str(skill_def.skill_id or '').strip().lower()
-    allowlist = local_tools_config.get('allowlist', {})
-    allowed_scripts = allowlist.get(skill_id, [])
-    if allowed_scripts and script_name not in allowed_scripts:
-        return {
-            'ok': False,
-            'error': f'Script is not allowlisted for skill {skill_id}: {script_name}'
-        }
-
-    skill_dir = os.path.abspath(os.path.dirname(skill_def.path))
-    workspace_root = os.path.abspath('.')
-    if os.path.commonpath([workspace_root, skill_dir]) != workspace_root:
-        return {
-            'ok': False,
-            'error': 'Skill path is outside the workspace and cannot execute local tools.'
-        }
-
-    script_path = _resolve_local_skill_script_path(skill_dir, script_name)
-    if not script_path:
-        return {
-            'ok': False,
-            'error': f'Script file was not found in skill directory: {script_name}'
-        }
-
-    command = [sys.executable, script_path]
-    raw_args = local_tool.get('args', [])
-    if isinstance(raw_args, list):
-        for item in raw_args[:20]:
-            if item is None:
-                continue
-            command.append(str(item))
-    elif isinstance(raw_args, str) and raw_args.strip():
-        command.append(raw_args.strip())
-
-    timeout_seconds = local_tools_config.get('timeout_seconds', DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['timeout_seconds'])
-    max_output_chars = local_tools_config.get('max_output_chars', DEFAULT_SKILL_LOCAL_TOOLS_CONFIG['max_output_chars'])
-
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=skill_dir,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False
-        )
-    except subprocess.TimeoutExpired:
-        return {
-            'ok': False,
-            'error': f'Local tool timed out after {timeout_seconds} seconds.',
-            'script': script_name,
-            'command': command
-        }
-    except OSError as exc:
-        return {
-            'ok': False,
-            'error': f'Failed to run local tool: {exc}',
-            'script': script_name,
-            'command': command
-        }
-
-    stdout_text = _truncate_tool_output(completed.stdout, max_output_chars)
-    stderr_text = _truncate_tool_output(completed.stderr, max_output_chars)
-
-    return {
-        'ok': completed.returncode == 0,
-        'script': script_name,
-        'command': command,
-        'exit_code': completed.returncode,
-        'stdout': stdout_text,
-        'stderr': stderr_text,
-        'error': '' if completed.returncode == 0 else 'Local tool returned a non-zero exit code.'
-    }
 
 
 def _run_memory_management_agent(config, model_id, user_message, final_response):
@@ -4134,7 +3904,6 @@ def handle_message_task(data, conversation_id):
 
     def finalize_generation():
         conv['is_generating'] = False
-        conv['active_stream_task'] = None
         conv['pending_message_id'] = None
 
     def complete_workflow(include_run_group_end=True):
