@@ -1,15 +1,15 @@
 # AI Council
 
-AI Council is a local multi-model chat app that lets you send one prompt to a configurable panel of LLMs, stream their outputs live, and manage chats through a lightweight web UI.
+AI Council is a local multi-model chat app that lets you send one prompt to a configurable skill-first agent workflow, stream outputs live, and manage chats through a lightweight web UI.
 
-It is built around a small “council” workflow with roles like **MarkReader**, **Leader**, **Researcher**, **Creator**, **Analyzer**, **Verifier**, and **MemWriter**, all configured through JSON and routed through an OpenAI-compatible API client.
+It is built around a single Leader-agent loop that can select markdown skills, execute optional per-skill scripts, and manage persistent memory, all routed through an OpenAI-compatible API client.
 
 > ## Vibe coded notice
 > This project is **vibe coded**: it was built iteratively and fast, with a strong focus on getting useful behavior on screen quickly. Expect practical structure, evolving conventions, and occasional rough edges.
 
 ## What it does
 
-- Run a council-style multi-model conversation from one UI
+- Run a skill-first Leader-agent conversation from one UI
 - Stream responses in real time with Socket.IO
 - Configure role-to-model assignments in `config.json`
 - Manage available models and capabilities in `model.json`
@@ -63,39 +63,44 @@ Key files and folders:
 
 ## Features in more detail
 
-### 1. Council role workflow
+### 1. Leader-agent workflow
 
-The app is structured around a role-based council. Current built-in roles include:
+The app now runs a single Leader-agent planning loop. The Leader can:
 
-- `MarkReader`
-- `Leader`
-- `Researcher`
-- `Creator`
-- `Analyzer`
-- `Verifier`
-- `MemWriter`
+- call markdown skills discovered from `skills/`
+- optionally execute `skills/<skill>/scripts/*.py` tool scripts when planned
+- produce a final response
+- run memory extraction/writeback through `MemWriter` logic in `main.py`
 
-The role model assignments live in `config.json`.
+Key model assignments live in `config.json`.
 
 Example:
 
 ```json
 {
-  "MarkReader": "gpt-4o-mini",
   "Leader": "gpt-4o",
-  "Researcher": "gpt-4o",
-  "Creator": "claude-sonnet-4-6",
-  "Analyzer": "gpt-4o",
-  "Verifier": "gpt-4o",
-  "MemWriter": "claude-sonnet-4-6",
-  "history_context_mode": "final_only"
+  "lite_model": "gpt-4o-mini",
+  "history_context_mode": "final_only",
+  "skills": {
+    "enabled": true,
+    "folder": "skills",
+    "allow_legacy_flat": true,
+    "model_map": {
+      "researcher-skill": "gpt-4o-mini",
+      "creator-skill": "gpt-4o",
+      "analyzer-skill": "gpt-4o",
+      "verifier-skill": "gpt-4o"
+    }
+  }
 }
 ```
+
+`lite_model` is used for lightweight internal tasks such as markdown skill file selection and memory-model fallback.
 
 `history_context_mode` controls what prior assistant outputs are sent back into later model calls:
 
 - `final_only` (recommended): include only prior Leader final responses plus user turns
-- `all`: include all prior assistant outputs (task distribution + subroles + final)
+- `all`: include all prior assistant outputs (agent steps + intermediate outputs + final)
 
 ### 2. Model registry
 
@@ -162,15 +167,15 @@ The memory system is intended to store useful long-lived context and inject it i
 
 ### 6. Skills support
 
-The Leader can use markdown skills from the `skills/` folder.
+Skills are loaded from `skills/` and can provide both markdown instructions and optional local scripts.
 
 The flow is:
 
-1. **MarkReader** scans available markdown files
-2. It selects the most relevant files for the current task
-3. Those selected files are loaded into Leader context
+1. **MarkReader** selects relevant markdown skill files for the request
+2. Selected files are provided to the Leader-agent skill loop
+3. A planned local tool call can run `scripts/<name>.py` inside the target skill folder
 
-This is useful for local prompting rules, workflow hints, or domain-specific instructions.
+Local script execution is sandboxed to the skill's own `scripts/` directory and expects JSON on stdout.
 
 ### 7. Backend monitoring
 

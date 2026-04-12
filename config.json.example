@@ -1,17 +1,11 @@
 {
   "Leader": "gpt-4o",
+  "lite_model": "gpt-4o-mini",
   "history_context_mode": "final_only",
   "skills": {
     "enabled": true,
     "folder": "skills",
     "allow_legacy_flat": true,
-    "local_tools": {
-      "enabled": false,
-      "require_explicit_approval": false,
-      "timeout_seconds": 90,
-      "max_output_chars": 12000,
-      "allowlist": {}
-    },
     "model_map": {
       "researcher-skill": "gpt-4o-mini",
       "creator-skill": "gpt-4o",

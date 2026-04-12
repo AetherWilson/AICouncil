@@ -16,7 +16,7 @@ from PIL import Image, UnidentifiedImageError
 import base64
 import logging
 from services.config_store import ConfigStore, get_model_info as resolve_model_info
-from services import memory_manager, skill_registry
+from services import memory_manager, skill_registry, skill_tool_runner
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -392,6 +392,21 @@ def get_model_info(model_id):
     return resolve_model_info(load_models(), model_id)
 
 
+def _resolve_lite_model_id(config, fallback_model_id=''):
+    if isinstance(config, dict):
+        lite_model_id = str(config.get('lite_model') or '').strip()
+        if lite_model_id:
+            return lite_model_id
+
+    fallback = str(fallback_model_id or '').strip()
+    if fallback:
+        return fallback
+
+    if isinstance(config, dict):
+        return str(config.get('Leader') or '').strip()
+    return ''
+
+
 def resolve_uptest_model_input(raw_model_name):
     """Resolve user-provided model text to a model id and display name.
 
@@ -418,131 +433,7 @@ def resolve_uptest_model_input(raw_model_name):
 
     return text, text
 
-# Council role system prompts
-LEADER_DISTRIBUTE_PROMPT = """You are the Leader of an AI council. Your only job is task routing.
-
-Role boundary policy (HARD CONSTRAINTS):
-1) Researcher
-- Owns: web/info gathering, source lookup, evidence collection, factual freshness checks.
-- Must be assigned for informational requests that depend on facts, real-world knowledge, explanations, comparisons, recommendations, summaries, or any knowledge the Leader may know only partially.
-- If an answer could be incomplete, stale, memory-based, or only partially known, assign Researcher even when the Leader feels highly confident.
-- Leader confidence is NEVER a valid reason to skip Researcher on knowledge-dependent requests.
-- Forbidden: mathematical derivation, UX design planning, creative writing, auditing teammates.
-
-2) Creator
-- Owns: creative ideation, UX/content planning, writing high-quality user-facing text.
-- Forbidden: fact-checking, source validation, logical auditing, questioning teammate correctness.
-
-3) Analyzer
-- Owns: formal logic, mathematical derivation, quantitative reasoning.
-- Forbidden: web research, source verification, teammate auditing.
-
-4) Verifier
-- Owns: auditing other roles' outputs for factual errors, logical flaws, unsupported claims, and step validity.
-- Forbidden: producing primary creative/research/math deliverables except minimal corrections.
-
-Critical routing rules:
-- ONLY Verifier may evaluate, doubt, or critique other roles.
-- Never assign cross-role audit tasks to Researcher, Creator, or Analyzer.
-- If the user request mixes domains, split into parallel role-specific tasks.
-- If the user is asking for information, facts, explanation, comparison, recommendation, summary, or any real-world/domain knowledge, assign Researcher unless the task is purely about transforming user-provided content.
-- When in doubt about whether the Leader's own knowledge is complete enough, assign Researcher.
-- Skip Researcher ONLY for clearly non-factual tasks such as rewriting, formatting, translating, style transformation, or purely creative work that does not depend on external facts.
-- Tasks must be concrete, output-oriented, and minimal (no vague wording).
-- If a role is unnecessary, set that role's task to "SKIP".
-- If any non-Verifier role is assigned, Verifier should usually be assigned to check that output.
-- Use "direct_response" only when the request is simple AND non-knowledge-dependent; if the answer depends on facts the Leader may know only partially, do not use direct_response and assign Researcher instead.
-- Never provide user-facing advice in "analysis" or any *_task field.
-- "analysis" must describe routing intent only (short, internal).
-- User-facing answer text is allowed only in "direct_response", and only when all role tasks are "SKIP".
-
-Return ONLY a valid JSON object in this exact format (no markdown, no extra text):
-{
-  "analysis": "Brief routing analysis",
-  "researcher_task": "Concrete task for Researcher, or SKIP",
-    "creator_task": "Concrete task for Creator, or SKIP",
-  "analyzer_task": "Concrete task for Analyzer, or SKIP",
-    "verifier_task": "Concrete verification task for Verifier, or SKIP",
-    "direct_response": "Final answer to user when request is simple; otherwise empty string"
-}
-
-Hard constraints reminder:
-- Output must be a single JSON object only.
-- Do not include markdown code fences.
-- Do not place any final answer text in "analysis".
-"""
-
-RESEARCHER_PROMPT = """You are the Researcher in an AI council. Provide the most detailed, useful research possible for the assigned task by default.
-
-- Be thorough and comprehensive unless the Leader's assigned task explicitly asks for brevity, a short summary, or a narrower scope
-- Include all directly relevant facts, context, caveats, definitions, comparisons, and supporting details that help produce a stronger final answer
-- Prefer depth over brevity when there is any doubt
-- Cite URLs where available
-- Organize clearly using markdown
-- Do not add filler, but do not omit helpful detail merely to stay short
-
-Do NOT prefix your response with your role name."""
-
-CREATOR_PROMPT = """You are the Creator in an AI council. Produce concise, high-quality creative content for the task.
-
-- Include only essential content — no filler or fluff
-- Match tone and style to the context
-- Use markdown formatting
-
-Do NOT prefix your response with your role name."""
-
-ANALYZER_PROMPT = """You are the Analyzer in an AI council. Perform calculations and quantitative analysis only — do NOT review other members' work.
-
-- Show working only for key steps, not every trivial detail
-- State results clearly and precisely
-- Be concise; omit narrative unless it clarifies the method
-
-Do NOT prefix your response with your role name."""
-
-VERIFIER_PROMPT = """You are the Verifier in an AI council. Your ONLY job is to report errors — do NOT comment on what is correct.
-
-Rules:
-- List ONLY problems: inaccuracies, logical errors, unsupported claims, contradictions, or flawed calculations
-- Do NOT say anything is good, accurate, or fine — silence means you found no issue with that part
-- One bullet per issue; be specific about what is wrong and why
-- If a claim requires data beyond your knowledge cutoff, state only that specific point is unverifiable — do not speculate
-- If you find zero issues overall, output a single line: "No issues found."
-
-Do NOT prefix your response with your role name."""
-
-LEADER_COMBINE_PROMPT = """You are the Leader of an AI council. Your team has completed their work and the Verifier has flagged any errors. Where a member was challenged, they have provided an updated response — always treat that updated response as their final contribution.
-
-Synthesize into a single cohesive final response:
-- Use the most current version of each contribution (updated responses take priority over originals)
-- Incorporate any Verifier corrections
-- Be well-organized and directly address the user's request
-- Preserve the information needed to justify the conclusion, not just the conclusion itself
-- Keep key evidence when relevant: source links, factual support, assumptions, caveats, and the calculation steps needed to understand or verify the result
-- Prefer a strong structure: direct answer first, then supporting detail underneath when needed
-- Do not over-compress Researcher or Analyzer output if that would remove essential support for the answer
-- Use proper markdown formatting
-- Never use raw HTML tags (for example: <p>, <ul>, <li>, <div>); use markdown syntax only
-
-If the task depends on evidence or reasoning, the final answer should normally include short supporting sections such as:
-- "Why / Basis"
-- "Calculation" or "Reasoning"
-- "Sources"
-- "Caveats"
-
-Respond directly — do NOT mention the council, team members, or that you are combining results. Do NOT prefix with your role name."""
-
-LEADER_FAST_PROMPT = """You are the Leader of an AI council operating in FAST mode.
-
-Return a direct answer to the user in a single pass.
-
-Rules:
-- Do not delegate to other roles
-- Be concise but complete
-- Use markdown formatting only (no raw HTML tags)
-- If uncertainty is material, state assumptions clearly
-
-Respond directly. Do NOT prefix with your role name."""
-
+# Core agent prompts
 LEADER_AGENT_ACTION_PROMPT = """You are a single AI agent that plans actions and can call skills.
 
 Rules:
@@ -622,93 +513,6 @@ Return ONLY valid JSON in this exact format (no markdown, no extra text):
     "reason": "Short reason for selection"
 }"""
 
-VERIFIER_DEBATE_STEP_A_PROMPT = """You are the Verifier in a post-round debate stage.
-
-Your job in this step is to raise focused doubts about the first-round outputs.
-
-Rules:
-- Keep everything minimal and sufficient only
-- Question only concrete, high-impact issues that could materially change the final answer
-- Prefer fewer, stronger doubts over many small ones
-- If there is no issue worth debating, return empty questioned_roles and empty doubt_points
-- Use lowercase role names: researcher, creator, analyzer
-- Rank doubts by impact: critical > important > minor
-- For each doubt, specify: what is wrong, why it matters, and what evidence, source, or calculation is needed to resolve it
-- Avoid vague language like "unclear" or "needs more detail"
-- Only question if you can articulate the specific problem
-- Focus especially on unsupported claims, missing source support, broken logic, hidden assumptions, or calculation steps that do not support the stated result
-
-Return ONLY valid JSON in this exact shape:
-{
-    "questioned_roles": ["researcher", "analyzer"],
-    "doubt_points": [
-        {
-            "point_id": "P1",
-            "target_role": "researcher",
-            "doubt": "Specific concise doubt in 1-2 sentences",
-            "severity": "critical",
-            "required_evidence": "cite source or provide calculation"
-        }
-    ],
-    "confidence_in_doubt": 0.0
-}
-
-Do not include markdown or any extra text."""
-
-CALLOUT_REBUTTAL_PROMPT = """You are in a targeted rebuttal step.
-
-You were explicitly questioned by the Verifier.
-
-Rules:
-- Answer only the questioned points
-- Keep the response as short as possible while fully resolving each doubt
-- Prefer direct correction or direct evidence over long explanation
-- If the Verifier requested a source, cite the source briefly
-- If the Verifier questioned a calculation or assumption, show only the steps needed to validate or revise the claim
-- Return ONLY valid JSON in this exact shape:
-{
-    "rebuttals": [
-        {
-            "point_id": "P1",
-            "status": "refute",
-            "evidence": "specific data/logic",
-            "updated_claim": "revised statement if needed"
-        }
-    ]
-}
-- Include one rebuttal object for every questioned point_id
-- You may admit, correct, refute, or provide brief supporting evidence
-- Allowed status values: "acknowledge" | "refute" | "clarify"
-- Keep evidence and updated_claim concise but specific
-- Do not include markdown or any extra text
-"""
-
-VERIFIER_DEBATE_STEP_C_PROMPT = """You are the Verifier in a post-round debate stage.
-
-Your job in this step is to judge the rebuttal for the questioned role.
-
-Rules:
-- Keep output minimal and sufficient only
-- Judge based only on the provided doubts and rebuttal
-- Use one final verdict for this role in this cycle
-- Prefer ending the debate once the material issue is resolved
-- Continue only if a specific unresolved problem remains that could still change the final answer
-
-Return ONLY valid JSON in this exact shape:
-{
-    "verdict": "accept",
-    "reason": "Short reason with only the decisive point",
-    "next_action": "enough_for_this_role",
-    "updated_confidence": 0.0
-}
-
-Allowed values:
-- verdict: "accept" | "partially_accept" | "reject"
-- next_action: "continue_question" | "move_to_other_point" | "enough_for_this_role"
-
-Do not include markdown or any extra text."""
-
-DEBATE_MAX_CYCLES = 3
 
 MEMORY_EXTRACT_PROMPT = """You are a memory management system. Your job is to analyze the conversation and manage the user's persistent cross-chat memory: adding new facts, updating outdated ones, and removing entries that are no longer relevant.
 
@@ -1556,29 +1360,6 @@ def _clamp_confidence(value, default=0.5):
     return max(0.0, min(1.0, parsed))
 
 
-def _normalize_questioned_role(role_name):
-    normalized = (role_name or '').strip().lower()
-    mapping = {
-        'researcher': 'Researcher',
-        'creator': 'Creator',
-        'analyzer': 'Analyzer'
-    }
-    return mapping.get(normalized)
-
-
-def _is_skip_task(task_value):
-    if not isinstance(task_value, str):
-        return False
-    return task_value.strip().upper() == 'SKIP'
-
-
-def _normalize_workflow_mode(value):
-    normalized = str(value or '').strip().lower()
-    if normalized in {'agent', 'auto', 'fast', 'heavy'}:
-        return 'agent'
-    return 'agent'
-
-
 def _extract_json_objects(text):
     if not isinstance(text, str):
         return []
@@ -1725,18 +1506,6 @@ def _parse_agent_action_payload(raw_text):
     return fallback
 
 
-def _is_logic_or_math_request(text):
-    lowered = str(text or '').lower()
-    if not lowered:
-        return False
-
-    hints = [
-        'math', 'mathematics', 'calculate', 'equation', 'proof', 'solve',
-        'logic', 'reasoning', 'derive', 'formula', 'probability', 'statistic'
-    ]
-    return any(hint in lowered for hint in hints)
-
-
 def _build_skill_inventory_text(skills):
     lines = []
     for skill in skills:
@@ -1875,175 +1644,6 @@ def _build_prompt_chat_history(messages, end_index, history_context_mode):
         history.append({'role': 'assistant', 'content': text})
 
     return history
-
-
-def _normalize_task_distribution(tasks):
-    normalized = dict(tasks) if isinstance(tasks, dict) else {}
-
-    # Ensure expected keys exist for downstream logic.
-    for key in ('researcher_task', 'creator_task', 'analyzer_task', 'verifier_task'):
-        if key not in normalized:
-            normalized[key] = 'SKIP'
-
-    direct_response = normalized.get('direct_response', '')
-    if direct_response is None:
-        direct_response = ''
-    elif not isinstance(direct_response, str):
-        direct_response = str(direct_response)
-    normalized['direct_response'] = direct_response.strip()
-
-    return normalized
-
-
-def _build_safe_default_task_distribution():
-    return _normalize_task_distribution({
-        'analysis': 'Fallback route: leader task JSON unavailable.',
-        'researcher_task': 'SKIP',
-        'creator_task': 'Create the primary answer that directly solves the user request in concise markdown.',
-        'analyzer_task': 'SKIP',
-        'verifier_task': 'Audit the Creator output for factual/logical issues and report only concrete problems.',
-        'direct_response': ''
-    })
-
-
-def _parse_task_distribution_payload(raw_text):
-    if not isinstance(raw_text, str) or not raw_text.strip():
-        raise ValueError('Task distribution response is empty')
-
-    json_text = extract_json_from_text(raw_text)
-    if not isinstance(json_text, str) or not json_text.strip():
-        raise ValueError('No JSON content found in task distribution response')
-
-    trimmed = json_text.strip()
-    if not trimmed.startswith('{'):
-        raise ValueError('Task distribution response did not contain a JSON object')
-
-    payload = json.loads(trimmed)
-    if not isinstance(payload, dict):
-        raise ValueError('Task distribution payload must be a JSON object')
-
-    return _normalize_task_distribution(payload)
-
-
-def _parse_step_a_payload(raw_text):
-    fallback = {
-        'questioned_roles': [],
-        'doubt_points': [],
-        'confidence_in_doubt': 0.5
-    }
-    if not raw_text:
-        return fallback
-
-    try:
-        payload = json.loads(extract_json_from_text(raw_text))
-    except Exception:
-        return fallback
-
-    questioned_roles = []
-    for role in payload.get('questioned_roles', []):
-        normalized = _normalize_questioned_role(role)
-        if normalized and normalized not in questioned_roles:
-            questioned_roles.append(normalized)
-
-    doubt_points = []
-    for item in payload.get('doubt_points', []):
-        if not isinstance(item, dict):
-            continue
-        target_role = _normalize_questioned_role(item.get('target_role'))
-        point_id = str(item.get('point_id') or '').strip()
-        doubt = str(item.get('doubt') or '').strip()
-        severity = str(item.get('severity') or '').strip().lower() or 'important'
-        required_evidence = str(item.get('required_evidence') or '').strip()
-        if not target_role or not doubt:
-            continue
-        if not point_id:
-            point_id = f"P{len(doubt_points) + 1}"
-        if severity not in {'critical', 'important', 'minor'}:
-            severity = 'important'
-        doubt_points.append({
-            'point_id': point_id,
-            'target_role': target_role,
-            'doubt': doubt,
-            'severity': severity,
-            'required_evidence': required_evidence
-        })
-        if target_role not in questioned_roles:
-            questioned_roles.append(target_role)
-
-    return {
-        'questioned_roles': questioned_roles,
-        'doubt_points': doubt_points,
-        'confidence_in_doubt': _clamp_confidence(payload.get('confidence_in_doubt'), default=0.5)
-    }
-
-
-def _parse_step_c_payload(raw_text):
-    fallback = {
-        'verdict': 'accept',
-        'reason': 'Unable to parse verifier verdict cleanly.',
-        'next_action': 'enough_for_this_role',
-        'updated_confidence': 0.5
-    }
-    if not raw_text:
-        return fallback
-
-    try:
-        payload = json.loads(extract_json_from_text(raw_text))
-    except Exception:
-        return fallback
-
-    verdict = str(payload.get('verdict') or '').strip().lower()
-    if verdict not in {'accept', 'partially_accept', 'reject'}:
-        verdict = fallback['verdict']
-
-    next_action = str(payload.get('next_action') or '').strip().lower()
-    if next_action not in {'continue_question', 'move_to_other_point', 'enough_for_this_role'}:
-        next_action = fallback['next_action']
-
-    reason = str(payload.get('reason') or '').strip() or fallback['reason']
-
-    return {
-        'verdict': verdict,
-        'reason': reason,
-        'next_action': next_action,
-        'updated_confidence': _clamp_confidence(payload.get('updated_confidence'), default=0.5)
-    }
-
-
-def _parse_step_a_payload_strict(raw_text):
-    if not isinstance(raw_text, str) or not raw_text.strip():
-        return None
-    json_text = extract_json_from_text(raw_text)
-    if not json_text:
-        return None
-    try:
-        payload = json.loads(json_text)
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    required_keys = ['questioned_roles', 'doubt_points', 'confidence_in_doubt']
-    if any(key not in payload for key in required_keys):
-        return None
-    return _parse_step_a_payload(json.dumps(payload, ensure_ascii=False))
-
-
-def _parse_step_c_payload_strict(raw_text):
-    if not isinstance(raw_text, str) or not raw_text.strip():
-        return None
-    json_text = extract_json_from_text(raw_text)
-    if not json_text:
-        return None
-    try:
-        payload = json.loads(json_text)
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    required_keys = ['verdict', 'reason', 'next_action', 'updated_confidence']
-    if any(key not in payload for key in required_keys):
-        return None
-    return _parse_step_c_payload(json.dumps(payload, ensure_ascii=False))
 
 
 def _coerce_int(value, default_value, minimum=1):
@@ -2695,7 +2295,7 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
 
         if timeout_before_first_chunk:
             timeout_ts = datetime.now().strftime("%H:%M:%S")
-            timeout_notice = "⚠️ Timed out before first stream chunk."
+            timeout_notice = "[warning] Timed out before first stream chunk."
             emit_chat('console_log', {
                 'message': (
                     f"[{timeout_ts}] {role_label} exceeded {int(first_chunk_timeout_seconds)}s "
@@ -2915,432 +2515,19 @@ def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt
                 stream_context=safe_stream_context
             )
 
-        # Second failure — skip this role
+        # Second failure: skip this role
         notice = f"{role_label} has encountered an error and has to go without it."
         emit_chat('council_status', {'role': role_name, 'status': 'error'})
         bot_id = f"council-{role_name.lower()}"
         emit_chat('ai_response', {
             'bot_name': role_label,
             'bot_id': bot_id,
-            'message': f"⚠️ {notice}",
+            'message': f"[warning] {notice}",
             'timestamp': timestamp
         })
         return None
 
 
-def _run_optional_council_role(role_name, task_key, base_prompt, user_message, user_system_prompt,
-                               tasks, config, council_results, chat_history, conversation_id,
-                               run_group_id, auto_save_chat, emit_chat, extra_context=''):
-    """Execute one optional council role with consistent skip/log/run behavior."""
-    role_task = tasks.get(task_key, 'SKIP')
-    if _is_skip_task(role_task):
-        emit_chat('council_status', {'role': role_name, 'status': 'skipped'})
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] {role_name.replace('_', ' ')}: SKIPPED"
-        })
-        return None
-
-    model_id = config.get(role_name, '')
-    role_info = get_model_info(model_id)
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    action_verb = 'reviewing team results' if role_name == 'Verifier' else 'working'
-    emit_chat('console_log', {
-        'message': f"[{timestamp}] {role_name.replace('_', ' ')} ({model_id}) {action_verb}..."
-    })
-
-    role_system_prompt = base_prompt + f"\n\nOriginal user request: {user_message}"
-    if extra_context:
-        role_system_prompt += extra_context
-    if user_system_prompt:
-        role_system_prompt = user_system_prompt + "\n\n" + role_system_prompt
-
-    role_response = run_council_role(
-        role_name=role_name,
-        role_label=f"{role_name.replace('_', ' ')} ({model_id})",
-        model_id=model_id,
-        system_prompt=role_system_prompt,
-        user_prompt=role_task,
-        chat_history=chat_history,
-        conversation_id=conversation_id,
-        run_group_id=run_group_id,
-        support_images=role_info.get('support_images', False),
-        support_pdf_input=role_info.get('support_pdf_input', False),
-        on_stream_progress=auto_save_chat
-    )
-    if role_response is not None:
-        council_results[role_name] = role_response
-        auto_save_chat()
-    return role_response
-
-
-def _build_debate_round_snapshot(available_targets, role_latest_outputs):
-    sections = []
-    for role_name in (available_targets or []):
-        sections.append(
-            f"\n\n===== {role_name.replace('_', ' ')} Current Output =====\n"
-            f"{role_latest_outputs.get(role_name, '')}"
-        )
-    return ''.join(sections)
-
-
-def _build_debate_history_snapshot(debate_records, role_filter=None):
-    relevant_records = [
-        record for record in (debate_records or [])
-        if not role_filter or record.get('role') == role_filter
-    ]
-    if not relevant_records:
-        return ''
-
-    history_snapshot = "\n\n===== Prior Debate Records ====="
-    for record in relevant_records:
-        history_snapshot += (
-            f"\nCycle {record['cycle']} | {record['role'].replace('_', ' ')} | "
-            f"verdict={record['verdict']} | next_action={record['next_action']}"
-            f"\nReason: {record['reason']}"
-        )
-    return history_snapshot
-
-
-def _build_step_c_verdict_context(cycle, role_name, role_points, rebuttal,
-                                  role_latest_outputs, available_targets,
-                                  debate_records, step_a_payload):
-    round_snapshot = _build_debate_round_snapshot(available_targets, role_latest_outputs)
-    role_history_snapshot = _build_debate_history_snapshot(debate_records, role_filter=role_name)
-    global_history_snapshot = _build_debate_history_snapshot(debate_records)
-    role_output = role_latest_outputs.get(role_name, '')
-    role_history_count = len([
-        record for record in (debate_records or [])
-        if record.get('role') == role_name
-    ])
-
-    context_meta = {
-        'has_role_output': bool(str(role_output).strip()),
-        'role_history_count': role_history_count,
-        'global_history_count': len(debate_records or []),
-        'question_count': len(role_points or []),
-        'confidence_in_doubt': _clamp_confidence(
-            (step_a_payload or {}).get('confidence_in_doubt'),
-            default=0.5
-        )
-    }
-
-    context_block = (
-        "\n\nDebate verdict context policy:"
-        "\nAll required context for this verdict is provided below."
-        "\nDo not ask for additional internal state, prior cycles, or system logs."
-        f"\n\nCycle: {cycle}"
-        f"\nRole under review: {role_name}"
-        f"\nQuestion count for this role: {context_meta['question_count']}"
-        f"\nVerifier confidence_in_doubt from Step A: {context_meta['confidence_in_doubt']}"
-        f"\n\n{role_name} output under review:\n{role_output}"
-        f"\n\nQuestioned points:\n{json.dumps(role_points, ensure_ascii=False, indent=2)}"
-        f"\n\nRebuttal:\n{rebuttal}"
-        + (f"\n\n{role_name} debate history:{role_history_snapshot}" if role_history_snapshot else '')
-        + (f"\n\nGlobal debate history:{global_history_snapshot}" if global_history_snapshot else '')
-        + (f"\n\nCurrent round outputs:{round_snapshot}" if round_snapshot else '')
-    )
-    return context_block, context_meta
-
-
-def _run_post_round_debate_stage(user_message, user_system_prompt, tasks, config, council_results,
-                                 chat_history, conversation_id, run_group_id, auto_save_chat,
-                                 emit_chat, stop_if_aborted):
-    """Run a verifier-led debate stage after the first round without changing first-round steps."""
-    verifier_task = tasks.get('verifier_task', 'SKIP')
-    if _is_skip_task(verifier_task):
-        return ''
-
-    debate_targets = ['Researcher', 'Creator', 'Analyzer']
-    available_targets = [role for role in debate_targets if council_results.get(role)]
-    if not available_targets:
-        return ''
-
-    verifier_model_id = config.get('Verifier', '')
-    verifier_info = get_model_info(verifier_model_id)
-    debate_records = []
-    role_latest_outputs = {role: council_results.get(role, '') for role in debate_targets}
-
-    for cycle in range(1, DEBATE_MAX_CYCLES + 1):
-        if stop_if_aborted():
-            return ''
-
-        cycle_ts = datetime.now().strftime("%H:%M:%S")
-        emit_chat('console_log', {
-            'message': f"[{cycle_ts}] Debate cycle {cycle}/{DEBATE_MAX_CYCLES}: Verifier questioning..."
-        })
-
-        round_snapshot = _build_debate_round_snapshot(available_targets, role_latest_outputs)
-        history_snapshot = _build_debate_history_snapshot(debate_records)
-
-        step_a_system = (
-            VERIFIER_DEBATE_STEP_A_PROMPT
-            + f"\n\nOriginal user request: {user_message}"
-            + f"\n\nDebate objective: {verifier_task}"
-            + f"\n\nRound 0 outputs:{round_snapshot}"
-            + history_snapshot
-        )
-        if user_system_prompt:
-            step_a_system = user_system_prompt + "\n\n" + step_a_system
-
-        step_a_raw = run_council_role(
-            role_name='Verifier',
-            role_label=f'Verifier - Debate Questioning C{cycle} ({verifier_model_id})',
-            model_id=verifier_model_id,
-            system_prompt=step_a_system,
-            user_prompt='Return the questioning JSON for this debate cycle.',
-            chat_history=chat_history,
-            conversation_id=conversation_id,
-            run_group_id=run_group_id,
-            support_images=verifier_info.get('support_images', False),
-            support_pdf_input=verifier_info.get('support_pdf_input', False),
-            on_stream_progress=auto_save_chat,
-            stream_context={
-                'event_kind': 'verifier_questioning',
-                'debate_cycle': cycle
-            }
-        )
-        if stop_if_aborted():
-            return ''
-
-        step_a_payload = _parse_step_a_payload_strict(step_a_raw)
-        if step_a_payload is None:
-            emit_chat('console_log', {
-                'message': (
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: "
-                    "Step-A JSON parse failed; retrying with strict schema instruction."
-                )
-            })
-            strict_step_a_system = (
-                step_a_system
-                + "\n\nSTRICT RETRY INSTRUCTION: Return exactly one valid JSON object in the required schema."
-                + " Do not include markdown, code fences, natural language explanation, or extra keys."
-            )
-            try:
-                step_a_retry_raw = completion_response(
-                    model=verifier_model_id,
-                    system_prompt=strict_step_a_system,
-                    user_prompt='Return ONLY the questioning JSON now.',
-                    chat_history=chat_history,
-                    temperature=0.2
-                )
-                step_a_payload = _parse_step_a_payload_strict(step_a_retry_raw)
-            except Exception as exc:
-                _log_internal_error('debate step-a strict retry failed', exc)
-                step_a_payload = None
-
-        if step_a_payload is None:
-            emit_chat('console_log', {
-                'message': (
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: "
-                    "Step-A parse failed after strict retry; debate closed safely to avoid false assumptions."
-                )
-            })
-            break
-
-        questioned_roles = [
-            role for role in step_a_payload.get('questioned_roles', [])
-            if role in available_targets
-        ]
-        doubt_points = [
-            point for point in step_a_payload.get('doubt_points', [])
-            if point.get('target_role') in questioned_roles
-        ]
-
-        if not questioned_roles or not doubt_points:
-            emit_chat('console_log', {
-                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: no further doubts, debate closed."
-            })
-            break
-
-        high_priority_points = [
-            point for point in doubt_points
-            if point.get('severity') in {'critical', 'important'}
-        ]
-        if not high_priority_points and step_a_payload.get('confidence_in_doubt', 0.0) < 0.6:
-            emit_chat('console_log', {
-                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: only low-confidence minor doubts remained, debate closed."
-            })
-            break
-
-        role_rebuttals = {}
-        for role_name in questioned_roles:
-            if stop_if_aborted():
-                return ''
-
-            role_points = [p for p in doubt_points if p.get('target_role') == role_name]
-            if not role_points:
-                continue
-
-            model_id = config.get(role_name, '')
-            role_info = get_model_info(model_id)
-            points_json = json.dumps(role_points, ensure_ascii=False, indent=2)
-
-            rebuttal_system = (
-                CALLOUT_REBUTTAL_PROMPT
-                + f"\n\nOriginal user request: {user_message}"
-                + f"\n\nYour current output:\n{role_latest_outputs.get(role_name, '')}"
-                + f"\n\nVerifier doubts (full detail):\n{points_json}"
-            )
-            if user_system_prompt:
-                rebuttal_system = user_system_prompt + "\n\n" + rebuttal_system
-
-            rebuttal_response = run_council_role(
-                role_name=role_name,
-                role_label=f"{role_name.replace('_', ' ')} - Debate Rebuttal C{cycle} ({model_id})",
-                model_id=model_id,
-                system_prompt=rebuttal_system,
-                user_prompt='Respond to all doubts briefly and directly.',
-                chat_history=chat_history,
-                conversation_id=conversation_id,
-                run_group_id=run_group_id,
-                support_images=role_info.get('support_images', False),
-                support_pdf_input=role_info.get('support_pdf_input', False),
-                on_stream_progress=auto_save_chat,
-                stream_context={
-                    'event_kind': 'debate_rebuttal',
-                    'target_role': role_name,
-                    'debate_cycle': cycle
-                }
-            )
-            if rebuttal_response is None:
-                continue
-
-            role_rebuttals[role_name] = rebuttal_response
-            role_latest_outputs[role_name] = rebuttal_response
-            auto_save_chat()
-
-        if not role_rebuttals:
-            emit_chat('console_log', {
-                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: no rebuttal received, debate closed."
-            })
-            break
-
-        should_continue = False
-        for role_name, rebuttal in role_rebuttals.items():
-            if stop_if_aborted():
-                return ''
-
-            role_points = [p for p in doubt_points if p.get('target_role') == role_name]
-            step_c_context, step_c_meta = _build_step_c_verdict_context(
-                cycle=cycle,
-                role_name=role_name,
-                role_points=role_points,
-                rebuttal=rebuttal,
-                role_latest_outputs=role_latest_outputs,
-                available_targets=available_targets,
-                debate_records=debate_records,
-                step_a_payload=step_a_payload
-            )
-            emit_chat('console_log', {
-                'message': (
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: "
-                    f"Verdict context for {role_name} "
-                    f"(has_role_output={step_c_meta['has_role_output']}, "
-                    f"role_history={step_c_meta['role_history_count']}, "
-                    f"global_history={step_c_meta['global_history_count']}, "
-                    f"question_count={step_c_meta['question_count']})."
-                )
-            })
-            step_c_system = (
-                VERIFIER_DEBATE_STEP_C_PROMPT
-                + f"\n\nOriginal user request: {user_message}"
-                + step_c_context
-            )
-            if user_system_prompt:
-                step_c_system = user_system_prompt + "\n\n" + step_c_system
-
-            step_c_raw = run_council_role(
-                role_name='Verifier',
-                role_label=f'Verifier - Debate Verdict C{cycle} {role_name.replace("_", " ")} ({verifier_model_id})',
-                model_id=verifier_model_id,
-                system_prompt=step_c_system,
-                user_prompt='Return the verdict JSON for this role in this cycle.',
-                chat_history=chat_history,
-                conversation_id=conversation_id,
-                run_group_id=run_group_id,
-                support_images=verifier_info.get('support_images', False),
-                support_pdf_input=verifier_info.get('support_pdf_input', False),
-                on_stream_progress=auto_save_chat,
-                stream_context={
-                    'event_kind': 'verifier_verdict',
-                    'target_role': role_name,
-                    'debate_cycle': cycle
-                }
-            )
-            verdict = _parse_step_c_payload_strict(step_c_raw)
-            if verdict is None:
-                emit_chat('console_log', {
-                    'message': (
-                        f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: "
-                        f"Step-C JSON parse failed for {role_name}; retrying with strict schema instruction."
-                    )
-                })
-                strict_step_c_system = (
-                    step_c_system
-                    + "\n\nSTRICT RETRY INSTRUCTION: Return exactly one valid JSON object in the required schema."
-                    + " Do not include markdown, code fences, natural language explanation, or extra keys."
-                )
-                try:
-                    step_c_retry_raw = completion_response(
-                        model=verifier_model_id,
-                        system_prompt=strict_step_c_system,
-                        user_prompt='Return ONLY the verdict JSON now.',
-                        chat_history=chat_history,
-                        temperature=0.2
-                    )
-                    verdict = _parse_step_c_payload_strict(step_c_retry_raw)
-                except Exception as exc:
-                    _log_internal_error('debate step-c strict retry failed', exc)
-                    verdict = None
-
-            if verdict is None:
-                verdict = {
-                    'verdict': 'reject',
-                    'reason': 'Verifier verdict JSON parse failed after strict retry; treated as unresolved for safety.',
-                    'next_action': 'continue_question',
-                    'updated_confidence': 0.0
-                }
-
-            verdict_record = {
-                'cycle': cycle,
-                'role': role_name,
-                'doubt_points': role_points,
-                'rebuttal': rebuttal,
-                **verdict
-            }
-            debate_records.append(verdict_record)
-
-            if verdict['next_action'] in {'continue_question', 'move_to_other_point'} and verdict['verdict'] != 'accept':
-                should_continue = True
-
-        if not should_continue:
-            emit_chat('console_log', {
-                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Debate cycle {cycle}: resolved, debate closed."
-            })
-            break
-
-    if not debate_records:
-        return ''
-
-    for role_name, rebuttal in role_latest_outputs.items():
-        if rebuttal:
-            council_results[role_name] = rebuttal
-
-    summary_text = "\n\n===== Debate Stage Summary ====="
-    for record in debate_records:
-        summary_text += (
-            f"\n\n[Cycle {record['cycle']}] {record['role'].replace('_', ' ')}"
-            f"\nDoubts: {json.dumps(record['doubt_points'], ensure_ascii=False)}"
-            f"\nRebuttal: {record['rebuttal']}"
-            f"\nVerdict: {record['verdict']}"
-            f"\nReason: {record['reason']}"
-            f"\nNext action: {record['next_action']}"
-            f"\nUpdated confidence: {record['updated_confidence']}"
-        )
-
-    council_results['Verifier_Debate'] = summary_text.strip()
-    auto_save_chat()
-    return summary_text
 
 @socketio.on('join_chat')
 def handle_join_chat(data):
@@ -3584,14 +2771,82 @@ def _run_agent_single_leader_workflow(
     run_group_id,
     emit_chat,
     auto_save_chat,
-    stop_if_aborted,
-    user_approved_local_tools
+    stop_if_aborted
 ):
     leader_model_id = str(config.get('Leader') or '').strip()
+    lite_model_id = _resolve_lite_model_id(config, leader_model_id)
     skills_cfg = config.get('skills', {}) if isinstance(config.get('skills', {}), dict) else {}
     skills_root = str(skills_cfg.get('folder') or 'skills').strip() or 'skills'
     allow_legacy_flat = bool(skills_cfg.get('allow_legacy_flat', True))
     discovered_skills = skill_registry.discover_skills(skills_root, allow_legacy_flat=allow_legacy_flat)
+
+    md_reader_cfg = _normalized_md_reader_config(config)
+    inventory_text, inventory_meta = build_md_reader_inventory(config)
+    selected_files = []
+
+    if md_reader_cfg.get('enabled', True) and inventory_meta.get('status') == 'ok' and lite_model_id:
+        _emit_agent_step(
+            emit_chat,
+            run_group_id,
+            'markreader',
+            'running',
+            f'MarkReader selecting relevant skill files ({lite_model_id})',
+            payload={'available_files': inventory_meta.get('available_files', [])}
+        )
+
+        markreader_system = MARK_READER_PROMPT + f"\n\n{inventory_text}"
+        if user_system_prompt:
+            markreader_system = f"{user_system_prompt}\n\n{markreader_system}"
+
+        try:
+            markreader_raw = _completion_response_with_doc_fallback(
+                model=lite_model_id,
+                system_prompt=markreader_system,
+                user_prompt=(
+                    'Select relevant markdown files for the current user request.\\n\\n'
+                    f'User request:\\n{user_message}'
+                ),
+                chat_history=chat_history,
+                temperature=0.2
+            )
+            markreader_payload = _parse_md_reader_payload(markreader_raw)
+            selected_files, validate_meta = _validate_selected_skill_files(
+                config,
+                markreader_payload.get('selected_files', [])
+            )
+            _emit_agent_step(
+                emit_chat,
+                run_group_id,
+                'markreader',
+                'done',
+                f'Selected {len(selected_files)} file(s)',
+                payload={
+                    'selected_files': selected_files,
+                    'reason': markreader_payload.get('reason', ''),
+                    'rejected_files': validate_meta.get('rejected_files', [])
+                }
+            )
+        except Exception as exc:
+            _emit_agent_step(
+                emit_chat,
+                run_group_id,
+                'markreader',
+                'error',
+                f'MarkReader failed: {str(exc)}',
+                payload={'error': str(exc)}
+            )
+
+    if selected_files:
+        workspace_root = os.path.abspath('.')
+        selected_set = set(selected_files)
+        filtered_skills = []
+        for skill in discovered_skills:
+            rel_path = os.path.relpath(os.path.abspath(skill.path), workspace_root).replace('\\\\', '/')
+            if rel_path in selected_set:
+                filtered_skills.append(skill)
+        if filtered_skills:
+            discovered_skills = filtered_skills
+
     skill_catalog = skill_registry.build_skill_catalog(discovered_skills)
 
     _emit_agent_step(
@@ -3622,7 +2877,6 @@ def _run_agent_single_leader_workflow(
 
     loop_observations = []
     iteration = 0
-    logic_task = _is_logic_or_math_request(user_message)
 
     while True:
         if stop_if_aborted():
@@ -3706,9 +2960,10 @@ def _run_agent_single_leader_workflow(
                 final_text = 'I could not generate a complete answer yet.'
 
             try:
+                memory_model_id = _resolve_lite_model_id(config, leader_model_id)
                 memory_result = _run_memory_management_agent(
                     config,
-                    leader_model_id,
+                    memory_model_id,
                     user_message,
                     final_text
                 )
@@ -3758,6 +3013,7 @@ def _run_agent_single_leader_workflow(
             continue
 
         skill_model_id = str(model_map.get(skill_def.skill_id) or leader_model_id).strip() or leader_model_id
+        tool_result = None
 
         _emit_agent_step(
             emit_chat,
@@ -3776,9 +3032,38 @@ def _run_agent_single_leader_workflow(
         )
 
         if local_tool:
-            loop_observations.append(
-                f"[local-tool-disabled:{skill_def.skill_id}] Local tool request was ignored."
+            _emit_agent_step(
+                emit_chat,
+                run_group_id,
+                'skill_tool',
+                'running',
+                f"Running {skill_def.skill_id}/{local_tool.get('script')}",
+                payload={'skill': skill_def.skill_id, 'local_tool': local_tool},
+                iteration=iteration
             )
+            tool_result = skill_tool_runner.run_skill_script(
+                skill_file_path=skill_def.path,
+                script_name=local_tool.get('script'),
+                args=local_tool.get('args', [])
+            )
+            tool_status = 'done' if tool_result.get('ok') else 'error'
+            _emit_agent_step(
+                emit_chat,
+                run_group_id,
+                'skill_tool',
+                tool_status,
+                f"{skill_def.skill_id} tool {tool_status}",
+                payload=tool_result,
+                iteration=iteration
+            )
+            if tool_result.get('ok'):
+                loop_observations.append(
+                    f"[tool:{skill_def.skill_id}] {local_tool.get('script')} succeeded"
+                )
+            else:
+                loop_observations.append(
+                    f"[tool-error:{skill_def.skill_id}] {tool_result.get('error', 'tool failed')}"
+                )
 
         skill_system_prompt = SKILL_EXECUTION_PROMPT_TEMPLATE.format(
             skill_id=skill_def.skill_id,
@@ -3793,7 +3078,8 @@ def _run_agent_single_leader_workflow(
         skill_user_prompt = json.dumps({
             'task': skill_args.get('task') or user_message,
             'args': skill_args,
-            'reason': reason
+            'reason': reason,
+            'local_tool_result': tool_result
         }, ensure_ascii=False, indent=2)
 
         skill_result_raw = _completion_response_with_doc_fallback(
@@ -3817,8 +3103,7 @@ def _run_agent_single_leader_workflow(
                 'skill': skill_def.skill_id,
                 'args': skill_args,
                 'result': parsed_skill_result,
-                'model': skill_model_id,
-                'verifier_trigger': logic_task and skill_def.skill_id != 'verifier-skill'
+                'model': skill_model_id
             },
             iteration=iteration
         )
@@ -3826,61 +3111,6 @@ def _run_agent_single_leader_workflow(
         loop_observations.append(
             f"[skill:{skill_def.skill_id}] {parsed_skill_result.get('result', '')[:800]}"
         )
-
-        should_trigger_verifier = (
-            (logic_task or action_payload.get('requires_verifier'))
-            and skill_def.skill_id != 'verifier-skill'
-            and skill_registry.get_skill_by_id(discovered_skills, 'verifier-skill') is not None
-        )
-        if should_trigger_verifier:
-            verifier_def = skill_registry.get_skill_by_id(discovered_skills, 'verifier-skill')
-            verifier_model_id = str(model_map.get('verifier-skill') or leader_model_id).strip() or leader_model_id
-            verifier_system = SKILL_EXECUTION_PROMPT_TEMPLATE.format(
-                skill_id=verifier_def.skill_id,
-                skill_description=verifier_def.description,
-                skill_content=verifier_def.content
-            )
-            verifier_system, verifier_image_urls, verifier_pdf_inputs = _build_model_document_inputs(
-                conversation_id,
-                verifier_model_id,
-                verifier_system
-            )
-            verifier_user = json.dumps({
-                'task': 'Verify the latest analytical output for logical correctness and factual consistency.',
-                'latest_result': parsed_skill_result,
-                'source_skill': skill_def.skill_id
-            }, ensure_ascii=False, indent=2)
-
-            _emit_agent_step(
-                emit_chat,
-                run_group_id,
-                'verifier_trigger',
-                'running',
-                'LogicCheck Triggered',
-                payload={'source_skill': skill_def.skill_id, 'model': verifier_model_id},
-                iteration=iteration
-            )
-
-            verifier_raw = _completion_response_with_doc_fallback(
-                model=verifier_model_id,
-                system_prompt=verifier_system,
-                user_prompt=verifier_user,
-                chat_history=None,
-                temperature=0.2,
-                image_urls=verifier_image_urls or None,
-                pdf_inputs=verifier_pdf_inputs or None
-            )
-            verifier_result = _parse_skill_result_payload(verifier_raw)
-            loop_observations.append(f"[skill:verifier-skill] {verifier_result.get('result', '')[:800]}")
-            _emit_agent_step(
-                emit_chat,
-                run_group_id,
-                'verifier_trigger',
-                'done',
-                'Verifier completed',
-                payload={'result': verifier_result},
-                iteration=iteration
-            )
 
         iteration += 1
 
@@ -3890,10 +3120,7 @@ def handle_message_task(data, conversation_id):
     user_message = data.get('message', '')
     user_system_prompt = data.get('system_prompt', '')
     existing_user_message_id = str(data.get('existing_user_message_id') or '').strip()
-    workflow_mode = _normalize_workflow_mode(data.get('workflow_mode'))
-    user_approved_local_tools = _coerce_bool(data.get('allow_local_skill_tools'), False)
-    leader_model_id = ''
-    
+
     def emit_chat(event, payload=None):
         enriched = dict(payload or {})
         enriched['chat_id'] = conversation_id
@@ -3921,477 +3148,6 @@ def handle_message_task(data, conversation_id):
             complete_workflow(include_run_group_end=False)
             return True
         return False
-
-    def run_memory_management(council_results_local=None, direct_response_text=''):
-        # Expose memory extraction/editing as a visible thinking-process stream.
-        try:
-            if not (memory_manager.is_enabled(config) and memory_manager.auto_extract_enabled(config)):
-                return
-
-            mem_writer_model_id = config.get('MemWriter', '') or leader_model_id
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            message_id = uuid.uuid4().hex
-            bot_id = f"council-memwriter-{uuid.uuid4().hex[:8]}"
-            bot_name = f"MemWriter - Memory Management ({mem_writer_model_id})"
-            thinking_chunks = []
-
-            def emit_memory_thinking(text):
-                chunk = str(text or '')
-                if not chunk:
-                    return
-                if not chunk.endswith('\n'):
-                    chunk += '\n'
-                thinking_chunks.append(chunk)
-                emit_chat('ai_thinking_chunk', {
-                    'bot_id': bot_id,
-                    'chunk': chunk,
-                    'message_id': message_id,
-                    'run_id': message_id,
-                    'run_group_id': run_group_id,
-                    'role_name': 'MemWriter',
-                    'model_id': mem_writer_model_id,
-                    'is_final_response': False,
-                    'event_kind': 'memory_management'
-                })
-
-            def finalize_memory_stream(output_text, status='done'):
-                output = str(output_text or '').strip() or 'Memory management completed.'
-                thinking_text = ''.join(thinking_chunks).strip()
-
-                update_message_content(
-                    conversation_id,
-                    message_id,
-                    f"[{bot_name}] {output}"
-                )
-                update_message_fields(
-                    conversation_id,
-                    message_id,
-                    raw_markdown=output,
-                    thinking=thinking_text,
-                    stream_status=status,
-                    role_name='MemWriter',
-                    model_id=mem_writer_model_id,
-                    event_kind='memory_management'
-                )
-
-                emit_chat('ai_response_end', {
-                    'bot_name': bot_name,
-                    'bot_id': bot_id,
-                    'message': output,
-                    'thinking': thinking_text,
-                    'timestamp': datetime.now().strftime("%H:%M:%S"),
-                    'message_id': message_id,
-                    'run_id': message_id,
-                    'run_group_id': run_group_id,
-                    'role_name': 'MemWriter',
-                    'model_id': mem_writer_model_id,
-                    'is_final_response': False,
-                    'event_kind': 'memory_management'
-                })
-
-                if conv.get('pending_message_id') == message_id:
-                    conv['pending_message_id'] = None
-
-                auto_save_chat()
-
-            append_conversation_message(
-                conversation_id,
-                role='assistant',
-                content=f"[{bot_name}] ",
-                raw_markdown='',
-                id=message_id,
-                bot_name=bot_name,
-                bot_id=bot_id,
-                run_group_id=run_group_id,
-                run_id=message_id,
-                role_name='MemWriter',
-                model_id=mem_writer_model_id,
-                thinking='',
-                stream_status='running',
-                is_final_response=False,
-                event_kind='memory_management'
-            )
-            conv['pending_message_id'] = message_id
-
-            emit_chat('ai_response_start', {
-                'bot_name': bot_name,
-                'bot_id': bot_id,
-                'timestamp': timestamp,
-                'message_id': message_id,
-                'run_id': message_id,
-                'run_group_id': run_group_id,
-                'role_name': 'MemWriter',
-                'model_id': mem_writer_model_id,
-                'is_final_response': False,
-                'event_kind': 'memory_management'
-            })
-
-            emit_memory_thinking('Preparing memory extraction context.')
-
-            # Build existing memories with IDs so the model can reference them.
-            existing_flat = memory_manager.read_flat(config)
-            emit_memory_thinking(f"Loaded {len(existing_flat)} existing memories.")
-
-            if existing_flat:
-                existing_lines = []
-                for entry in existing_flat:
-                    existing_lines.append(f"  [ID {entry['id']}] ({entry['section']}) {entry['content']}")
-                existing_text = '\n'.join(existing_lines)
-            else:
-                existing_text = '(none yet)'
-
-            extract_sys = MEMORY_EXTRACT_PROMPT.replace('{existing_memories}', existing_text)
-            convo_summary = f"User: {user_message}"
-
-            if direct_response_text:
-                convo_summary += f"\nLeader: {direct_response_text[:500]}"
-
-            if isinstance(council_results_local, dict):
-                for key in ['Researcher', 'Creator', 'Analyzer', 'Verifier']:
-                    if key in council_results_local:
-                        convo_summary += f"\n{key}: {council_results_local[key][:500]}"
-
-            emit_memory_thinking('Requesting MemWriter memory-edit proposal.')
-
-            try:
-                extract_raw = completion_response(
-                    model=mem_writer_model_id,
-                    system_prompt=extract_sys,
-                    user_prompt=convo_summary,
-                    temperature=0.3
-                )
-                extracted_json_str = extract_json_from_text(extract_raw)
-                if not extracted_json_str or not extracted_json_str.strip():
-                    _log_internal_error('run_memory_management empty extractor response', 
-                                      f"extract_raw: {repr(extract_raw[:200])}\nextracted_json_str: {repr(extracted_json_str[:200] if extracted_json_str else '')}")
-                    emit_chat('console_log', {
-                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: empty extractor output"
-                    })
-                    emit_memory_thinking('Extractor returned empty payload; no edits applied.')
-                    finalize_memory_stream('Memory extraction skipped: empty extractor output.', status='error')
-                    return
-                extract_payload = json.loads(extracted_json_str)
-            except json.JSONDecodeError as exc:
-                _log_internal_error('run_memory_management invalid extractor JSON', exc)
-                emit_chat('console_log', {
-                    'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: invalid extractor output"
-                })
-                emit_memory_thinking('Extractor returned invalid JSON; no edits applied.')
-                finalize_memory_stream('Memory extraction skipped: invalid extractor output.', status='error')
-                return
-            except Exception as exc:
-                _log_internal_error('run_memory_management extractor request failed', exc)
-                emit_chat('console_log', {
-                    'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: extractor unavailable"
-                })
-                emit_memory_thinking('Extractor request failed; no edits applied.')
-                finalize_memory_stream('Memory extraction skipped: extractor unavailable.', status='error')
-                return
-
-            try:
-                added = 0
-                updated = 0
-                deleted = 0
-                applied_updates = []
-                applied_deletes = []
-
-                def _preview_text(value, limit=160):
-                    cleaned = ' '.join(str(value or '').split())
-                    if len(cleaned) <= limit:
-                        return cleaned
-                    return cleaned[:limit - 3] + '...'
-
-                def _build_counts(flat_entries):
-                    counts = {}
-                    for entry in (flat_entries or []):
-                        section = str(entry.get('section', 'Key Facts') or 'Key Facts').strip() or 'Key Facts'
-                        content = str(entry.get('content', '') or '').strip()
-                        if not content:
-                            continue
-                        key = (section, content)
-                        counts[key] = counts.get(key, 0) + 1
-                    return counts
-
-                def _decrement_count(counts, key):
-                    current = int(counts.get(key, 0) or 0)
-                    if current <= 0:
-                        return
-                    if current == 1:
-                        counts.pop(key, None)
-                    else:
-                        counts[key] = current - 1
-
-                existing_by_id = {}
-                for entry in existing_flat:
-                    try:
-                        existing_by_id[int(entry.get('id'))] = {
-                            'section': str(entry.get('section', 'Key Facts') or 'Key Facts').strip() or 'Key Facts',
-                            'content': str(entry.get('content', '') or '').strip()
-                        }
-                    except (TypeError, ValueError):
-                        continue
-
-                updated_memories = extract_payload.get('updated_memories', [])
-                deleted_ids = extract_payload.get('deleted_memory_ids', [])
-                new_memories = extract_payload.get('new_memories', [])
-
-                emit_memory_thinking(
-                    f"Extractor proposed changes: +{len(new_memories) if isinstance(new_memories, list) else 0} "
-                    f"new, ~{len(updated_memories) if isinstance(updated_memories, list) else 0} "
-                    f"updates, -{len(deleted_ids) if isinstance(deleted_ids, list) else 0} deletes."
-                )
-
-                # Process updates first (updates don't shift indices).
-                if isinstance(updated_memories, list):
-                    for item in updated_memories:
-                        if not isinstance(item, dict):
-                            continue
-                        mid = item.get('id')
-                        content = item.get('content', '').strip()
-                        if mid is None or not content:
-                            continue
-                        try:
-                            mid_int = int(mid)
-                            prev_info = existing_by_id.get(mid_int, {
-                                'section': 'Key Facts',
-                                'content': ''
-                            })
-                            memory_manager.update_memory(mid_int, content, config)
-                            if prev_info.get('content', '') != content:
-                                updated += 1
-                                applied_updates.append({
-                                    'id': mid_int,
-                                    'section': prev_info.get('section', 'Key Facts'),
-                                    'before': prev_info.get('content', ''),
-                                    'after': content
-                                })
-                            existing_by_id[mid_int] = {
-                                'section': prev_info.get('section', 'Key Facts'),
-                                'content': content
-                            }
-                        except (ValueError, TypeError, memory_manager.MemoryStoreError) as exc:
-                            _log_internal_error('run_memory_management update skipped', exc)
-
-                # Process deletions (highest IDs first to avoid index shifting).
-                if isinstance(deleted_ids, list):
-                    for mid in sorted(deleted_ids, reverse=True):
-                        try:
-                            mid_int = int(mid)
-                            prev_info = existing_by_id.get(mid_int, {
-                                'section': 'Key Facts',
-                                'content': ''
-                            })
-                            memory_manager.delete_memory(mid_int, config)
-                            deleted += 1
-                            applied_deletes.append({
-                                'id': mid_int,
-                                'section': prev_info.get('section', 'Key Facts'),
-                                'content': prev_info.get('content', '')
-                            })
-                            existing_by_id.pop(mid_int, None)
-                        except (ValueError, TypeError, memory_manager.MemoryStoreError) as exc:
-                            _log_internal_error('run_memory_management delete skipped', exc)
-
-                # Process additions.
-                if isinstance(new_memories, list) and new_memories:
-                    memory_manager.add_memories_bulk(new_memories, config)
-
-                pre_counts = _build_counts(existing_flat)
-                post_flat = memory_manager.read_flat(config)
-                post_counts = _build_counts(post_flat)
-
-                added_counts = {}
-                removed_counts = {}
-
-                for key, post_count in post_counts.items():
-                    delta = int(post_count or 0) - int(pre_counts.get(key, 0) or 0)
-                    if delta > 0:
-                        added_counts[key] = delta
-
-                for key, pre_count in pre_counts.items():
-                    delta = int(pre_count or 0) - int(post_counts.get(key, 0) or 0)
-                    if delta > 0:
-                        removed_counts[key] = delta
-
-                # Updates naturally look like remove+add in multiset diff; neutralize them.
-                for change in applied_updates:
-                    section = str(change.get('section', 'Key Facts') or 'Key Facts').strip() or 'Key Facts'
-                    before_key = (section, str(change.get('before', '') or '').strip())
-                    after_key = (section, str(change.get('after', '') or '').strip())
-                    if before_key[1]:
-                        _decrement_count(removed_counts, before_key)
-                    if after_key[1]:
-                        _decrement_count(added_counts, after_key)
-
-                applied_additions = []
-                for key, count in added_counts.items():
-                    section, content_value = key
-                    for _ in range(int(count or 0)):
-                        applied_additions.append({
-                            'section': section,
-                            'content': content_value
-                        })
-
-                added = len(applied_additions)
-
-                parts = []
-                if added:
-                    parts.append(f"+{added} added")
-                if updated:
-                    parts.append(f"~{updated} updated")
-                if deleted:
-                    parts.append(f"-{deleted} removed")
-                if parts:
-                    emit_chat('console_log', {
-                        'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory managed ({', '.join(parts)})"
-                    })
-                    emit_chat('memory_updated', {'added': added, 'updated': updated, 'deleted': deleted})
-
-                current_count = len(post_flat)
-
-                compact_lines = []
-                for item in applied_additions[:20]:
-                    compact_lines.append(
-                        f"[ADD] ({item.get('section', 'Key Facts')}) {_preview_text(item.get('content', ''), limit=220)}"
-                    )
-                for item in applied_updates[:20]:
-                    compact_lines.append(
-                        f"[EDIT] ID {item.get('id')} ({item.get('section', 'Key Facts')}) "
-                        f"{_preview_text(item.get('before', ''), limit=90)} -> {_preview_text(item.get('after', ''), limit=90)}"
-                    )
-                for item in applied_deletes[:20]:
-                    compact_lines.append(
-                        f"[REMOVE] ID {item.get('id')} ({item.get('section', 'Key Facts')}) {_preview_text(item.get('content', ''), limit=220)}"
-                    )
-
-                overflow = (
-                    max(0, len(applied_additions) - 20)
-                    + max(0, len(applied_updates) - 20)
-                    + max(0, len(applied_deletes) - 20)
-                )
-                if overflow > 0:
-                    compact_lines.append(f"[EDIT] ... and {overflow} more memory changes")
-
-                if not compact_lines:
-                    compact_lines.append('[EDIT] No memory changes')
-
-                report_text = '\n'.join(compact_lines)
-
-                if added:
-                    first_added = applied_additions[0]
-                    emit_memory_thinking(
-                        f"Added sample: ({first_added.get('section', 'Key Facts')}) "
-                        f"{_preview_text(first_added.get('content', ''), limit=100)}"
-                    )
-                if updated:
-                    first_updated = applied_updates[0]
-                    emit_memory_thinking(
-                        f"Edited sample ID {first_updated.get('id')}: "
-                        f"{_preview_text(first_updated.get('before', ''), limit=60)} -> "
-                        f"{_preview_text(first_updated.get('after', ''), limit=60)}"
-                    )
-                if deleted:
-                    first_deleted = applied_deletes[0]
-                    emit_memory_thinking(
-                        f"Removed sample ID {first_deleted.get('id')}: "
-                        f"{_preview_text(first_deleted.get('content', ''), limit=100)}"
-                    )
-
-                if parts:
-                    emit_memory_thinking(f"Applied memory edits: {', '.join(parts)}. Current total: {current_count}.")
-                    finalize_memory_stream(report_text)
-                else:
-                    emit_memory_thinking(f"No memory edits needed. Current total: {current_count}.")
-                    finalize_memory_stream(report_text)
-            except memory_manager.MemoryStoreError as exc:
-                _log_internal_error('run_memory_management storage error', exc)
-                emit_chat('console_log', {
-                    'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped: storage unavailable"
-                })
-                emit_memory_thinking('Memory storage error encountered while applying edits.')
-                finalize_memory_stream('Memory extraction skipped: storage unavailable.', status='error')
-        except Exception as e:
-            _log_internal_error('run_memory_management unexpected error', e)
-            emit_chat('console_log', {
-                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Memory extraction skipped due to an internal error"
-            })
-
-    def emit_leader_task_distribution_summary(tasks_payload, model_id):
-        if not isinstance(tasks_payload, dict):
-            return
-
-        def clean_task_value(key):
-            return str(tasks_payload.get(key, 'SKIP') or 'SKIP').strip() or 'SKIP'
-
-        analysis_text = str(tasks_payload.get('analysis', '') or '').strip() or 'Routing only'
-        researcher_task = clean_task_value('researcher_task')
-        creator_task = clean_task_value('creator_task')
-        analyzer_task = clean_task_value('analyzer_task')
-        verifier_task = clean_task_value('verifier_task')
-        direct_response_preview = str(tasks_payload.get('direct_response', '') or '').strip()
-
-        summary_payload = {
-            'analysis': analysis_text,
-            'researcher_task': researcher_task,
-            'creator_task': creator_task,
-            'analyzer_task': analyzer_task,
-            'verifier_task': verifier_task,
-            'direct_response': direct_response_preview
-        }
-        summary_text = json.dumps(summary_payload, ensure_ascii=False, indent=2)
-
-        message_id = uuid.uuid4().hex
-        bot_id = f"council-leader-distribution-{uuid.uuid4().hex[:8]}"
-        label = f"Leader - Task Distribution ({model_id})"
-        ts = datetime.now().strftime("%H:%M:%S")
-
-        append_conversation_message(
-            conversation_id,
-            role='assistant',
-            content=f"[{label}] {summary_text}",
-            raw_markdown=summary_text,
-            id=message_id,
-            bot_name=label,
-            bot_id=bot_id,
-            run_group_id=run_group_id,
-            run_id=message_id,
-            role_name='Leader',
-            model_id=model_id,
-            thinking='',
-            stream_status='done',
-            is_final_response=False,
-            event_kind='task_distribution'
-        )
-
-        emit_chat('ai_response_start', {
-            'bot_name': label,
-            'bot_id': bot_id,
-            'timestamp': ts,
-            'message_id': message_id,
-            'run_id': message_id,
-            'run_group_id': run_group_id,
-            'role_name': 'Leader',
-            'model_id': model_id,
-            'is_final_response': False,
-            'event_kind': 'task_distribution'
-        })
-
-        emit_chat('ai_response_end', {
-            'bot_name': label,
-            'bot_id': bot_id,
-            'message': summary_text,
-            'thinking': '',
-            'timestamp': ts,
-            'message_id': message_id,
-            'run_id': message_id,
-            'run_group_id': run_group_id,
-            'role_name': 'Leader',
-            'model_id': model_id,
-            'is_final_response': False,
-            'event_kind': 'task_distribution'
-        })
-
-        auto_save_chat()
 
     conv = get_conversation(conversation_id)
     run_group_id = _build_run_group_id(conversation_id)
@@ -4440,7 +3196,7 @@ def handle_message_task(data, conversation_id):
     emit_chat('console_log', {
         'message': (
             f"[{timestamp}] Leader-agent workflow started "
-            f"(mode: {workflow_mode}, history: {history_context_mode})"
+            f"(history: {history_context_mode})"
         )
     })
 
@@ -4455,8 +3211,7 @@ def handle_message_task(data, conversation_id):
             run_group_id=run_group_id,
             emit_chat=emit_chat,
             auto_save_chat=auto_save_chat,
-            stop_if_aborted=stop_if_aborted,
-            user_approved_local_tools=user_approved_local_tools
+            stop_if_aborted=stop_if_aborted
         )
     except Exception as exc:
         _log_internal_error('leader agent workflow failed', exc)
@@ -4546,452 +3301,6 @@ def handle_message_task(data, conversation_id):
     complete_workflow(include_run_group_end=True)
     return
 
-    leader_skills_context = ''
-
-    # ── Inject cross-chat memory into system prompt (always-on, like ChatGPT/Grok) ──
-    memory_context = memory_manager.build_memory_context(config)
-    if memory_context:
-        user_system_prompt = (user_system_prompt + memory_context) if user_system_prompt else memory_context.strip()
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] Cross-chat memory injected ({len(memory_manager.read_flat(config))} memories)"
-        })
-
-    # FAST mode: Leader-only direct response path.
-    if workflow_mode == 'fast':
-        for role in ('MarkReader', 'Researcher', 'Creator', 'Analyzer', 'Verifier'):
-            emit_chat('council_status', {'role': role, 'status': 'skipped'})
-        emit_chat('council_status', {'role': 'Leader', 'status': 'waiting'})
-
-        leader_model_id = config.get('Leader', '')
-        leader_info = get_model_info(leader_model_id)
-        leader_fast_sys = LEADER_FAST_PROMPT
-        if user_system_prompt:
-            leader_fast_sys = user_system_prompt + "\n\n" + leader_fast_sys
-
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Fast mode active: Leader-only response."
-        })
-
-        fast_response = run_council_role(
-            role_name='Leader',
-            role_label=f'Leader - Final Response ({leader_model_id})',
-            model_id=leader_model_id,
-            system_prompt=leader_fast_sys,
-            user_prompt=user_message,
-            chat_history=chat_history,
-            conversation_id=conversation_id,
-            run_group_id=run_group_id,
-            support_images=leader_info.get('support_images', False),
-            support_pdf_input=leader_info.get('support_pdf_input', False),
-            on_stream_progress=auto_save_chat
-        )
-
-        if stop_if_aborted():
-            return
-
-        auto_save_chat()
-        run_memory_management(council_results_local={}, direct_response_text=fast_response or '')
-        complete_workflow(include_run_group_end=True)
-        return
-
-    # Set all roles to waiting
-    for role in COUNCIL_ROLES:
-        emit_chat('council_status', {'role': role, 'status': 'waiting'})
-
-    # ── Step 0: MarkReader selects markdown skill files ──
-    md_reader_model_id = config.get('MarkReader', '') or config.get('MD_Reader', '')
-    md_reader_config = _normalized_md_reader_config(config)
-    inventory_text, inventory_meta = build_md_reader_inventory(config)
-    selected_files = []
-
-    if not md_reader_config.get('enabled', True):
-        emit_chat('council_status', {'role': 'MarkReader', 'status': 'skipped'})
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] MarkReader: disabled by config"
-        })
-    elif inventory_meta.get('status') != 'ok':
-        emit_chat('council_status', {'role': 'MarkReader', 'status': 'skipped'})
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] MarkReader skipped: skills inventory unavailable ({inventory_meta.get('status')})"
-        })
-    elif not md_reader_model_id:
-        emit_chat('council_status', {'role': 'MarkReader', 'status': 'skipped'})
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] MarkReader skipped: no model configured"
-        })
-    else:
-        md_reader_info = get_model_info(md_reader_model_id)
-        md_reader_system = MARK_READER_PROMPT + f"\n\n{inventory_text}"
-        if user_system_prompt:
-            md_reader_system = user_system_prompt + "\n\n" + md_reader_system
-
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] MarkReader ({md_reader_model_id}) selecting markdown files..."
-        })
-
-        md_reader_raw = run_council_role(
-            role_name='MarkReader',
-            role_label=f'MarkReader ({md_reader_model_id})',
-            model_id=md_reader_model_id,
-            system_prompt=md_reader_system,
-            user_prompt=(
-                "Select relevant markdown files for Leader context based on the user request."
-                f"\n\nUser request:\n{user_message}"
-            ),
-            chat_history=chat_history,
-            conversation_id=conversation_id,
-            run_group_id=run_group_id,
-            support_images=md_reader_info.get('support_images', False),
-            support_pdf_input=md_reader_info.get('support_pdf_input', False),
-            on_stream_progress=auto_save_chat
-        )
-
-        if stop_if_aborted():
-            return
-
-        md_reader_payload = _parse_md_reader_payload(md_reader_raw)
-        candidate_files = md_reader_payload.get('selected_files', [])
-        selected_files, validate_meta = _validate_selected_skill_files(config, candidate_files)
-        rejected = validate_meta.get('rejected_files', [])
-        if rejected:
-            emit_chat('console_log', {
-                'message': f"[{timestamp}] MarkReader rejected invalid files: {', '.join(rejected)}"
-            })
-        if selected_files:
-            emit_chat('console_log', {
-                'message': f"[{timestamp}] MarkReader selected files: {', '.join(selected_files)}"
-            })
-        else:
-            emit_chat('console_log', {
-                'message': f"[{timestamp}] MarkReader selected no files ({md_reader_payload.get('reason', 'no reason provided')})"
-            })
-
-    leader_skills_context, skills_meta = build_leader_skills_context_from_selected(config, selected_files)
-    if skills_meta.get('status') == 'loaded':
-        joined = ', '.join(skills_meta.get('loaded_files', []))
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] Leader skill context loaded from MarkReader: {joined}"
-        })
-    elif skills_meta.get('status') == 'none_selected':
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] Leader skill context empty: MarkReader selected no markdown"
-        })
-
-    # ── Step 1: Leader distributes tasks ──
-    leader_model_id = config.get('Leader', '')
-    leader_info = get_model_info(leader_model_id)
-    leader_sys = LEADER_DISTRIBUTE_PROMPT
-    if leader_skills_context:
-        leader_sys += leader_skills_context
-    if user_system_prompt:
-        leader_sys = user_system_prompt + "\n\n" + leader_sys
-
-    emit_chat('console_log', {
-        'message': f"[{timestamp}] Leader ({leader_model_id}) analyzing and distributing tasks..."
-    })
-
-    task_distribution_raw = run_council_role(
-        role_name='Leader',
-        role_label=f'Leader - Task Distribution ({leader_model_id})',
-        model_id=leader_model_id,
-        system_prompt=leader_sys,
-        user_prompt=user_message,
-        chat_history=chat_history,
-        conversation_id=conversation_id,
-        run_group_id=run_group_id,
-        support_images=leader_info.get('support_images', False),
-        support_pdf_input=leader_info.get('support_pdf_input', False),
-        on_stream_progress=auto_save_chat,
-        internal_orchestration=True
-    )
-
-    if stop_if_aborted():
-        return
-
-    # Parse task distribution with resilient fallback plan.
-    if task_distribution_raw is None:
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Leader failed to return task distribution. Falling back to safe default task plan."
-        })
-        tasks = _build_safe_default_task_distribution()
-    else:
-        try:
-            tasks = _parse_task_distribution_payload(task_distribution_raw)
-        except (json.JSONDecodeError, Exception) as first_error:
-            retry_ts = datetime.now().strftime('%H:%M:%S')
-            emit_chat('console_log', {
-                'message': f"[{retry_ts}] Task distribution JSON parse failed once; retrying with stricter format request."
-            })
-
-            strict_retry_system = (
-                leader_sys
-                + "\n\nSTRICT RETRY INSTRUCTION: Return only one valid JSON object that matches the required schema exactly."
-                + " Do not include markdown, code fences, commentary, or extra keys."
-                + " If unsure, set non-applicable tasks to SKIP and direct_response to an empty string."
-                + "\nRequired keys: analysis, researcher_task, creator_task, analyzer_task, verifier_task, direct_response."
-            )
-
-            try:
-                retry_raw = completion_response(
-                    model=leader_model_id,
-                    system_prompt=strict_retry_system,
-                    user_prompt=user_message,
-                    chat_history=chat_history,
-                    temperature=0.2
-                )
-                tasks = _parse_task_distribution_payload(retry_raw)
-            except (json.JSONDecodeError, Exception) as retry_error:
-                emit_chat('console_log', {
-                    'message': f"[{datetime.now().strftime('%H:%M:%S')}] Failed to parse task distribution after strict retry: {str(retry_error)} (first error: {str(first_error)}). Falling back to safe default task plan."
-                })
-                tasks = _build_safe_default_task_distribution()
-
-    direct_response = tasks.get('direct_response', '')
-    role_task_keys = ('researcher_task', 'creator_task', 'analyzer_task', 'verifier_task')
-    all_roles_skipped = all(_is_skip_task(tasks.get(task_key)) for task_key in role_task_keys)
-
-    if workflow_mode == 'heavy' and all_roles_skipped:
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Heavy mode override: forcing council path instead of direct response."
-        })
-        tasks['direct_response'] = ''
-        tasks['creator_task'] = (
-            'Create the primary answer that fully addresses the user request in clear markdown.'
-        )
-        tasks['verifier_task'] = (
-            'Audit the Creator output for factual/logical issues and report only concrete problems.'
-        )
-        all_roles_skipped = False
-        direct_response = ''
-
-    if not all_roles_skipped:
-        emit_leader_task_distribution_summary(tasks, leader_model_id)
-
-    if direct_response and all_roles_skipped and workflow_mode != 'heavy':
-        direct_ts = datetime.now().strftime("%H:%M:%S")
-        emit_chat('console_log', {
-            'message': f"[{direct_ts}] Leader direct-response mode activated (all role tasks SKIP)."
-        })
-
-        for role_name in ('Researcher', 'Creator', 'Analyzer', 'Verifier'):
-            emit_chat('council_status', {
-                'role': role_name,
-                'status': 'skipped',
-                'run_group_id': run_group_id
-            })
-
-        final_message_id = uuid.uuid4().hex
-        final_bot_id = f"council-leader-final-{uuid.uuid4().hex[:8]}"
-        final_label = f"Leader - Final Response ({leader_model_id})"
-
-        append_conversation_message(
-            conversation_id,
-            role='assistant',
-            content=f"[{final_label}] {direct_response}",
-            raw_markdown=direct_response,
-            id=final_message_id,
-            bot_name=final_label,
-            bot_id=final_bot_id,
-            run_group_id=run_group_id,
-            run_id=final_message_id,
-            role_name='Leader',
-            model_id=leader_model_id,
-            thinking='',
-            stream_status='done',
-            is_final_response=True
-        )
-
-        emit_chat('ai_response_start', {
-            'bot_name': final_label,
-            'bot_id': final_bot_id,
-            'timestamp': direct_ts,
-            'message_id': final_message_id,
-            'run_id': final_message_id,
-            'run_group_id': run_group_id,
-            'role_name': 'Leader',
-            'model_id': leader_model_id,
-            'is_final_response': True
-        })
-
-        emit_chat('ai_response_end', {
-            'bot_name': final_label,
-            'bot_id': final_bot_id,
-            'message': direct_response,
-            'thinking': '',
-            'timestamp': direct_ts,
-            'message_id': final_message_id,
-            'run_id': final_message_id,
-            'run_group_id': run_group_id,
-            'role_name': 'Leader',
-            'model_id': leader_model_id,
-            'is_final_response': True
-        })
-
-        emit_chat('council_status', {
-            'role': 'Leader',
-            'status': 'done',
-            'run_group_id': run_group_id
-        })
-
-        auto_save_chat()
-        run_memory_management(council_results_local={}, direct_response_text=direct_response)
-        complete_workflow(include_run_group_end=True)
-        return
-
-    if direct_response and not all_roles_skipped:
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Leader direct_response ignored because one or more role tasks were assigned."
-        })
-
-    council_results = {}
-
-    # ── Step 2: Researcher ──
-    _run_optional_council_role(
-        role_name='Researcher',
-        task_key='researcher_task',
-        base_prompt=RESEARCHER_PROMPT,
-        user_message=user_message,
-        user_system_prompt=user_system_prompt,
-        tasks=tasks,
-        config=config,
-        council_results=council_results,
-        chat_history=chat_history,
-        conversation_id=conversation_id,
-        run_group_id=run_group_id,
-        auto_save_chat=auto_save_chat,
-        emit_chat=emit_chat
-    )
-    if stop_if_aborted():
-        return
-
-    # ── Step 3: Creator ──
-    creative_context = ""
-    if 'Researcher' in council_results:
-        creative_context = f"\n\n===== Researcher's Findings (for your context) =====\n{council_results['Researcher']}"
-    _run_optional_council_role(
-        role_name='Creator',
-        task_key='creator_task',
-        base_prompt=CREATOR_PROMPT,
-        user_message=user_message,
-        user_system_prompt=user_system_prompt,
-        tasks=tasks,
-        config=config,
-        council_results=council_results,
-        chat_history=chat_history,
-        conversation_id=conversation_id,
-        run_group_id=run_group_id,
-        auto_save_chat=auto_save_chat,
-        emit_chat=emit_chat,
-        extra_context=creative_context
-    )
-    if stop_if_aborted():
-        return
-
-    # ── Step 4: Analyzer ──
-    _run_optional_council_role(
-        role_name='Analyzer',
-        task_key='analyzer_task',
-        base_prompt=ANALYZER_PROMPT,
-        user_message=user_message,
-        user_system_prompt=user_system_prompt,
-        tasks=tasks,
-        config=config,
-        council_results=council_results,
-        chat_history=chat_history,
-        conversation_id=conversation_id,
-        run_group_id=run_group_id,
-        auto_save_chat=auto_save_chat,
-        emit_chat=emit_chat
-    )
-    if stop_if_aborted():
-        return
-
-    # ── Step 5: Verifier ──
-    verifier_context = ""
-    if 'Researcher' in council_results:
-        verifier_context += f"\n\n===== Researcher's Findings =====\n{council_results['Researcher']}"
-    if 'Creator' in council_results:
-        verifier_context += f"\n\n===== Creator's Output =====\n{council_results['Creator']}"
-    if 'Analyzer' in council_results:
-        verifier_context += f"\n\n===== Analyzer's Calculations =====\n{council_results['Analyzer']}"
-    _run_optional_council_role(
-        role_name='Verifier',
-        task_key='verifier_task',
-        base_prompt=VERIFIER_PROMPT,
-        user_message=user_message,
-        user_system_prompt=user_system_prompt,
-        tasks=tasks,
-        config=config,
-        council_results=council_results,
-        chat_history=chat_history,
-        conversation_id=conversation_id,
-        run_group_id=run_group_id,
-        auto_save_chat=auto_save_chat,
-        emit_chat=emit_chat,
-        extra_context=f"\n\nTeam outputs to review:{verifier_context}" if verifier_context else ''
-    )
-    if stop_if_aborted():
-        return
-
-    # ── Step 5.5: Post-round debate stage (add-on, first round remains unchanged) ──
-    _run_post_round_debate_stage(
-        user_message=user_message,
-        user_system_prompt=user_system_prompt,
-        tasks=tasks,
-        config=config,
-        council_results=council_results,
-        chat_history=chat_history,
-        conversation_id=conversation_id,
-        run_group_id=run_group_id,
-        auto_save_chat=auto_save_chat,
-        emit_chat=emit_chat,
-        stop_if_aborted=stop_if_aborted
-    )
-    if stop_if_aborted():
-        return
-
-    # ── Step 6: Leader synthesizes all results ──
-    if council_results:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] Leader ({leader_model_id}) combining results..."
-        })
-
-        ordered_keys = ['Researcher', 'Creator', 'Analyzer', 'Verifier', 'Verifier_Debate']
-        results_text = ""
-        for key in ordered_keys:
-            if key in council_results:
-                label = key.replace('_', ' ')
-                results_text += f"\n\n===== {label} =====\n{council_results[key]}"
-
-        combine_sys = LEADER_COMBINE_PROMPT
-        if leader_skills_context:
-            combine_sys += leader_skills_context
-        combine_sys += f"\n\nTeam outputs:{results_text}"
-        if user_system_prompt:
-            combine_sys = user_system_prompt + "\n\n" + combine_sys
-
-        run_council_role(
-            role_name='Leader',
-            role_label=f'Leader - Final Response ({leader_model_id})',
-            model_id=leader_model_id,
-            system_prompt=combine_sys,
-            user_prompt=f"Please combine the team's work and provide the final response to: {user_message}",
-            chat_history=chat_history,
-            conversation_id=conversation_id,
-            run_group_id=run_group_id,
-            support_images=leader_info.get('support_images', False),
-            support_pdf_input=leader_info.get('support_pdf_input', False),
-            on_stream_progress=auto_save_chat
-        )
-        auto_save_chat()
-
-    # ── Step 7: Silent memory management (runs in background, like ChatGPT) ──
-    run_memory_management(council_results_local=council_results)
-
-    # Signal all done
-    complete_workflow(include_run_group_end=True)
-
 @socketio.on('stop_generation')
 def handle_stop(data):
     """Handle stop generation request"""
@@ -5056,7 +3365,7 @@ def handle_load_chat_history(data):
         'chat_id': conversation_id
     }, to=conversation_id)
 
-# ─── Memory Management API Endpoints ────────────────────────────────
+# ?�?�?�?Memory Management API Endpoints ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?
 
 @app.route('/api/memories', methods=['GET'])
 def get_memories():
