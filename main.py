@@ -61,6 +61,7 @@ DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS = 30.0
 LONG_INPUT_TOKEN_THRESHOLD = 10000
 LONG_INPUT_FIRST_CHUNK_TIMEOUT_SECONDS = 60.0
 APPROX_CHARS_PER_TOKEN = 4.0
+DEFAULT_USE_MODEL_PDF_INPUT = False
 SUPPORTED_UPLOAD_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png', 'docx', 'docm', 'dotx', 'dotm'}
 WORD_UPLOAD_EXTENSIONS = {'docx', 'docm', 'dotx', 'dotm'}
 
@@ -564,9 +565,14 @@ Respond directly. Do NOT prefix with your role name."""
 LEADER_AGENT_ACTION_PROMPT = """You are a single AI agent that plans actions and can call skills.
 
 Rules:
-- Return ONLY one JSON object.
 - Choose either a skill call or a final response in each turn.
+- If you choose a skill call, return ONLY one JSON object using the skill_call schema.
+- If you choose a final response, plain markdown text is allowed and preferred for quality (JSON wrapper is optional).
 - Use skills when factual grounding, analysis, or quality checks are needed.
+- For factual/explanatory/comparison/recommendation requests, default to researcher-skill.
+- If there is even slight uncertainty about correctness, completeness, or freshness, call researcher-skill instead of final_response.
+- "I can probably answer from memory" still counts as uncertainty for knowledge-dependent tasks.
+- Use final_response only when the request is non-factual transformation (rewrite/format/translate) or after needed skill evidence is already gathered.
 - Prefer verifier-skill for logic/math content or when confidence is low.
 
 Required JSON schema:
@@ -594,6 +600,9 @@ Or for final answer:
         "text": "final answer for the user in markdown"
     }
 }
+
+Alternative final-answer format (no JSON):
+- Return the final user-facing answer directly in markdown.
 """
 
 SKILL_EXECUTION_PROMPT_TEMPLATE = """You are executing one skill for an orchestrating Leader agent.
@@ -1678,12 +1687,12 @@ def _normalize_local_tool_action(value):
 
 def _parse_agent_action_payload(raw_text):
     fallback = {
-        'thought': 'Fallback: return best effort answer.',
+        'thought': 'Direct final response (non-JSON).',
         'requires_verifier': False,
         'confidence': 0.35,
         'action': {
             'type': 'final_response',
-            'text': str(raw_text or '').strip() or 'I could not generate a structured plan, so this is a best-effort answer.'
+            'text': str(raw_text or '').strip() or 'I could not generate a final answer this time.'
         }
     }
 
@@ -2410,9 +2419,9 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
     documents = conv.get('uploaded_documents', {})
     image_urls = []
     pdf_inputs = []
+    allow_model_pdf_input = bool(support_pdf_input and DEFAULT_USE_MODEL_PDF_INPUT)
     if documents:
         context_text = ""
-        unsupported_pdf_filenames = []
         for filename, doc_info in documents.items():
             doc_type = doc_info.get('type')
 
@@ -2446,13 +2455,11 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
                 else:
                     context_text += "[PDF uploaded, but no extractable text was found.]\n"
 
-                if support_pdf_input and doc_info.get('filepath'):
+                if allow_model_pdf_input and doc_info.get('filepath'):
                     pdf_inputs.append({
                         'filename': filename,
                         'filepath': doc_info['filepath']
                     })
-                else:
-                    unsupported_pdf_filenames.append(filename)
                 continue
 
             if not context_text:
@@ -2478,15 +2485,6 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
 
         if context_text:
             system_prompt += context_text
-
-        if unsupported_pdf_filenames:
-            joined = ', '.join(unsupported_pdf_filenames)
-            system_prompt += (
-                "\n\n===== PDF ACCESS LIMITATION =====\n"
-                "The user attached PDF files, but this model cannot read PDF inputs directly.\n"
-                f"Attached PDF filenames: {joined}\n"
-                "Do not claim to have read the PDF contents. Ask the user to switch to a PDF-capable model if needed.\n"
-            )
 
     return system_prompt, image_urls, pdf_inputs
 
@@ -3685,7 +3683,7 @@ def _run_memory_management_agent(config, model_id, user_message, final_response)
     existing_text = '\n'.join(existing_lines) if existing_lines else '(none yet)'
 
     extract_sys = MEMORY_EXTRACT_PROMPT.replace('{existing_memories}', existing_text)
-    extract_user = f"User: {user_message}\nLeader: {str(final_response or '')[:1200]}"
+    extract_user = f"User: {user_message}\nLeader: {str(final_response or '')}"
 
     extract_raw = completion_response(
         model=model_id,

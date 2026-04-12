@@ -1,12 +1,16 @@
 ﻿---
 name: researcher-skill
-description: Investigate factual questions, gather evidence, and produce sourced findings. Use for info-heavy tasks, comparisons, and explanations.
+description: Investigate factual questions, gather evidence, and produce sourced findings. Default to this skill for info-heavy tasks, comparisons, and explanations whenever there is any uncertainty, even slight uncertainty.
 ---
 
 # Researcher Skill
 
 ## Goal
 Produce high-quality factual research for the Leader agent.
+
+Routing intent for the Leader agent:
+- If there is even a small chance the answer may be incomplete, stale, assumption-heavy, or weakly supported, call this skill.
+- Treat "probably correct" as insufficient for skipping this skill on factual requests.
 
 ## Method
 1. Restate the research objective in one sentence.

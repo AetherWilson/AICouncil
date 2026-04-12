@@ -7071,6 +7071,7 @@
             if (state) {
                 state.messages.push({
                     id: messageId,
+                    type: type === 'user' ? 'user' : 'ai',
                     role: type === 'user' ? 'user' : 'assistant',
                     sender: sender,
                     content: content,
@@ -7426,6 +7427,7 @@
         function buildAssistantStateMessage(data, entry, messageId, options = {}) {
             return {
                 id: messageId,
+                type: 'ai',
                 role: 'assistant',
                 sender: data.bot_name,
                 content: data.message,
@@ -8227,6 +8229,11 @@
             let currentFallbackRunGroupId = null;
 
             messages.forEach(msg => {
+                const normalizedType = String(msg && msg.type ? msg.type : '').toLowerCase();
+                if (normalizedType !== 'user' && normalizedType !== 'ai') {
+                    msg.type = isUserMessage(msg) ? 'user' : 'ai';
+                }
+
                 const messageDiv = document.createElement('div');
                 messageDiv.className = `message ${msg.type}`;
                 const resolvedMessageId = msg.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
