@@ -59,6 +59,7 @@ Key files and folders:
 - `temp_chat_history/` — auto-saved temporary chats
 - `uploads/` — uploaded PDFs, images, and Word OpenXML files
 - `gpt_responses/` — request/response debug logs
+- `eval/pdf_retrieval_benchmark/` — retrieval recall benchmark scaffold
 
 ## Features in more detail
 
@@ -93,14 +94,29 @@ Example:
   },
   "document_processing": {
     "pdf_enable_native_input": true,
+    "pdf_archive_enabled": true,
+    "pdf_intent_budget_enabled": true,
     "pdf_visual_enabled": true,
+    "pdf_visual_intent_gating": true,
     "pdf_visual_max_pages": 3,
     "pdf_visual_dpi": 150,
+    "pdf_pdf_binary_intent_gating": true,
     "pdf_ocr_enabled": true,
     "pdf_ocr_min_text_chars": 1200,
     "pdf_ocr_languages": ["en"],
     "pdf_chunk_max_chars": 1200,
-    "pdf_chunk_max_items": 20
+    "pdf_chunk_max_items": 20,
+    "pdf_retrieval_candidate_multiplier": 3,
+    "pdf_retrieval_top_k": 8,
+    "pdf_retrieval_max_chars": 12000,
+    "pdf_retrieval_cache_enabled": true,
+    "pdf_retrieval_cache_ttl_seconds": 600,
+    "pdf_expand_on_low_confidence": true,
+    "pdf_low_confidence_threshold": 0.28,
+    "pdf_page_focus_neighbor_radius": 1,
+    "pdf_page_focus_max_chars": 3500,
+    "pdf_embedding_enabled": false,
+    "pdf_embedding_model": ""
   }
 }
 ```
@@ -149,8 +165,20 @@ For PDFs:
 - first pages can be rendered as images for vision-capable models (configurable)
 - OCR fallback runs on rendered pages when native text is too sparse (configurable)
 - parser builds structured chunks for better context packing
-- PDF-capable models can also receive native PDF binary input (configurable)
+- query-time retrieval runs a hybrid page+semantic pipeline before prompt assembly
+- query intent controls retrieval budget (for example, page lookup vs full-document summary)
+- low-confidence retrieval can auto-expand candidate pool before final selection
+- retrieval results are cached (TTL) per conversation/query/document fingerprint
+- full page-level native text is archived for page-direct fallback retrieval
+- explicit page queries (for example, "page 70" / "第70頁") trigger page-direct excerpt injection
+- optional embedding rerank can be enabled for better semantic recall on long PDFs
+- visual image attachments can be intent-gated to reduce token usage
+- PDF binary input can be intent-gated to reserve full-document uploads for broad/compliance requests
 - metadata is tracked per uploaded document
+
+Benchmark scaffold:
+
+- run `python eval/pdf_retrieval_benchmark/run_benchmark.py --dataset eval/pdf_retrieval_benchmark/dataset.template.json` to measure page hit-rate and selected context size
 
 For images:
 

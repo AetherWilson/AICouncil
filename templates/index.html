@@ -940,6 +940,15 @@
             white-space: nowrap;
         }
 
+        .task-subrole-status.status-running {
+            color: #ffe08e;
+        }
+
+        .task-subrole-status.status-error {
+            color: #ff97a7;
+            font-weight: 700;
+        }
+
         .task-subrole-task {
             color: #d3deed;
             font-size: 0.83em;
@@ -1034,6 +1043,15 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+        }
+
+        .subrole-overlay-status.status-running {
+            color: #ffe08e;
+        }
+
+        .subrole-overlay-status.status-error {
+            color: #ff97a7;
+            font-weight: 700;
         }
 
         .subrole-overlay-close {
@@ -2064,7 +2082,7 @@
             color: #6f9cb8;
             font-size: 0.9em;
             transition: transform 0.2s;
-            order: 3;
+            order: 4;
             margin-left: auto;
             margin-right: 0;
         }
@@ -2090,6 +2108,48 @@
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+
+        .thinking-process-state {
+            order: 3;
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            border: 1px solid #3a4a5d;
+            padding: 1px 8px;
+            font-size: 0.9em;
+            letter-spacing: 0.06em;
+            color: #9bb0c8;
+            background: rgba(22, 31, 44, 0.62);
+            white-space: nowrap;
+        }
+
+        .thinking-process-state.status-idle {
+            display: none;
+        }
+
+        .thinking-process-state.status-running {
+            color: #ffe08e;
+            border-color: #806a2a;
+            background: rgba(64, 52, 21, 0.55);
+        }
+
+        .thinking-process-state.status-done {
+            color: #b6f1d8;
+            border-color: #2f6f56;
+            background: rgba(22, 54, 43, 0.52);
+        }
+
+        .thinking-process-state.status-error {
+            color: #ffb3bf;
+            border-color: #8f4f64;
+            background: rgba(69, 29, 41, 0.56);
+        }
+
+        .thinking-process-state.status-stopped {
+            color: #ffd5a6;
+            border-color: #9a6324;
+            background: rgba(75, 49, 20, 0.56);
         }
 
         .thinking-process-preview {
@@ -2893,6 +2953,7 @@
         const socket = io();
         const TASK_DISTRIBUTION_ROLES = ['Researcher', 'Creator', 'Analyzer', 'Verifier'];
         const SUBROLE_STATUS_VALUES = ['waiting', 'running', 'done', 'error', 'skipped', 'stopped'];
+        const THINKING_PROCESS_STATUS_VALUES = ['idle', 'running', 'done', 'error', 'stopped'];
         let uploadedPDFs = [];
         const pendingUploadCleanup = {};
         const pendingUploadKeys = new Set();
@@ -2923,6 +2984,7 @@
                         collapsed: true,
                         active_source: '',
                         preview_text: '',
+                        status: 'idle',
                         active_container_id: null,
                         new_run_pending: false,
                         active_run_group_id: null,
@@ -2945,6 +3007,21 @@
                         last_completed_run_group_id: null
                     }
                 };
+            }
+            if (!conversations[chatId].thinking_process || typeof conversations[chatId].thinking_process !== 'object') {
+                conversations[chatId].thinking_process = {
+                    collapsed: true,
+                    active_source: '',
+                    preview_text: '',
+                    status: 'idle',
+                    active_container_id: null,
+                    new_run_pending: false,
+                    active_run_group_id: null,
+                    group_container_ids: {}
+                };
+            }
+            if (!Object.prototype.hasOwnProperty.call(conversations[chatId].thinking_process, 'status')) {
+                conversations[chatId].thinking_process.status = 'idle';
             }
             return conversations[chatId];
         }
@@ -3033,6 +3110,26 @@
                 return normalized;
             }
             return fallback;
+        }
+
+        function normalizeThinkingProcessStatus(status, fallback = 'idle') {
+            const normalized = String(status || '').trim().toLowerCase();
+            if (THINKING_PROCESS_STATUS_VALUES.includes(normalized)) {
+                return normalized;
+            }
+            return THINKING_PROCESS_STATUS_VALUES.includes(fallback) ? fallback : 'idle';
+        }
+
+        function thinkingProcessStatusLabel(status) {
+            const normalized = normalizeThinkingProcessStatus(status, 'idle');
+            const labels = {
+                idle: 'Idle',
+                running: 'Running',
+                done: 'Done',
+                error: 'Error',
+                stopped: 'Stopped'
+            };
+            return labels[normalized] || 'Idle';
         }
 
         function createEmptySubroleRecord(roleName) {
@@ -3197,7 +3294,10 @@
                 const modelLabel = resolveSubroleModelLabel(cardRole, roleState);
 
                 if (light) light.className = `task-subrole-light ${status}`;
-                if (statusEl) statusEl.textContent = statusLabel(status);
+                if (statusEl) {
+                    statusEl.textContent = statusLabel(status);
+                    statusEl.className = `task-subrole-status status-${status}`;
+                }
                 if (taskEl) taskEl.textContent = roleState.task_text || 'SKIP';
                 if (hintEl) hintEl.textContent = clickable ? 'Open Live Output' : 'Not Assigned';
                 if (modelEl) {
@@ -3329,7 +3429,7 @@
             title.textContent = overlayModelLabel
                 ? `${overlay.role_name} (${overlayModelLabel}) Output`
                 : `${overlay.role_name} Output`;
-            subtitle.textContent = `${statusLabel(roleStatus)} • Run ${overlay.run_group_id}`;
+            subtitle.innerHTML = `<span class="subrole-overlay-status status-${escapeHtml(roleStatus)}">${escapeHtml(statusLabel(roleStatus))}</span> • Run ${escapeHtml(String(overlay.run_group_id || ''))}`;
             light.className = `task-subrole-light ${roleStatus}`;
 
             const assignmentText = escapeHtml(roleState.task_text || 'SKIP');
@@ -3750,6 +3850,7 @@
             const prevCollapsed = !!state.thinking_process.collapsed;
             state.thinking_process.active_source = '';
             state.thinking_process.preview_text = '';
+            state.thinking_process.status = 'idle';
             state.thinking_process.active_container_id = null;
             state.thinking_process.new_run_pending = false;
             state.thinking_process.active_run_group_id = null;
@@ -3842,9 +3943,10 @@
             tp.group_container_ids[tp.active_run_group_id] = tp.active_container_id;
             container.innerHTML = `
                 <div class="thinking-process-header" title="Collapse/expand thinking process">
-                    <span class="thinking-process-toggle">&#9660;</span>
                     <span class="thinking-process-label">Thinking Process</span>
                     <span class="thinking-process-active"></span>
+                    <span class="thinking-process-state status-idle">Idle</span>
+                    <span class="thinking-process-toggle">&#9660;</span>
                 </div>
                 <div class="thinking-process-preview"></div>
                 <div class="thinking-process-list"></div>
@@ -4403,7 +4505,7 @@
                 <span class="agent-step-type-pill">${escapeHtml(stepMeta.token)}</span>
                 <span class="agent-step-type-label">${escapeHtml(stepMeta.label)}</span>
                 ${hasPayload ? `<span class="agent-step-payload-toggle">${escapeHtml(payloadToggleLabel)}</span>` : ''}
-                <span class="agent-step-status-badge">${escapeHtml(status)}</span>
+                <span class="agent-step-status-badge status-${escapeHtml(status)}">${escapeHtml(status)}</span>
             `;
 
             const titleBandHtml = hasPayload
@@ -4598,13 +4700,26 @@
 
             const tp = state.thinking_process;
             const isGenerating = !!state.is_generating;
+            let status = normalizeThinkingProcessStatus(tp.status, isGenerating ? 'running' : 'idle');
+            if (isGenerating && status === 'idle') {
+                status = 'running';
+            }
+            if (!isGenerating && status === 'running') {
+                status = 'done';
+            }
+            tp.status = status;
             container.classList.toggle('collapsed', !!tp.collapsed);
             container.classList.toggle('generating', isGenerating);
 
             const activeEl = container.querySelector('.thinking-process-active');
             const previewEl = container.querySelector('.thinking-process-preview');
+            const statusEl = container.querySelector('.thinking-process-state');
             if (activeEl) {
-                activeEl.textContent = tp.active_source ? tp.active_source : '';
+                activeEl.textContent = tp.active_source ? tp.active_source : (status === 'running' ? 'Leader' : '');
+            }
+            if (statusEl) {
+                statusEl.textContent = thinkingProcessStatusLabel(status);
+                statusEl.className = `thinking-process-state status-${status}`;
             }
             if (previewEl) {
                 previewEl.textContent = tp.preview_text || '';
@@ -5743,7 +5858,7 @@
                             <span class="task-subrole-light ${status}" data-subrole-light></span>
                             <span class="task-subrole-name">${escapeHtml(label)}</span>
                             <span class="task-subrole-model" data-subrole-model title="${escapeHtml(modelLabel || '')}">${escapeHtml(modelLabel || 'Model pending')}</span>
-                            <span class="task-subrole-status" data-subrole-status>${escapeHtml(statusLabel(status))}</span>
+                            <span class="task-subrole-status status-${escapeHtml(status)}" data-subrole-status>${escapeHtml(statusLabel(status))}</span>
                         </div>
                         <div class="task-subrole-task" data-subrole-task>${escapeHtml(isSkip ? 'SKIP' : task)}</div>
                         <div class="task-subrole-open-hint" data-subrole-hint>${clickable ? 'Open Live Output' : 'Not Assigned'}</div>
@@ -6851,12 +6966,14 @@
                 activeState.thinking_process.new_run_pending = true;
                 activeState.thinking_process.active_source = '';
                 activeState.thinking_process.preview_text = '';
+                activeState.thinking_process.status = 'running';
                 activeState.thinking_process.active_run_group_id = null;
                 activeState.thinking_process.active_container_id = null;
                 if (activeState.run_tracking) {
                     activeState.run_tracking.current_run_group_id = null;
                 }
             }
+            refreshThinkingProcessUI(activeChatId);
             closeSubroleOverlay(activeChatId);
             socket.emit('send_message', {
                 message: message,
@@ -6892,6 +7009,12 @@
 
         function stopAI(chatId = null) {
             const targetChatId = chatId || getActiveChatId();
+            const state = ensureConversation(targetChatId);
+            if (state) {
+                state.is_generating = false;
+                state.thinking_process.status = 'stopped';
+                refreshThinkingProcessUI(targetChatId);
+            }
             socket.emit('stop_generation', { chat_id: targetChatId });
             addConsoleLog(`Stopping AI generation${targetChatId ? ` for ${targetChatId}` : ''}...`);
             if (!chatId || targetChatId === getActiveChatId()) {
@@ -7149,6 +7272,7 @@
             const state = ensureConversation(chatId);
             if (!state) return;
             state.is_generating = true;
+            state.thinking_process.status = 'running';
             state.pending_message_id = data.message_id || null;
             const entry = getStreamEntry(data);
             if (!entry) return;
@@ -7210,6 +7334,9 @@
             }
             if (state && !isNonFinal) {
                 state.is_generating = false;
+                if (state.thinking_process.status !== 'error') {
+                    state.thinking_process.status = data.stopped ? 'stopped' : 'done';
+                }
             }
 
             const entry = getStreamEntry(data);
@@ -7538,6 +7665,9 @@
                 const state = ensureConversation(chatId);
                 if (state) {
                     state.is_generating = false;
+                    if (!['error', 'stopped'].includes(String(state.thinking_process.status || '').toLowerCase())) {
+                        state.thinking_process.status = 'done';
+                    }
                     state.thinking_process.preview_text = '';
                     state.thinking_process.active_source = '';
                     state.thinking_process.new_run_pending = false;
@@ -7565,12 +7695,18 @@
             if (!state) return;
 
             const runGroupId = resolveEventRunGroupId(chatId, data.run_group_id);
+            state.is_generating = true;
             state.thinking_process.new_run_pending = true;
             state.thinking_process.active_run_group_id = runGroupId;
+            state.thinking_process.status = 'running';
             state.thinking_process.active_source = '';
             state.thinking_process.preview_text = '';
 
             if (chatId === getActiveChatId()) {
+                const conversationWindow = getConvWindow();
+                if (conversationWindow) {
+                    ensureThinkingProcessContainer(conversationWindow, state, chatId, { forceNew: false }, runGroupId);
+                }
                 collapseOtherThinkingContainers(chatId, runGroupId);
             }
             refreshThinkingProcessUI(chatId);
@@ -7617,6 +7753,7 @@
             const chatId = data.chat_id || getActiveChatId();
             const state = ensureConversation(chatId);
             if (!state) return;
+            const normalizedStatus = normalizeThinkingProcessStatus(data.status, state.is_generating ? 'running' : 'idle');
 
             const normalizedSubrole = normalizeSubroleRoleName(data.role);
             const runGroupId = resolveSubroleRunGroupId(chatId, data.run_group_id);
@@ -7629,10 +7766,11 @@
                 }
             }
 
-            if (data.status === 'running') {
+            if (normalizedStatus === 'running') {
                 if (data.run_group_id) {
                     state.thinking_process.active_run_group_id = data.run_group_id;
                 }
+                state.thinking_process.status = 'running';
                 state.thinking_process.active_source = normalizeRoleLabel(data.role);
                 const activeEntry = state.pending_message_id ? state.streaming[state.pending_message_id] : null;
                 if (activeEntry) {
@@ -7642,6 +7780,20 @@
                     refreshThinkingProcessUI(chatId);
                 }
                 return;
+            }
+
+            if (normalizedStatus === 'error') {
+                state.thinking_process.status = 'error';
+                state.thinking_process.active_source = normalizeRoleLabel(data.role) || state.thinking_process.active_source;
+                refreshThinkingProcessUI(chatId);
+                return;
+            }
+
+            if (['done', 'stopped'].includes(normalizedStatus)) {
+                const isLeaderRole = String(data.role || '').trim().toLowerCase() === 'leader';
+                if (isLeaderRole) {
+                    state.thinking_process.status = normalizedStatus;
+                }
             }
 
             refreshThinkingProcessUI(chatId);
@@ -7677,6 +7829,14 @@
             const summary = String(data.summary || '').trim();
             const line = `[${status}] ${stepType}${summary ? ': ' + summary : ''}`;
             addConsoleLog(line);
+
+            if (status === 'error') {
+                state.thinking_process.status = 'error';
+            } else if (status === 'running') {
+                state.thinking_process.status = 'running';
+            } else if (state.is_generating && state.thinking_process.status !== 'error') {
+                state.thinking_process.status = 'running';
+            }
 
             const record = upsertAgentStepCardRecord(state, data, runGroupId, stepType, status, summary);
 
@@ -8350,6 +8510,7 @@
                         if (loadedState) {
                             loadedState.messages = mergedMessages;
                             loadedState.is_generating = !!data.chat.isGenerating;
+                            loadedState.thinking_process.status = loadedState.is_generating ? 'running' : 'idle';
                         }
                         setProcessingState(!!data.chat.isGenerating);
                         
@@ -8644,6 +8805,7 @@
                         if (tempState) {
                             tempState.messages = mergedMessages;
                             tempState.is_generating = !!data.chat.isGenerating;
+                            tempState.thinking_process.status = tempState.is_generating ? 'running' : 'idle';
                         }
                         setProcessingState(!!data.chat.isGenerating);
 

@@ -1,0 +1,18 @@
+{
+  "cases": [
+    {
+      "id": "sample-case",
+      "pdf_path": "uploads/sample.pdf",
+      "questions": [
+        {
+          "query": "Summarize key updates in this document.",
+          "expected_pages": [1, 2]
+        },
+        {
+          "query": "What is stated on page 10 about compliance?",
+          "expected_pages": [10]
+        }
+      ]
+    }
+  ]
+}
