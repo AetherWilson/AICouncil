@@ -16,7 +16,7 @@ from PIL import Image, UnidentifiedImageError
 import base64
 import logging
 from services.config_store import ConfigStore, get_model_info as resolve_model_info
-from services import memory_manager, skill_registry, skill_tool_runner
+from services import memory_manager, skill_registry, skill_tool_runner, pdf_parser
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -52,7 +52,6 @@ DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS = 30.0
 LONG_INPUT_TOKEN_THRESHOLD = 10000
 LONG_INPUT_FIRST_CHUNK_TIMEOUT_SECONDS = 60.0
 APPROX_CHARS_PER_TOKEN = 4.0
-DEFAULT_USE_MODEL_PDF_INPUT = False
 SUPPORTED_UPLOAD_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png', 'docx', 'docm', 'dotx', 'dotm'}
 WORD_UPLOAD_EXTENSIONS = {'docx', 'docm', 'dotx', 'dotm'}
 
@@ -392,6 +391,38 @@ def get_model_info(model_id):
     return resolve_model_info(load_models(), model_id)
 
 
+def _coerce_int_in_range(value, default, minimum, maximum):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = int(default)
+    return max(minimum, min(parsed, maximum))
+
+
+def _document_processing_settings():
+    config = load_config()
+    raw = config.get('document_processing', {}) if isinstance(config, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    return {
+        'pdf_enable_native_input': bool(raw.get('pdf_enable_native_input', True)),
+        'pdf_visual_enabled': bool(raw.get('pdf_visual_enabled', True)),
+        'pdf_visual_max_pages': _coerce_int_in_range(raw.get('pdf_visual_max_pages', 3), 3, 0, 10),
+        'pdf_visual_dpi': _coerce_int_in_range(raw.get('pdf_visual_dpi', 150), 150, 72, 300),
+        'pdf_visual_max_total_bytes': _coerce_int_in_range(raw.get('pdf_visual_max_total_bytes', 6291456), 6291456, 262144, 15728640),
+        'pdf_visual_max_dimension': _coerce_int_in_range(raw.get('pdf_visual_max_dimension', 2048), 2048, 512, 4096),
+        'pdf_ocr_enabled': bool(raw.get('pdf_ocr_enabled', True)),
+        'pdf_ocr_min_text_chars': _coerce_int_in_range(raw.get('pdf_ocr_min_text_chars', 1200), 1200, 0, 50000),
+        'pdf_ocr_max_chars': _coerce_int_in_range(raw.get('pdf_ocr_max_chars', 12000), 12000, 500, 80000),
+        'pdf_ocr_languages': raw.get('pdf_ocr_languages', ['en']),
+        'pdf_chunk_max_chars': _coerce_int_in_range(raw.get('pdf_chunk_max_chars', 1200), 1200, 300, 5000),
+        'pdf_chunk_max_items': _coerce_int_in_range(raw.get('pdf_chunk_max_items', 20), 20, 1, 200),
+        'pdf_text_max_chars': _coerce_int_in_range(raw.get('pdf_text_max_chars', 20000), 20000, 1000, 100000),
+        'pdf_context_max_chars': _coerce_int_in_range(raw.get('pdf_context_max_chars', 12000), 12000, 500, 30000)
+    }
+
+
 def _resolve_lite_model_id(config, fallback_model_id=''):
     if isinstance(config, dict):
         lite_model_id = str(config.get('lite_model') or '').strip()
@@ -619,23 +650,162 @@ def _extract_pdf_text_with_pypdf(filepath, max_chars=20000):
     return '\n\n'.join(chunks).strip(), page_count
 
 
+def _render_pdf_pages_as_data_urls(filepath, max_pages=3, dpi=150, max_total_bytes=6291456, max_dimension=2048):
+    """Render PDF pages into PNG data URLs for vision-capable models."""
+    if max_pages <= 0:
+        return [], {'reason': 'pdf visual rendering disabled by page limit'}
+
+    try:
+        fitz = importlib.import_module('fitz')
+    except ImportError:
+        return [], {'reason': 'PyMuPDF is not installed'}
+
+    try:
+        with fitz.open(filepath) as pdf_doc:
+            page_count = len(pdf_doc)
+            page_limit = min(max_pages, page_count)
+            zoom = max(float(dpi), 72.0) / 72.0
+
+            image_urls = []
+            total_bytes = 0
+            truncated = False
+            stop_reason = ''
+
+            for page_index in range(page_limit):
+                page = pdf_doc.load_page(page_index)
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+
+                if max_dimension > 0:
+                    largest_side = max(pixmap.width, pixmap.height)
+                    if largest_side > max_dimension:
+                        scale = float(max_dimension) / float(largest_side)
+                        pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom * scale, zoom * scale), alpha=False)
+
+                png_bytes = pixmap.tobytes('png')
+                if not png_bytes:
+                    continue
+
+                if (total_bytes + len(png_bytes)) > max_total_bytes:
+                    truncated = True
+                    stop_reason = 'stopped at configured PDF visual size limit'
+                    break
+
+                total_bytes += len(png_bytes)
+                encoded = base64.b64encode(png_bytes).decode('utf-8')
+                image_urls.append(f'data:image/png;base64,{encoded}')
+
+            meta = {
+                'page_count': page_count,
+                'rendered_pages': len(image_urls),
+                'truncated': truncated,
+                'reason': stop_reason
+            }
+            if not image_urls and not stop_reason:
+                meta['reason'] = 'no renderable PDF pages found'
+            return image_urls, meta
+    except Exception as exc:
+        _log_internal_error(f'pdf page render failed for {filepath}', exc)
+        return [], {'reason': 'pdf page rendering failed'}
+
+
+def _collect_pdf_visual_inputs(doc_info, doc_settings):
+    """Collect cached PDF page image data URLs based on current settings."""
+    prefetched = doc_info.get('_pdf_visual_prefetched')
+    if isinstance(prefetched, dict):
+        return list(prefetched.get('image_urls') or []), dict(prefetched.get('meta') or {})
+
+    filepath = str(doc_info.get('filepath') or '').strip()
+    if not filepath:
+        return [], {'reason': 'missing pdf filepath'}
+    if not os.path.isfile(filepath):
+        return [], {'reason': 'pdf file not found on disk'}
+
+    try:
+        mtime = int(os.path.getmtime(filepath))
+    except OSError:
+        return [], {'reason': 'unable to read pdf file metadata'}
+
+    cache_key = (
+        filepath,
+        mtime,
+        doc_settings['pdf_visual_max_pages'],
+        doc_settings['pdf_visual_dpi'],
+        doc_settings['pdf_visual_max_total_bytes'],
+        doc_settings['pdf_visual_max_dimension']
+    )
+
+    cache = doc_info.get('_pdf_visual_cache')
+    if isinstance(cache, dict) and cache.get('key') == cache_key:
+        return list(cache.get('image_urls') or []), dict(cache.get('meta') or {})
+
+    image_urls, meta = _render_pdf_pages_as_data_urls(
+        filepath,
+        max_pages=doc_settings['pdf_visual_max_pages'],
+        dpi=doc_settings['pdf_visual_dpi'],
+        max_total_bytes=doc_settings['pdf_visual_max_total_bytes'],
+        max_dimension=doc_settings['pdf_visual_max_dimension']
+    )
+
+    doc_info['_pdf_visual_cache'] = {
+        'key': cache_key,
+        'image_urls': list(image_urls),
+        'meta': dict(meta)
+    }
+    return image_urls, meta
+
+
 def _extract_document_payload(filepath, filename, pages_hint=None):
     """Extract normalized metadata/content for a stored document file."""
     file_size = os.path.getsize(filepath)
     file_ext = filename.lower().split('.')[-1]
+    doc_settings = _document_processing_settings()
 
     if file_ext == 'pdf':
-        extracted_text, parsed_pages = _extract_pdf_text_with_pypdf(filepath)
-        page_count = pages_hint if pages_hint is not None else parsed_pages
-        return {
+        parsed = pdf_parser.parse_pdf_document(
+            filepath,
+            doc_settings,
+            log_error=_log_internal_error
+        )
+
+        page_count = pages_hint if pages_hint is not None else parsed.get('page_count')
+        parser_meta = parsed.get('parser_meta') if isinstance(parsed.get('parser_meta'), dict) else {}
+        ocr_meta = parsed.get('ocr_meta') if isinstance(parsed.get('ocr_meta'), dict) else {}
+        extracted_text = str(parsed.get('text') or '').strip()
+        chunks = parsed.get('chunks') if isinstance(parsed.get('chunks'), list) else []
+        visual_image_urls = parsed.get('visual_image_urls') if isinstance(parsed.get('visual_image_urls'), list) else []
+        visual_meta = parsed.get('visual_meta') if isinstance(parsed.get('visual_meta'), dict) else {}
+
+        payload = {
             'filename': filename,
             'content': '[PDF uploaded]',
             'filepath': filepath,
             'pages': page_count,
             'size': file_size,
             'type': 'pdf',
-            'text': extracted_text
+            'text': extracted_text,
+            'chunks': chunks,
+            'has_extractable_text': bool(parsed.get('has_extractable_text', False)),
+            'parser_mode': str(parser_meta.get('mode') or '').strip(),
+            'parser_confidence': parser_meta.get('confidence'),
+            'ocr_used': bool(ocr_meta.get('used', False)),
+            'ocr_reason': str(ocr_meta.get('reason') or '').strip(),
+            'ocr_languages': ocr_meta.get('languages')
         }
+
+        if doc_settings['pdf_visual_enabled']:
+            payload['visualized_pages'] = len(visual_image_urls)
+            payload['visualization_status'] = 'ready' if visual_image_urls else 'unavailable'
+            payload['visualization_reason'] = str(visual_meta.get('reason') or '').strip()
+            payload['_pdf_visual_prefetched'] = {
+                'image_urls': list(visual_image_urls),
+                'meta': dict(visual_meta)
+            }
+        else:
+            payload['visualized_pages'] = 0
+            payload['visualization_status'] = 'disabled'
+            payload['visualization_reason'] = 'pdf visual rendering disabled in config'
+
+        return payload
 
     if file_ext in WORD_UPLOAD_EXTENSIONS:
         try:
@@ -701,7 +871,10 @@ def _build_document_response(doc_payload):
         'size': doc_payload.get('size'),
         'pages': doc_payload.get('pages'),
         'width': doc_payload.get('width'),
-        'height': doc_payload.get('height')
+        'height': doc_payload.get('height'),
+        'visualized_pages': doc_payload.get('visualized_pages'),
+        'visualization_status': doc_payload.get('visualization_status'),
+        'visualization_reason': doc_payload.get('visualization_reason')
     }
 
 
@@ -1448,13 +1621,18 @@ def _normalize_local_tool_action(value):
 
 
 def _parse_agent_action_payload(raw_text):
+    # Strip JSON blocks from raw text for fallback display
+    cleaned_text = str(raw_text or '').strip()
+    for json_candidate in _extract_json_objects(raw_text):
+        cleaned_text = cleaned_text.replace(json_candidate, '').strip()
+    
     fallback = {
         'thought': 'Direct final response (non-JSON).',
         'requires_verifier': False,
         'confidence': 0.35,
         'action': {
             'type': 'final_response',
-            'text': str(raw_text or '').strip() or 'I could not generate a final answer this time.'
+            'text': cleaned_text or 'I could not generate a final answer this time.'
         }
     }
 
@@ -1931,7 +2109,10 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
     documents = conv.get('uploaded_documents', {})
     image_urls = []
     pdf_inputs = []
-    allow_model_pdf_input = bool(support_pdf_input and DEFAULT_USE_MODEL_PDF_INPUT)
+    doc_settings = _document_processing_settings()
+    allow_model_pdf_input = bool(support_pdf_input and doc_settings['pdf_enable_native_input'])
+    allow_pdf_visuals = bool(support_images and doc_settings['pdf_visual_enabled'])
+    pdf_context_max_chars = doc_settings['pdf_context_max_chars']
     if documents:
         context_text = ""
         for filename, doc_info in documents.items():
@@ -1958,14 +2139,41 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
                     context_text = "\n\n===== AVAILABLE DOCUMENTS =====\n"
 
                 context_text += f"\n--- PDF: {filename} ---\n"
-                extracted_pdf_text = str(doc_info.get('text') or '').strip()
+                extracted_pdf_text = ''
+                structured_chunks = doc_info.get('chunks')
+                if isinstance(structured_chunks, list) and structured_chunks:
+                    extracted_pdf_text = pdf_parser.build_context_excerpt(
+                        structured_chunks,
+                        max_chars=pdf_context_max_chars
+                    )
+                else:
+                    extracted_pdf_text = str(doc_info.get('text') or '').strip()
+
                 if extracted_pdf_text:
-                    context_text += extracted_pdf_text[:12000]
-                    if len(extracted_pdf_text) > 12000:
+                    context_text += extracted_pdf_text[:pdf_context_max_chars]
+                    if len(extracted_pdf_text) > pdf_context_max_chars:
                         context_text += "\n[... content truncated ...]"
                     context_text += "\n"
                 else:
                     context_text += "[PDF uploaded, but no extractable text was found.]\n"
+
+                parser_mode = str(doc_info.get('parser_mode') or '').strip()
+                if parser_mode:
+                    context_text += f"[PDF parser mode: {parser_mode}.]\n"
+
+                if allow_pdf_visuals and doc_info.get('filepath'):
+                    visual_image_urls, visual_meta = _collect_pdf_visual_inputs(doc_info, doc_settings)
+                    if visual_image_urls:
+                        image_urls.extend(visual_image_urls)
+                        visual_note = f"[Attached {len(visual_image_urls)} rendered PDF page image(s) for visual analysis"
+                        if visual_meta.get('truncated'):
+                            visual_note += " (limited by configured PDF visual size cap)"
+                        visual_note += ".]"
+                        context_text += visual_note + "\n"
+                    else:
+                        reason = str(visual_meta.get('reason') or '').strip()
+                        if reason:
+                            context_text += f"[PDF visual rendering unavailable: {reason}.]\n"
 
                 if allow_model_pdf_input and doc_info.get('filepath'):
                     pdf_inputs.append({
@@ -2723,8 +2931,10 @@ def _completion_response_with_doc_fallback(
         )
     except Exception as first_exc:
         logger.warning(
-            "Agent completion failed with document inputs (model=%s): %s",
+            "Agent completion failed with document inputs (model=%s, image_inputs=%s, pdf_inputs=%s): %s",
             model,
+            bool(image_urls),
+            bool(pdf_inputs),
             str(first_exc)
         )
         if pdf_inputs:
@@ -2774,78 +2984,10 @@ def _run_agent_single_leader_workflow(
     stop_if_aborted
 ):
     leader_model_id = str(config.get('Leader') or '').strip()
-    lite_model_id = _resolve_lite_model_id(config, leader_model_id)
     skills_cfg = config.get('skills', {}) if isinstance(config.get('skills', {}), dict) else {}
     skills_root = str(skills_cfg.get('folder') or 'skills').strip() or 'skills'
     allow_legacy_flat = bool(skills_cfg.get('allow_legacy_flat', True))
     discovered_skills = skill_registry.discover_skills(skills_root, allow_legacy_flat=allow_legacy_flat)
-
-    md_reader_cfg = _normalized_md_reader_config(config)
-    inventory_text, inventory_meta = build_md_reader_inventory(config)
-    selected_files = []
-
-    if md_reader_cfg.get('enabled', True) and inventory_meta.get('status') == 'ok' and lite_model_id:
-        _emit_agent_step(
-            emit_chat,
-            run_group_id,
-            'markreader',
-            'running',
-            f'MarkReader selecting relevant skill files ({lite_model_id})',
-            payload={'available_files': inventory_meta.get('available_files', [])}
-        )
-
-        markreader_system = MARK_READER_PROMPT + f"\n\n{inventory_text}"
-        if user_system_prompt:
-            markreader_system = f"{user_system_prompt}\n\n{markreader_system}"
-
-        try:
-            markreader_raw = _completion_response_with_doc_fallback(
-                model=lite_model_id,
-                system_prompt=markreader_system,
-                user_prompt=(
-                    'Select relevant markdown files for the current user request.\\n\\n'
-                    f'User request:\\n{user_message}'
-                ),
-                chat_history=chat_history,
-                temperature=0.2
-            )
-            markreader_payload = _parse_md_reader_payload(markreader_raw)
-            selected_files, validate_meta = _validate_selected_skill_files(
-                config,
-                markreader_payload.get('selected_files', [])
-            )
-            _emit_agent_step(
-                emit_chat,
-                run_group_id,
-                'markreader',
-                'done',
-                f'Selected {len(selected_files)} file(s)',
-                payload={
-                    'selected_files': selected_files,
-                    'reason': markreader_payload.get('reason', ''),
-                    'rejected_files': validate_meta.get('rejected_files', [])
-                }
-            )
-        except Exception as exc:
-            _emit_agent_step(
-                emit_chat,
-                run_group_id,
-                'markreader',
-                'error',
-                f'MarkReader failed: {str(exc)}',
-                payload={'error': str(exc)}
-            )
-
-    if selected_files:
-        workspace_root = os.path.abspath('.')
-        selected_set = set(selected_files)
-        filtered_skills = []
-        for skill in discovered_skills:
-            rel_path = os.path.relpath(os.path.abspath(skill.path), workspace_root).replace('\\\\', '/')
-            if rel_path in selected_set:
-                filtered_skills.append(skill)
-        if filtered_skills:
-            discovered_skills = filtered_skills
 
     skill_catalog = skill_registry.build_skill_catalog(discovered_skills)
 

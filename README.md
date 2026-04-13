@@ -16,7 +16,6 @@ It is built around a single Leader-agent loop that can select markdown skills, e
 - Upload **PDFs**, **images**, and **Word OpenXML files** as chat context
 - Save named chats and auto-save temporary chats
 - Maintain persistent cross-chat memory in `skills/memories/memory.md`
-- Let a **MarkReader** preselect relevant markdown skills for the Leader
 - Inspect backend state from the built-in **Backend** tab
 - Run a quick **Uptest** that sends a hello request to each configured council role and reports latency/status
 
@@ -91,6 +90,17 @@ Example:
       "analyzer-skill": "gpt-4o",
       "verifier-skill": "gpt-4o"
     }
+  },
+  "document_processing": {
+    "pdf_enable_native_input": true,
+    "pdf_visual_enabled": true,
+    "pdf_visual_max_pages": 3,
+    "pdf_visual_dpi": 150,
+    "pdf_ocr_enabled": true,
+    "pdf_ocr_min_text_chars": 1200,
+    "pdf_ocr_languages": ["en"],
+    "pdf_chunk_max_chars": 1200,
+    "pdf_chunk_max_items": 20
   }
 }
 ```
@@ -135,7 +145,11 @@ Uploaded files are stored in `uploads/` and registered against the active conver
 
 For PDFs:
 
-- PDF-capable models can receive the file as input
+- text is extracted for fallback context
+- first pages can be rendered as images for vision-capable models (configurable)
+- OCR fallback runs on rendered pages when native text is too sparse (configurable)
+- parser builds structured chunks for better context packing
+- PDF-capable models can also receive native PDF binary input (configurable)
 - metadata is tracked per uploaded document
 
 For images:
@@ -171,8 +185,8 @@ Skills are loaded from `skills/` and can provide both markdown instructions and 
 
 The flow is:
 
-1. **MarkReader** selects relevant markdown skill files for the request
-2. Selected files are provided to the Leader-agent skill loop
+1. Persistent memory from `skills/memories/memory.md` is loaded into Leader context by default
+2. The Leader-agent can call discovered skills directly from `skills/`
 3. A planned local tool call can run `scripts/<name>.py` inside the target skill folder
 
 Local script execution is sandboxed to the skill's own `scripts/` directory and expects JSON on stdout.
@@ -199,6 +213,8 @@ From `requirements.txt`:
 - `python-docx`
 - `easyocr`
 - `opencc`
+- `pypdf`
+- `PyMuPDF`
 
 ## Setup
 

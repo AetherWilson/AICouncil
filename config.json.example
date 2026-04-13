@@ -20,5 +20,21 @@
     "enabled": true,
     "auto_extract": true,
     "path": "skills/memories/memory.md"
+  },
+  "document_processing": {
+    "pdf_enable_native_input": true,
+    "pdf_visual_enabled": true,
+    "pdf_visual_max_pages": 3,
+    "pdf_visual_dpi": 150,
+    "pdf_visual_max_total_bytes": 6291456,
+    "pdf_visual_max_dimension": 2048,
+    "pdf_ocr_enabled": true,
+    "pdf_ocr_min_text_chars": 1200,
+    "pdf_ocr_max_chars": 12000,
+    "pdf_ocr_languages": ["en"],
+    "pdf_chunk_max_chars": 1200,
+    "pdf_chunk_max_items": 20,
+    "pdf_text_max_chars": 20000,
+    "pdf_context_max_chars": 12000
   }
 }

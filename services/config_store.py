@@ -28,6 +28,16 @@ DEFAULT_COUNCIL_CONFIG = {
         'enabled': True,
         'auto_extract': True,
         'path': os.path.join('skills', 'memories', 'memory.md')
+    },
+    'document_processing': {
+        'pdf_enable_native_input': True,
+        'pdf_visual_enabled': True,
+        'pdf_visual_max_pages': 3,
+        'pdf_visual_dpi': 150,
+        'pdf_visual_max_total_bytes': 6291456,
+        'pdf_visual_max_dimension': 2048,
+        'pdf_text_max_chars': 20000,
+        'pdf_context_max_chars': 12000
     }
 }
 

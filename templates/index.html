@@ -4656,7 +4656,10 @@
                 size: Number(doc && doc.size ? doc.size : 0),
                 pages: Number.isFinite(Number(doc && doc.pages)) ? Number(doc.pages) : null,
                 width: Number.isFinite(Number(doc && doc.width)) ? Number(doc.width) : null,
-                height: Number.isFinite(Number(doc && doc.height)) ? Number(doc.height) : null
+                height: Number.isFinite(Number(doc && doc.height)) ? Number(doc.height) : null,
+                visualized_pages: Number.isFinite(Number(doc && doc.visualized_pages)) ? Number(doc.visualized_pages) : null,
+                visualization_status: doc && doc.visualization_status ? String(doc.visualization_status) : '',
+                visualization_reason: doc && doc.visualization_reason ? String(doc.visualization_reason) : ''
             })).filter(doc => doc.filename);
         }
 
@@ -4665,7 +4668,19 @@
                 ? `${(doc.size / 1024).toFixed(1)} KB`
                 : 'size n/a';
 
-            if (doc.type === 'pdf' || doc.type === 'word') {
+            if (doc.type === 'pdf') {
+                let visualText = 'visual n/a';
+                if (Number.isFinite(doc.visualized_pages) && doc.visualized_pages > 0) {
+                    visualText = `visualized ${doc.visualized_pages} page${doc.visualized_pages > 1 ? 's' : ''}`;
+                } else if (doc.visualization_status === 'disabled') {
+                    visualText = 'visual disabled';
+                } else if (doc.visualization_status === 'unavailable') {
+                    visualText = 'visual unavailable';
+                }
+                return `${sizeText} • ${visualText}`;
+            }
+
+            if (doc.type === 'word') {
                 return sizeText;
             }
 
@@ -4920,6 +4935,9 @@
                         const docType = getDocumentTypeLabel(data.document);
                         const info = formatSourceInfo(data.document);
                         addConsoleLog(`${docType} uploaded: ${data.document.filename} (${info})`);
+                        if (data.document.type === 'pdf' && data.document.visualization_status === 'unavailable' && data.document.visualization_reason) {
+                            addConsoleLog(`PDF visual processing note: ${data.document.visualization_reason}`);
+                        }
                     } else {
                         addConsoleLog(`Error uploading document: ${data.error}`);
                     }
