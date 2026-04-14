@@ -10,7 +10,8 @@
       "researcher-skill": "gpt-4o-mini",
       "creator-skill": "gpt-4o",
       "analyzer-skill": "gpt-4o",
-      "verifier-skill": "gpt-4o"
+      "verifier-skill": "gpt-4o",
+      "pdfer-skill": "gemini-3.1-pro-preview"
     }
   },
   "agent_loop": {
@@ -20,36 +21,5 @@
     "enabled": true,
     "auto_extract": true,
     "path": "skills/memories/memory.md"
-  },
-  "document_processing": {
-    "pdf_enable_native_input": true,
-    "pdf_archive_enabled": true,
-    "pdf_intent_budget_enabled": true,
-    "pdf_visual_enabled": true,
-    "pdf_visual_intent_gating": true,
-    "pdf_visual_max_pages": 3,
-    "pdf_visual_dpi": 150,
-    "pdf_visual_max_total_bytes": 6291456,
-    "pdf_visual_max_dimension": 2048,
-    "pdf_pdf_binary_intent_gating": true,
-    "pdf_ocr_enabled": true,
-    "pdf_ocr_min_text_chars": 1200,
-    "pdf_ocr_max_chars": 12000,
-    "pdf_ocr_languages": ["en"],
-    "pdf_chunk_max_chars": 1200,
-    "pdf_chunk_max_items": 20,
-    "pdf_retrieval_candidate_multiplier": 3,
-    "pdf_retrieval_top_k": 8,
-    "pdf_retrieval_max_chars": 12000,
-    "pdf_retrieval_cache_enabled": true,
-    "pdf_retrieval_cache_ttl_seconds": 600,
-    "pdf_expand_on_low_confidence": true,
-    "pdf_low_confidence_threshold": 0.28,
-    "pdf_page_focus_neighbor_radius": 1,
-    "pdf_page_focus_max_chars": 3500,
-    "pdf_embedding_enabled": false,
-    "pdf_embedding_model": "",
-    "pdf_text_max_chars": 20000,
-    "pdf_context_max_chars": 12000
   }
 }

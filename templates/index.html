@@ -306,6 +306,37 @@
             display: flex;
         }
 
+        .upload-status {
+            margin-bottom: 8px;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: #96a0b2;
+        }
+
+        .upload-status.active {
+            display: inline-flex;
+        }
+
+        .upload-status-spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #2e333d;
+            border-top-color: #4ec9b0;
+            border-radius: 50%;
+            animation: upload-spin 0.9s linear infinite;
+        }
+
+        @keyframes upload-spin {
+            from {
+                transform: rotate(0deg);
+            }
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
         .pdf-item {
             background: #1f232b;
             padding: 6px 10px;
@@ -1879,6 +1910,23 @@
             margin-left: 8px;
         }
 
+        .agent-step-status-badge.status-running,
+        .thinking-process-state.status-running {
+            gap: 6px;
+        }
+
+        .agent-step-status-badge.status-running::before,
+        .thinking-process-state.status-running::before {
+            content: '';
+            width: 12px;
+            height: 12px;
+            border: 2px solid rgba(255, 255, 255, 0.22);
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: upload-spin 0.9s linear infinite;
+            flex-shrink: 0;
+        }
+
         .agent-step-card.agent-step-collapsed .agent-step-flow,
         .agent-step-card.agent-step-collapsed .agent-step-payload {
             display: none;
@@ -2888,6 +2936,10 @@
                     <div class="pdf-list" id="pdfList">
                         <div id="pdfItems"></div>
                     </div>
+                    <div class="upload-status" id="uploadStatus" role="status" aria-live="polite">
+                        <span class="upload-status-spinner" aria-hidden="true"></span>
+                        <span id="uploadStatusText">Uploading document...</span>
+                    </div>
                     <div class="input-container" id="messageDropZone" title="Drop PDF/image/Word files here or press Ctrl+V">
                         <textarea id="messageInput" placeholder="Type your message here... (Shift+Enter for new line)" autocomplete="off" rows="1"></textarea>
                         <button id="sendButton">Send</button>
@@ -2957,6 +3009,7 @@
         let uploadedPDFs = [];
         const pendingUploadCleanup = {};
         const pendingUploadKeys = new Set();
+        let pendingUploadCount = 0;
         let isAIProcessing = false;
         let councilRoles = {};
         const conversations = {};
@@ -4772,9 +4825,11 @@
                 pages: Number.isFinite(Number(doc && doc.pages)) ? Number(doc.pages) : null,
                 width: Number.isFinite(Number(doc && doc.width)) ? Number(doc.width) : null,
                 height: Number.isFinite(Number(doc && doc.height)) ? Number(doc.height) : null,
-                visualized_pages: Number.isFinite(Number(doc && doc.visualized_pages)) ? Number(doc.visualized_pages) : null,
-                visualization_status: doc && doc.visualization_status ? String(doc.visualization_status) : '',
-                visualization_reason: doc && doc.visualization_reason ? String(doc.visualization_reason) : ''
+                pdf_brief_summary: doc && doc.pdf_brief_summary ? String(doc.pdf_brief_summary) : '',
+                pdf_brief_topics: Array.isArray(doc && doc.pdf_brief_topics) ? doc.pdf_brief_topics.map(topic => String(topic || '')) : [],
+                pdf_brief_confidence: Number.isFinite(Number(doc && doc.pdf_brief_confidence)) ? Number(doc.pdf_brief_confidence) : null,
+                pdf_brief_model: doc && doc.pdf_brief_model ? String(doc.pdf_brief_model) : '',
+                pdf_brief_generated_at: doc && doc.pdf_brief_generated_at ? String(doc.pdf_brief_generated_at) : ''
             })).filter(doc => doc.filename);
         }
 
@@ -4784,15 +4839,17 @@
                 : 'size n/a';
 
             if (doc.type === 'pdf') {
-                let visualText = 'visual n/a';
-                if (Number.isFinite(doc.visualized_pages) && doc.visualized_pages > 0) {
-                    visualText = `visualized ${doc.visualized_pages} page${doc.visualized_pages > 1 ? 's' : ''}`;
-                } else if (doc.visualization_status === 'disabled') {
-                    visualText = 'visual disabled';
-                } else if (doc.visualization_status === 'unavailable') {
-                    visualText = 'visual unavailable';
+                const confidenceText = Number.isFinite(doc.pdf_brief_confidence)
+                    ? `brief ${(doc.pdf_brief_confidence).toFixed(2)}`
+                    : 'brief n/a';
+                const briefSummary = (doc.pdf_brief_summary || '').trim();
+                if (briefSummary) {
+                    const shortBrief = briefSummary.length > 72
+                        ? `${briefSummary.slice(0, 72)}...`
+                        : briefSummary;
+                    return `${sizeText} • ${confidenceText} • ${shortBrief}`;
                 }
-                return `${sizeText} • ${visualText}`;
+                return `${sizeText} • ${confidenceText}`;
             }
 
             if (doc.type === 'word') {
@@ -4939,8 +4996,34 @@
         const inputArea = document.getElementById('inputArea');
         const pdfList = document.getElementById('pdfList');
         const pdfItems = document.getElementById('pdfItems');
+        const uploadStatus = document.getElementById('uploadStatus');
+        const uploadStatusText = document.getElementById('uploadStatusText');
         const chatTab = document.getElementById('chatTab');
         const conversationWindow = document.getElementById('conversationWindow');
+
+        function updateUploadStatus() {
+            if (!uploadStatus || !uploadStatusText) return;
+
+            if (pendingUploadCount > 0) {
+                const suffix = pendingUploadCount > 1 ? 's' : '';
+                uploadStatusText.textContent = `Uploading ${pendingUploadCount} document${suffix}...`;
+                uploadStatus.classList.add('active');
+                return;
+            }
+
+            uploadStatus.classList.remove('active');
+            uploadStatusText.textContent = 'Uploading document...';
+        }
+
+        function markUploadStarted() {
+            pendingUploadCount += 1;
+            updateUploadStatus();
+        }
+
+        function markUploadFinished() {
+            pendingUploadCount = Math.max(0, pendingUploadCount - 1);
+            updateUploadStatus();
+        }
 
         function setChatDragActive(active) {
             if (inputArea) {
@@ -5033,6 +5116,7 @@
                     return;
                 }
                 pendingUploadKeys.add(uploadKey);
+                markUploadStarted();
 
                 const formData = new FormData();
                 formData.append('file', file);
@@ -5050,9 +5134,6 @@
                         const docType = getDocumentTypeLabel(data.document);
                         const info = formatSourceInfo(data.document);
                         addConsoleLog(`${docType} uploaded: ${data.document.filename} (${info})`);
-                        if (data.document.type === 'pdf' && data.document.visualization_status === 'unavailable' && data.document.visualization_reason) {
-                            addConsoleLog(`PDF visual processing note: ${data.document.visualization_reason}`);
-                        }
                     } else {
                         addConsoleLog(`Error uploading document: ${data.error}`);
                     }
@@ -5063,6 +5144,7 @@
                 })
                 .finally(() => {
                     pendingUploadKeys.delete(uploadKey);
+                    markUploadFinished();
                 });
             });
         }

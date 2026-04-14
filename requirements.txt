@@ -6,7 +6,4 @@ httpx
 python-dotenv
 Pillow
 python-docx
-easyocr
 opencc
-pypdf
-PyMuPDF
