@@ -31,7 +31,7 @@ DEFAULT_COUNCIL_CONFIG = {
     },
     'document_processing': {
         'pdf_enable_native_input': True,
-        'pdf_archive_enabled': True,
+        'pdf_archive_enabled': False,
         'pdf_intent_budget_enabled': True,
         'pdf_visual_enabled': True,
         'pdf_visual_intent_gating': True,
@@ -40,6 +40,16 @@ DEFAULT_COUNCIL_CONFIG = {
         'pdf_visual_max_total_bytes': 6291456,
         'pdf_visual_max_dimension': 2048,
         'pdf_pdf_binary_intent_gating': True,
+        'pdf_layout_model': '',
+        'pdf_layout_dpi': 180,
+        'pdf_layout_max_dimension': 2200,
+        'pdf_layout_max_total_bytes': 15728640,
+        'pdf_layout_max_pages': 200,
+        'pdf_image_description_enabled': True,
+        'pdf_image_description_model': '',
+        'pdf_image_description_max_images_per_page': 4,
+        'pdf_image_description_max_total_images': 120,
+        'pdf_image_min_bytes': 4096,
         'pdf_retrieval_candidate_multiplier': 3,
         'pdf_retrieval_top_k': 8,
         'pdf_retrieval_max_chars': 12000,
@@ -51,7 +61,10 @@ DEFAULT_COUNCIL_CONFIG = {
         'pdf_page_focus_max_chars': 3500,
         'pdf_embedding_enabled': False,
         'pdf_embedding_model': '',
-        'pdf_text_max_chars': 20000,
+        'pdf_hybrid_vector_weight': 0.55,
+        'pdf_hybrid_bm25_weight': 0.45,
+        'pdf_chroma_persist_directory': os.path.join('uploads', '.pdf_chroma'),
+        'pdf_text_max_chars': 500000,
         'pdf_context_max_chars': 12000
     }
 }

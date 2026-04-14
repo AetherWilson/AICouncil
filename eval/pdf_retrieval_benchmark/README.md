@@ -1,11 +1,11 @@
 # PDF Retrieval Benchmark Scaffold
 
-This folder provides a lightweight benchmark harness for retrieval quality and token efficiency checks.
+This folder provides a lightweight benchmark harness for multimodal-hybrid retrieval quality and token efficiency checks.
 
 ## Files
 
 - `dataset.template.json`: Example benchmark dataset schema.
-- `run_benchmark.py`: Runs retrieval pipeline on benchmark cases and prints summary metrics.
+- `run_benchmark.py`: Runs the multimodal parser + hybrid retriever on benchmark cases and prints summary metrics.
 
 ## Dataset Format
 

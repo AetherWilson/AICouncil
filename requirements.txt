@@ -10,3 +10,6 @@ easyocr
 opencc
 pypdf
 PyMuPDF
+chromadb
+rank-bm25
+langchain-text-splitters

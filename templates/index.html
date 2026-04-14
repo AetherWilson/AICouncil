@@ -316,6 +316,28 @@
             border: 1px solid #2e333d;
         }
 
+        .pdf-item.parsing {
+            border-color: #4ec9b0;
+            background: linear-gradient(135deg, #1a2428 0%, #1f232b 100%);
+        }
+
+        .pdf-parsing-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid rgba(78, 201, 176, 0.35);
+            border-top-color: #4ec9b0;
+            animation: pdf-spin 0.8s linear infinite;
+            flex-shrink: 0;
+        }
+
+        .pdf-parsing-text {
+            color: #8ecfbe;
+            font-size: 12px;
+            white-space: nowrap;
+            animation: pdf-parsing-pulse 1.3s ease-in-out infinite;
+        }
+
         .pdf-item-info {
             display: inline-flex;
             align-items: center;
@@ -387,6 +409,24 @@
         .remove-pdf:hover {
             background: #d9534f;
             color: #ffffff;
+        }
+
+        @keyframes pdf-spin {
+            from {
+                transform: rotate(0deg);
+            }
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @keyframes pdf-parsing-pulse {
+            0%, 100% {
+                opacity: 0.65;
+            }
+            50% {
+                opacity: 1;
+            }
         }
 
         @media (max-width: 768px) {
@@ -2955,11 +2995,59 @@
         const SUBROLE_STATUS_VALUES = ['waiting', 'running', 'done', 'error', 'skipped', 'stopped'];
         const THINKING_PROCESS_STATUS_VALUES = ['idle', 'running', 'done', 'error', 'stopped'];
         let uploadedPDFs = [];
+        const pendingPdfParsesByChat = {};
         const pendingUploadCleanup = {};
         const pendingUploadKeys = new Set();
         let isAIProcessing = false;
         let councilRoles = {};
         const conversations = {};
+
+        function isPdfFile(file) {
+            if (!file) return false;
+            const mimeType = String(file.type || '').toLowerCase();
+            if (mimeType === 'application/pdf') return true;
+            const name = String(file.name || '');
+            const dotIndex = name.lastIndexOf('.');
+            if (dotIndex < 0) return false;
+            return name.slice(dotIndex + 1).toLowerCase() === 'pdf';
+        }
+
+        function getPendingPdfParses(chatId) {
+            if (!chatId || !Array.isArray(pendingPdfParsesByChat[chatId])) {
+                return [];
+            }
+            return pendingPdfParsesByChat[chatId];
+        }
+
+        function beginPendingPdfParse(chatId, uploadKey, fileName) {
+            if (!chatId || !uploadKey || !fileName) return;
+            if (!Array.isArray(pendingPdfParsesByChat[chatId])) {
+                pendingPdfParsesByChat[chatId] = [];
+            }
+
+            const exists = pendingPdfParsesByChat[chatId].some((item) => item.uploadKey === uploadKey);
+            if (exists) return;
+
+            pendingPdfParsesByChat[chatId].push({
+                uploadKey,
+                fileName,
+                startedAt: Date.now()
+            });
+            displayPDFs();
+        }
+
+        function endPendingPdfParse(chatId, uploadKey) {
+            if (!chatId || !uploadKey || !Array.isArray(pendingPdfParsesByChat[chatId])) return;
+
+            pendingPdfParsesByChat[chatId] = pendingPdfParsesByChat[chatId].filter(
+                (item) => item.uploadKey !== uploadKey
+            );
+
+            if (pendingPdfParsesByChat[chatId].length === 0) {
+                delete pendingPdfParsesByChat[chatId];
+            }
+            displayPDFs();
+        }
 
         function handleWorkflowOverlayEscape(evt) {
             if (evt.key === 'Escape') {
@@ -5034,6 +5122,12 @@
                 }
                 pendingUploadKeys.add(uploadKey);
 
+                const fileIsPdf = isPdfFile(file);
+                if (fileIsPdf) {
+                    beginPendingPdfParse(activeChatId, uploadKey, file.name);
+                    addConsoleLog(`Parsing PDF: ${file.name}...`);
+                }
+
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('chat_id', activeChatId);
@@ -5050,6 +5144,9 @@
                         const docType = getDocumentTypeLabel(data.document);
                         const info = formatSourceInfo(data.document);
                         addConsoleLog(`${docType} uploaded: ${data.document.filename} (${info})`);
+                        if (fileIsPdf) {
+                            addConsoleLog(`PDF parsing completed: ${data.document.filename}`);
+                        }
                         if (data.document.type === 'pdf' && data.document.visualization_status === 'unavailable' && data.document.visualization_reason) {
                             addConsoleLog(`PDF visual processing note: ${data.document.visualization_reason}`);
                         }
@@ -5063,13 +5160,19 @@
                 })
                 .finally(() => {
                     pendingUploadKeys.delete(uploadKey);
+                    if (fileIsPdf) {
+                        endPendingPdfParse(activeChatId, uploadKey);
+                    }
                 });
             });
         }
 
         function displayPDFs() {
             pdfItems.innerHTML = '';
-            if (uploadedPDFs.length === 0) {
+            const activeChatId = getActiveChatId();
+            const pendingPdfParses = getPendingPdfParses(activeChatId);
+
+            if (uploadedPDFs.length === 0 && pendingPdfParses.length === 0) {
                 if (pdfList) {
                     pdfList.classList.remove('has-items');
                 }
@@ -5093,6 +5196,19 @@
                     <button class="remove-pdf" onclick="removePDF(${index})" title="Remove source">x</button>
                 `;
                 pdfItems.appendChild(pdfItem);
+            });
+
+            pendingPdfParses.forEach((pendingDoc) => {
+                const pendingItem = document.createElement('div');
+                pendingItem.className = 'pdf-item parsing';
+                pendingItem.innerHTML = `
+                    <div class="pdf-parsing-dot" aria-hidden="true"></div>
+                    <div class="pdf-item-info">
+                        <div class="pdf-name" title="${escapeHtml(pendingDoc.fileName)}">📄 ${escapeHtml(pendingDoc.fileName)}</div>
+                        <div class="pdf-parsing-text">Parsing PDF...</div>
+                    </div>
+                `;
+                pdfItems.appendChild(pendingItem);
             });
         }
 

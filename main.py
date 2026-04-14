@@ -413,7 +413,10 @@ def _document_processing_settings():
 
     return {
         'pdf_enable_native_input': bool(raw.get('pdf_enable_native_input', True)),
-        'pdf_archive_enabled': bool(raw.get('pdf_archive_enabled', True)),
+        'pdf_archive_enabled': bool(raw.get('pdf_archive_enabled', False)),
+        'pdf_force_full_archive_context': bool(raw.get('pdf_force_full_archive_context', False)),
+        'pdf_no_truncation': bool(raw.get('pdf_no_truncation', False)),
+        'pdf_force_binary_input': bool(raw.get('pdf_force_binary_input', False)),
         'pdf_intent_budget_enabled': bool(raw.get('pdf_intent_budget_enabled', True)),
         'pdf_visual_enabled': bool(raw.get('pdf_visual_enabled', True)),
         'pdf_visual_intent_gating': bool(raw.get('pdf_visual_intent_gating', True)),
@@ -422,25 +425,38 @@ def _document_processing_settings():
         'pdf_visual_max_total_bytes': _coerce_int_in_range(raw.get('pdf_visual_max_total_bytes', 6291456), 6291456, 262144, 15728640),
         'pdf_visual_max_dimension': _coerce_int_in_range(raw.get('pdf_visual_max_dimension', 2048), 2048, 512, 4096),
         'pdf_pdf_binary_intent_gating': bool(raw.get('pdf_pdf_binary_intent_gating', True)),
-        'pdf_ocr_enabled': bool(raw.get('pdf_ocr_enabled', True)),
+        'pdf_layout_model': str(raw.get('pdf_layout_model') or _resolve_lite_model_id(config, '')).strip(),
+        'pdf_layout_dpi': _coerce_int_in_range(raw.get('pdf_layout_dpi', 180), 180, 72, 300),
+        'pdf_layout_max_dimension': _coerce_int_in_range(raw.get('pdf_layout_max_dimension', 2200), 2200, 512, 4096),
+        'pdf_layout_max_total_bytes': _coerce_int_in_range(raw.get('pdf_layout_max_total_bytes', 15728640), 15728640, 262144, 104857600),
+        'pdf_layout_max_pages': _coerce_int_in_range(raw.get('pdf_layout_max_pages', 200), 200, 1, 2000),
+        'pdf_image_description_enabled': bool(raw.get('pdf_image_description_enabled', True)),
+        'pdf_image_description_model': str(raw.get('pdf_image_description_model') or _resolve_lite_model_id(config, '')).strip(),
+        'pdf_image_description_max_images_per_page': _coerce_int_in_range(raw.get('pdf_image_description_max_images_per_page', 4), 4, 0, 20),
+        'pdf_image_description_max_total_images': _coerce_int_in_range(raw.get('pdf_image_description_max_total_images', 120), 120, 0, 1000),
+        'pdf_image_min_bytes': _coerce_int_in_range(raw.get('pdf_image_min_bytes', 4096), 4096, 256, 5000000),
+        'pdf_ocr_enabled': bool(raw.get('pdf_ocr_enabled', False)),
         'pdf_ocr_min_text_chars': _coerce_int_in_range(raw.get('pdf_ocr_min_text_chars', 1200), 1200, 0, 50000),
         'pdf_ocr_max_chars': _coerce_int_in_range(raw.get('pdf_ocr_max_chars', 12000), 12000, 500, 80000),
         'pdf_ocr_languages': raw.get('pdf_ocr_languages', ['en']),
-        'pdf_chunk_max_chars': _coerce_int_in_range(raw.get('pdf_chunk_max_chars', 1200), 1200, 300, 5000),
-        'pdf_chunk_max_items': _coerce_int_in_range(raw.get('pdf_chunk_max_items', 20), 20, 1, 200),
-        'pdf_retrieval_candidate_multiplier': _coerce_int_in_range(raw.get('pdf_retrieval_candidate_multiplier', 3), 3, 1, 6),
+        'pdf_chunk_max_chars': _coerce_int_in_range(raw.get('pdf_chunk_max_chars', 1800), 1800, 500, 12000),
+        'pdf_chunk_max_items': _coerce_int_in_range(raw.get('pdf_chunk_max_items', 400), 400, 1, 3000),
+        'pdf_retrieval_candidate_multiplier': _coerce_int_in_range(raw.get('pdf_retrieval_candidate_multiplier', 3), 3, 1, 12),
         'pdf_retrieval_top_k': _coerce_int_in_range(raw.get('pdf_retrieval_top_k', 8), 8, 1, 50),
-        'pdf_retrieval_max_chars': _coerce_int_in_range(raw.get('pdf_retrieval_max_chars', 12000), 12000, 500, 50000),
+        'pdf_retrieval_max_chars': _coerce_int_in_range(raw.get('pdf_retrieval_max_chars', 12000), 12000, 500, 2000000),
         'pdf_retrieval_cache_enabled': bool(raw.get('pdf_retrieval_cache_enabled', True)),
         'pdf_retrieval_cache_ttl_seconds': _coerce_int_in_range(raw.get('pdf_retrieval_cache_ttl_seconds', 600), 600, 10, 3600),
         'pdf_expand_on_low_confidence': bool(raw.get('pdf_expand_on_low_confidence', True)),
         'pdf_low_confidence_threshold': max(0.0, min(float(raw.get('pdf_low_confidence_threshold', 0.28) or 0.28), 1.0)),
         'pdf_page_focus_neighbor_radius': _coerce_int_in_range(raw.get('pdf_page_focus_neighbor_radius', 1), 1, 0, 3),
-        'pdf_page_focus_max_chars': _coerce_int_in_range(raw.get('pdf_page_focus_max_chars', 3500), 3500, 500, 15000),
+        'pdf_page_focus_max_chars': _coerce_int_in_range(raw.get('pdf_page_focus_max_chars', 3500), 3500, 500, 2000000),
         'pdf_embedding_enabled': bool(raw.get('pdf_embedding_enabled', False)),
         'pdf_embedding_model': str(raw.get('pdf_embedding_model', '') or '').strip(),
-        'pdf_text_max_chars': _coerce_int_in_range(raw.get('pdf_text_max_chars', 20000), 20000, 1000, 100000),
-        'pdf_context_max_chars': _coerce_int_in_range(raw.get('pdf_context_max_chars', 12000), 12000, 500, 30000)
+        'pdf_hybrid_vector_weight': max(0.0, min(float(raw.get('pdf_hybrid_vector_weight', 0.55) or 0.55), 1.0)),
+        'pdf_hybrid_bm25_weight': max(0.0, min(float(raw.get('pdf_hybrid_bm25_weight', 0.45) or 0.45), 1.0)),
+        'pdf_chroma_persist_directory': str(raw.get('pdf_chroma_persist_directory', os.path.join('uploads', '.pdf_chroma')) or '').strip(),
+        'pdf_text_max_chars': _coerce_int_in_range(raw.get('pdf_text_max_chars', 500000), 500000, 1000, 5000000),
+        'pdf_context_max_chars': _coerce_int_in_range(raw.get('pdf_context_max_chars', 12000), 12000, 500, 5000000)
     }
 
 
@@ -1082,6 +1098,36 @@ def _build_pdf_page_focus_chunks(doc_info, target_pages, neighbor_radius=1, max_
     }
 
 
+def _build_pdf_full_archive_excerpt(doc_info):
+    """Build complete page-by-page text excerpt from archived PDF pages."""
+    pages, archive_meta = _load_pdf_archive_pages(doc_info)
+    if not pages:
+        return '', {'reason': archive_meta.get('reason') or 'no archive pages available'}
+
+    available_pages = sorted(int(item.get('page') or 0) for item in pages if int(item.get('page') or 0) > 0)
+    if not available_pages:
+        return '', {'reason': 'archive has no page index'}
+
+    page_map = {int(item.get('page') or 0): str(item.get('text') or '') for item in pages}
+    rendered_parts = []
+    for page in available_pages:
+        raw = page_map.get(page, '').strip()
+        if not raw:
+            continue
+        rendered_parts.append(f"[Page {page}] {raw}")
+
+    excerpt = '\n\n'.join(rendered_parts).strip()
+    if not excerpt:
+        return '', {'reason': 'archive pages contain no extractable text'}
+
+    return excerpt, {
+        'reason': '',
+        'page_count': int(archive_meta.get('page_count') or 0),
+        'pages_with_text': int(archive_meta.get('pages_with_text') or 0),
+        'total_chars': int(archive_meta.get('total_chars') or len(excerpt)),
+    }
+
+
 def _build_pdf_retrieval_cache_key(conversation_id, filename, doc_info, query_key, policy):
     filepath = str(doc_info.get('filepath') or '').strip()
     file_mtime = 0
@@ -1110,6 +1156,9 @@ def _build_pdf_retrieval_cache_key(conversation_id, filename, doc_info, query_ke
         int(policy.get('candidate_pool') or 0),
         bool(policy.get('embedding_enabled', False)),
         str(policy.get('embedding_model') or ''),
+        float(policy.get('vector_weight') or 0.0),
+        float(policy.get('bm25_weight') or 0.0),
+        str(policy.get('index_id') or ''),
     )
 
 
@@ -1162,12 +1211,20 @@ def _extract_document_payload(filepath, filename, pages_hint=None):
         chunks = parsed.get('chunks') if isinstance(parsed.get('chunks'), list) else []
         visual_image_urls = parsed.get('visual_image_urls') if isinstance(parsed.get('visual_image_urls'), list) else []
         visual_meta = parsed.get('visual_meta') if isinstance(parsed.get('visual_meta'), dict) else {}
-        archive_meta = {
-            'status': 'disabled',
-            'reason': 'pdf archive disabled in config'
-        }
-        if doc_settings.get('pdf_archive_enabled', True):
-            archive_meta = _build_pdf_text_archive(filepath, filename, pages_hint=page_count)
+
+        pdf_fingerprint = hashlib.sha1(
+            f"{filename}|{filepath}|{int(os.path.getmtime(filepath))}|{int(file_size)}".encode('utf-8')
+        ).hexdigest()[:24]
+        chroma_persist_directory = os.path.abspath(str(doc_settings.get('pdf_chroma_persist_directory') or os.path.join('uploads', '.pdf_chroma')))
+        embedding_enabled = bool(doc_settings.get('pdf_embedding_enabled', False))
+        embedding_model = str(doc_settings.get('pdf_embedding_model') or '').strip()
+        index_state = document_retriever.ensure_document_index(
+            document_id=pdf_fingerprint,
+            chunks=chunks,
+            embedding_client=client if (embedding_enabled and embedding_model) else None,
+            embedding_model=embedding_model if embedding_enabled else '',
+            persist_directory=chroma_persist_directory,
+        )
 
         payload = {
             'filename': filename,
@@ -1184,12 +1241,17 @@ def _extract_document_payload(filepath, filename, pages_hint=None):
             'ocr_used': bool(ocr_meta.get('used', False)),
             'ocr_reason': str(ocr_meta.get('reason') or '').strip(),
             'ocr_languages': ocr_meta.get('languages'),
-            'archive_status': str(archive_meta.get('status') or '').strip(),
-            'archive_reason': str(archive_meta.get('reason') or '').strip(),
-            'archive_path': str(archive_meta.get('path') or '').strip(),
-            'archive_page_count': archive_meta.get('page_count'),
-            'archive_pages_with_text': archive_meta.get('pages_with_text'),
-            'archive_total_chars': archive_meta.get('total_chars')
+            'archive_status': 'deprecated',
+            'archive_reason': 'Legacy archive path disabled by multimodal pipeline',
+            'archive_path': '',
+            'archive_page_count': None,
+            'archive_pages_with_text': None,
+            'archive_total_chars': None,
+            '_pdf_index_id': pdf_fingerprint,
+            '_pdf_index_collection': str(index_state.get('collection_name') or '').strip(),
+            '_pdf_index_ready': bool(index_state.get('vector_index_ready', False)),
+            '_pdf_index_error': str(index_state.get('vector_index_error') or '').strip(),
+            '_pdf_chroma_persist_directory': chroma_persist_directory
         }
 
         if doc_settings['pdf_visual_enabled']:
@@ -1332,6 +1394,26 @@ def _rehydrate_uploaded_documents_from_attachments(conv, attachments):
         restored_count += 1
 
     return restored_count
+
+
+def _collect_attachments_from_messages(messages):
+    collected = []
+    seen_filenames = set()
+    if not isinstance(messages, list):
+        return collected
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        attachments = _coerce_message_attachments(message.get('attachments'))
+        for attachment in attachments:
+            filename = str(attachment.get('filename') or '').strip()
+            if not filename or filename in seen_filenames:
+                continue
+            seen_filenames.add(filename)
+            collected.append(attachment)
+
+    return collected
 
 @app.route('/')
 def index():
@@ -1705,6 +1787,22 @@ def load_chat(chat_id):
     # lost if we swapped to backend in-memory history here.
 
     target_conv = get_conversation(normalized_chat_id)
+
+    persisted_attachments = _coerce_message_attachments(chat_data.get('uploadedDocuments', []))
+    message_attachments = _collect_attachments_from_messages(chat_data.get('messages', []))
+    rehydrate_candidates = list(persisted_attachments)
+    known_files = {str(item.get('filename') or '').strip() for item in rehydrate_candidates}
+    for attachment in message_attachments:
+        filename = str(attachment.get('filename') or '').strip()
+        if filename and filename not in known_files:
+            rehydrate_candidates.append(attachment)
+            known_files.add(filename)
+
+    restored_docs = _rehydrate_uploaded_documents_from_attachments(target_conv, rehydrate_candidates)
+    if restored_docs > 0:
+        emit_log_ts = datetime.now().strftime("%H:%M:%S")
+        logger.info("[%s] Restored %s uploaded source(s) during load_chat for %s", emit_log_ts, restored_docs, normalized_chat_id)
+
     if not target_conv.get('is_generating'):
         hydrated_count = _replace_conversation_messages_from_ui(
             normalized_chat_id,
@@ -1837,6 +1935,22 @@ def load_temp_chat(chat_id):
     # lost if we swapped to backend in-memory history here.
 
     target_conv = get_conversation(normalized_chat_id)
+
+    persisted_attachments = _coerce_message_attachments(chat_data.get('uploadedDocuments', []))
+    message_attachments = _collect_attachments_from_messages(chat_data.get('messages', []))
+    rehydrate_candidates = list(persisted_attachments)
+    known_files = {str(item.get('filename') or '').strip() for item in rehydrate_candidates}
+    for attachment in message_attachments:
+        filename = str(attachment.get('filename') or '').strip()
+        if filename and filename not in known_files:
+            rehydrate_candidates.append(attachment)
+            known_files.add(filename)
+
+    restored_docs = _rehydrate_uploaded_documents_from_attachments(target_conv, rehydrate_candidates)
+    if restored_docs > 0:
+        emit_log_ts = datetime.now().strftime("%H:%M:%S")
+        logger.info("[%s] Restored %s uploaded source(s) during load_temp_chat for %s", emit_log_ts, restored_docs, normalized_chat_id)
+
     if not target_conv.get('is_generating'):
         hydrated_count = _replace_conversation_messages_from_ui(
             normalized_chat_id,
@@ -2525,13 +2639,17 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
     intent_budget_enabled = bool(doc_settings['pdf_intent_budget_enabled'])
     visual_intent_gating = bool(doc_settings['pdf_visual_intent_gating'])
     pdf_binary_intent_gating = bool(doc_settings['pdf_pdf_binary_intent_gating'])
-    page_focus_neighbor_radius = doc_settings['pdf_page_focus_neighbor_radius']
-    page_focus_max_chars = doc_settings['pdf_page_focus_max_chars']
+    pdf_no_truncation = bool(doc_settings.get('pdf_no_truncation', False))
+    pdf_force_binary_input = bool(doc_settings.get('pdf_force_binary_input', False))
     embedding_enabled = bool(doc_settings['pdf_embedding_enabled'])
     embedding_model = str(doc_settings.get('pdf_embedding_model') or '').strip()
+    hybrid_vector_weight = float(doc_settings.get('pdf_hybrid_vector_weight', 0.55) or 0.55)
+    hybrid_bm25_weight = float(doc_settings.get('pdf_hybrid_bm25_weight', 0.45) or 0.45)
+    chroma_persist_directory = os.path.abspath(
+        str(doc_settings.get('pdf_chroma_persist_directory') or os.path.join('uploads', '.pdf_chroma'))
+    )
     query_text = str(user_query or '').strip()
     intent_meta = document_retriever.analyze_query_intent(query_text)
-    query_pages = list(intent_meta.get('page_hints') or [])
 
     effective_budget = {
         'top_k': int(retrieval_top_k),
@@ -2554,7 +2672,9 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
         )
 
     allow_pdf_binary_for_query = bool(allow_model_pdf_input)
-    if pdf_binary_intent_gating and query_text:
+    if pdf_force_binary_input:
+        allow_pdf_binary_for_query = bool(allow_model_pdf_input)
+    elif pdf_binary_intent_gating and query_text:
         allow_pdf_binary_for_query = bool(
             allow_model_pdf_input and document_retriever.should_attach_pdf_binary(query_text, intent_meta)
         )
@@ -2592,7 +2712,7 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
                     query_key = document_retriever.normalize_query_cache_key(query_text)
                     candidate_pool = max(
                         effective_retrieval_top_k,
-                        min(50, effective_retrieval_top_k * max(1, int(retrieval_candidate_multiplier))),
+                        min(120, effective_retrieval_top_k * max(1, int(retrieval_candidate_multiplier))),
                     )
                     cache_key = _build_pdf_retrieval_cache_key(
                         conversation_id,
@@ -2605,6 +2725,9 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
                             'candidate_pool': candidate_pool,
                             'embedding_enabled': embedding_enabled,
                             'embedding_model': embedding_model,
+                            'vector_weight': hybrid_vector_weight,
+                            'bm25_weight': hybrid_bm25_weight,
+                            'index_id': str(doc_info.get('_pdf_index_id') or ''),
                         }
                     )
 
@@ -2615,76 +2738,41 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
                         selected_chunks = cache_payload.get('selected_chunks') if isinstance(cache_payload.get('selected_chunks'), list) else []
                         retrieval_meta = cache_payload.get('retrieval_meta') if isinstance(cache_payload.get('retrieval_meta'), dict) else {}
                     else:
-                        scored_chunks, scored_meta = document_retriever.score_chunks_for_query(
-                            structured_chunks,
+                        selected_chunks, retrieval_meta = document_retriever.retrieve_hybrid_chunks(
+                            document_id=str(doc_info.get('_pdf_index_id') or f"{conversation_id}:{filename}"),
+                            chunks=structured_chunks,
                             query=query_text,
                             embedding_client=client if (embedding_enabled and embedding_model) else None,
                             embedding_model=embedding_model,
-                            embedding_enabled=embedding_enabled,
-                        )
-
-                        semantic_candidates = scored_chunks[:candidate_pool]
-                        page_focus_chunks = []
-                        page_focus_meta = {'reason': 'no explicit page hints'}
-                        if query_pages:
-                            page_focus_chunks, page_focus_meta = _build_pdf_page_focus_chunks(
-                                doc_info,
-                                query_pages,
-                                neighbor_radius=page_focus_neighbor_radius,
-                                max_chars=min(page_focus_max_chars, pdf_context_max_chars)
-                            )
-
-                        selected_chunks, merge_meta = document_retriever.merge_page_and_semantic_candidates(
-                            query=query_text,
-                            scored_chunks=semantic_candidates,
-                            page_focus_chunks=page_focus_chunks,
-                            page_hints=query_pages,
+                            persist_directory=chroma_persist_directory,
                             top_k=effective_retrieval_top_k,
                             max_chars=min(effective_retrieval_max_chars, pdf_context_max_chars),
+                            candidate_pool=candidate_pool,
+                            vector_weight=hybrid_vector_weight,
+                            bm25_weight=hybrid_bm25_weight,
                         )
 
-                        retrieval_meta = {
-                            'strategy': merge_meta.get('strategy', scored_meta.get('strategy', 'lexical')),
-                            'selected': int(merge_meta.get('selected', len(selected_chunks))),
-                            'total': int(merge_meta.get('total_candidates', len(scored_chunks))),
-                            'confidence': float(merge_meta.get('confidence', 0.0)),
-                            'embedding_used': bool(scored_meta.get('embedding_used', False)),
-                            'embedding_failed': bool(scored_meta.get('embedding_failed', False)),
-                            'candidate_pool': candidate_pool,
-                            'page_focus_candidates': int(merge_meta.get('page_focus_candidates', 0)),
-                            'requested_pages': list(page_focus_meta.get('requested_pages') or []),
-                            'focused_pages': list(page_focus_meta.get('focused_pages') or []),
-                            'low_confidence_expanded': False,
-                        }
+                        retrieval_meta = dict(retrieval_meta)
+                        retrieval_meta['candidate_pool'] = candidate_pool
+                        retrieval_meta['low_confidence_expanded'] = False
 
-                        if query_pages:
-                            if page_focus_chunks:
-                                context_text += (
-                                    f"[PDF page-direct retrieval: requested pages {retrieval_meta.get('requested_pages', [])}, "
-                                    f"focused pages {retrieval_meta.get('focused_pages', [])}.]\n"
-                                )
-                            else:
-                                page_focus_reason = str(page_focus_meta.get('reason') or '').strip()
-                                if page_focus_reason and doc_info.get('archive_status') != 'disabled':
-                                    context_text += f"[PDF page-direct retrieval unavailable: {page_focus_reason}.]\n"
-
-                        if (
-                            expand_low_confidence
-                            and float(retrieval_meta.get('confidence', 0.0)) < low_confidence_threshold
-                            and len(scored_chunks) > candidate_pool
-                        ):
-                            expanded_pool = min(80, max(candidate_pool + effective_retrieval_top_k, candidate_pool * 2))
-                            expanded_candidates = scored_chunks[:expanded_pool]
-                            selected_chunks, expanded_meta = document_retriever.merge_page_and_semantic_candidates(
+                        if expand_low_confidence and float(retrieval_meta.get('confidence', 0.0)) < low_confidence_threshold:
+                            expanded_pool = min(160, max(candidate_pool + effective_retrieval_top_k, candidate_pool * 2))
+                            selected_chunks, expanded_meta = document_retriever.retrieve_hybrid_chunks(
+                                document_id=str(doc_info.get('_pdf_index_id') or f"{conversation_id}:{filename}"),
+                                chunks=structured_chunks,
                                 query=query_text,
-                                scored_chunks=expanded_candidates,
-                                page_focus_chunks=page_focus_chunks,
-                                page_hints=query_pages,
-                                top_k=min(50, effective_retrieval_top_k + 4),
+                                embedding_client=client if (embedding_enabled and embedding_model) else None,
+                                embedding_model=embedding_model,
+                                persist_directory=chroma_persist_directory,
+                                top_k=min(80, effective_retrieval_top_k + 8),
                                 max_chars=min(effective_retrieval_max_chars, pdf_context_max_chars),
+                                candidate_pool=expanded_pool,
+                                vector_weight=hybrid_vector_weight,
+                                bm25_weight=hybrid_bm25_weight,
                             )
                             retrieval_meta['selected'] = int(expanded_meta.get('selected', len(selected_chunks)))
-                            retrieval_meta['total'] = int(expanded_meta.get('total_candidates', len(scored_chunks)))
+                            retrieval_meta['total'] = int(expanded_meta.get('total', len(structured_chunks)))
                             retrieval_meta['confidence'] = float(expanded_meta.get('confidence', retrieval_meta.get('confidence', 0.0)))
                             retrieval_meta['candidate_pool'] = expanded_pool
                             retrieval_meta['low_confidence_expanded'] = True
@@ -2713,12 +2801,16 @@ def build_document_context(conversation_id, system_prompt, support_images, suppo
                     retrieval_note += ".]"
                     context_text += retrieval_note + "\n"
                 else:
-                    extracted_pdf_text = str(doc_info.get('text') or '').strip()
+                    if not extracted_pdf_text:
+                        extracted_pdf_text = str(doc_info.get('text') or '').strip()
 
                 if extracted_pdf_text:
-                    context_text += extracted_pdf_text[:pdf_context_max_chars]
-                    if len(extracted_pdf_text) > pdf_context_max_chars:
-                        context_text += "\n[... content truncated ...]"
+                    if pdf_no_truncation:
+                        context_text += extracted_pdf_text
+                    else:
+                        context_text += extracted_pdf_text[:pdf_context_max_chars]
+                        if len(extracted_pdf_text) > pdf_context_max_chars:
+                            context_text += "\n[... content truncated ...]"
                     context_text += "\n"
                 else:
                     context_text += "[PDF uploaded, but no extractable text was found.]\n"
