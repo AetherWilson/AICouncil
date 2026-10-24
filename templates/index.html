@@ -2928,7 +2928,7 @@
                 <div class="conversation-window" id="conversationWindow">
                     <div class="message ai">
                         <div class="message-header">System</div>
-                        <div class="message-content">Welcome to AI Council! Open Backend to monitor council roles and logs while you chat.</div>
+                        <div class="message-content">Welcome to AI Council! Open Backend to monitor council members and logs while you chat.</div>
                     </div>
                 </div>
                 <div class="input-area" id="inputArea">
@@ -2942,6 +2942,7 @@
                     </div>
                     <div class="input-container" id="messageDropZone" title="Drop PDF/image/Word files here or press Ctrl+V">
                         <textarea id="messageInput" placeholder="Type your message here... (Shift+Enter for new line)" autocomplete="off" rows="1"></textarea>
+                        <button id="councilUpdateButton" style="display:none" onclick="sendCouncilUpdate()" title="Apply this message at the next stage boundary">Update council</button>
                         <button id="sendButton">Send</button>
                     </div>
                 </div>
@@ -2952,7 +2953,8 @@
                     <h2>🖥 Backend</h2>
                     <div class="backend-grid">
                         <div class="backend-panel">
-                            <h3>Council Roles</h3>
+                            <h3>Council · Speaking Order</h3>
+                            <p id="councilAgenda" style="color:#96a0b2;font-size:12px;line-height:1.6">Independent proposals → ordered discussion → chair draft → private ballots</p>
                             <div id="councilRolesList">
                                 <div style="color: #858585; font-style: italic;">Loading council...</div>
                             </div>
@@ -3085,7 +3087,7 @@
 
         function normalizeRoleLabel(role) {
             if (!role) return '';
-            return role.replace(/_/g, ' ');
+            return (councilRoles[role] && councilRoles[role].name) || role.replace(/_/g, ' ');
         }
 
         function escapeForAttributeSelector(value) {
@@ -3096,6 +3098,8 @@
         }
 
         function normalizeSubroleRoleName(role) {
+            // Specialist renderers are retained only for legacy chat history.
+            if (Object.prototype.hasOwnProperty.call(councilRoles, role)) return '';
             const raw = String(role || '').trim().toLowerCase();
             if (!raw) return '';
 
@@ -3861,7 +3865,7 @@
 
         function isFinalResponseName(name) {
             const sender = (name || '').toLowerCase();
-            return sender.includes('leader') && sender.includes('final response');
+            return sender.includes('final response');
         }
 
         function isFinalResponseData(data) {
@@ -3876,6 +3880,7 @@
             if (!data) return false;
             if (data.internal_orchestration === true) return false;
             if (isFinalResponseData(data)) return false;
+            if (String(data.event_kind || '').startsWith('council_')) return true;
             const botId = (data.bot_id || '').toLowerCase();
             if (botId.startsWith('council-')) return true;
             const sender = (data.bot_name || '').toLowerCase();
@@ -3889,7 +3894,7 @@
             if (isFinalResponseName(msg.sender)) return false;
             const sender = (msg.sender || '').toLowerCase().trim();
             if (sender === 'system') return false;
-            if (msg.is_council_intermediate === true) return true;
+            if (msg.is_council_intermediate === true || String(msg.event_kind || '').startsWith('council_')) return true;
             const roleHints = ['leader', 'markreader', 'researcher', 'creator', 'creative writer', 'analyzer', 'verifier', 'memwriter', 'memory management'];
             return roleHints.some(hint => sender.includes(hint));
         }
@@ -3996,7 +4001,7 @@
             tp.group_container_ids[tp.active_run_group_id] = tp.active_container_id;
             container.innerHTML = `
                 <div class="thinking-process-header" title="Collapse/expand thinking process">
-                    <span class="thinking-process-label">Thinking Process</span>
+                    <span class="thinking-process-label">Council Discussion</span>
                     <span class="thinking-process-active"></span>
                     <span class="thinking-process-state status-idle">Idle</span>
                     <span class="thinking-process-toggle">&#9660;</span>
@@ -4768,7 +4773,7 @@
             const previewEl = container.querySelector('.thinking-process-preview');
             const statusEl = container.querySelector('.thinking-process-state');
             if (activeEl) {
-                activeEl.textContent = tp.active_source ? tp.active_source : (status === 'running' ? 'Leader' : '');
+                activeEl.textContent = tp.active_source ? tp.active_source : (status === 'running' ? 'Council' : '');
             }
             if (statusEl) {
                 statusEl.textContent = thinkingProcessStatusLabel(status);
@@ -4824,12 +4829,7 @@
                 size: Number(doc && doc.size ? doc.size : 0),
                 pages: Number.isFinite(Number(doc && doc.pages)) ? Number(doc.pages) : null,
                 width: Number.isFinite(Number(doc && doc.width)) ? Number(doc.width) : null,
-                height: Number.isFinite(Number(doc && doc.height)) ? Number(doc.height) : null,
-                pdf_brief_summary: doc && doc.pdf_brief_summary ? String(doc.pdf_brief_summary) : '',
-                pdf_brief_topics: Array.isArray(doc && doc.pdf_brief_topics) ? doc.pdf_brief_topics.map(topic => String(topic || '')) : [],
-                pdf_brief_confidence: Number.isFinite(Number(doc && doc.pdf_brief_confidence)) ? Number(doc.pdf_brief_confidence) : null,
-                pdf_brief_model: doc && doc.pdf_brief_model ? String(doc.pdf_brief_model) : '',
-                pdf_brief_generated_at: doc && doc.pdf_brief_generated_at ? String(doc.pdf_brief_generated_at) : ''
+                height: Number.isFinite(Number(doc && doc.height)) ? Number(doc.height) : null
             })).filter(doc => doc.filename);
         }
 
@@ -4839,17 +4839,7 @@
                 : 'size n/a';
 
             if (doc.type === 'pdf') {
-                const confidenceText = Number.isFinite(doc.pdf_brief_confidence)
-                    ? `brief ${(doc.pdf_brief_confidence).toFixed(2)}`
-                    : 'brief n/a';
-                const briefSummary = (doc.pdf_brief_summary || '').trim();
-                if (briefSummary) {
-                    const shortBrief = briefSummary.length > 72
-                        ? `${briefSummary.slice(0, 72)}...`
-                        : briefSummary;
-                    return `${sizeText} • ${confidenceText} • ${shortBrief}`;
-                }
-                return `${sizeText} • ${confidenceText}`;
+                return `${sizeText} • original PDF attached directly`;
             }
 
             if (doc.type === 'word') {
@@ -5201,7 +5191,9 @@
         async function loadCouncil() {
             try {
                 const response = await fetch('/api/council');
-                councilRoles = await response.json();
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Invalid council configuration');
+                councilRoles = data;
                 displayCouncilRoles();
             } catch (error) {
                 console.error('Error loading council:', error);
@@ -5211,56 +5203,16 @@
 
         function displayCouncilRoles() {
             const container = document.getElementById('councilRolesList');
-            const roleIcons = {
-                'MarkReader': '📄',
-                'MD_Reader': '📄',
-                'Leader': '👑',
-                'Researcher': '🔬',
-                'Creator': '✍️',
-                'Creative_Writer': '✍️',
-                'Analyzer': '📊',
-                'Verifier': '🔍'
-            };
-            const roleLabels = {
-                'MarkReader': 'MarkReader',
-                'MD_Reader': 'MarkReader',
-                'Leader': 'Leader',
-                'Researcher': 'Researcher',
-                'Creator': 'Creator',
-                'Creative_Writer': 'Creator',
-                'Analyzer': 'Analyzer',
-                'Verifier': 'Verifier'
-            };
-            const roleDisplayOrder = [
-                'Leader',
-                'MarkReader',
-                'Researcher',
-                'Creator',
-                'Analyzer',
-                'Verifier'
-            ];
-
-            const orderedRoles = [
-                ...roleDisplayOrder.filter(role => Object.prototype.hasOwnProperty.call(councilRoles, role)),
-                ...Object.keys(councilRoles).filter(role => !roleDisplayOrder.includes(role))
-            ];
-            
-            let html = '';
-            for (const role of orderedRoles) {
-                const info = councilRoles[role];
-                const icon = roleIcons[role] || '📄';
-                const label = roleLabels[role] || role;
-                html += `
-                    <div class="council-role-item" data-role="${role}">
-                        <div class="council-role-info">
-                            <div class="council-role-name">${icon} ${label}</div>
-                            <div class="council-role-model">${info.model_name}</div>
-                        </div>
-                        <span class="council-role-light" data-role="${role}"></span>
+            const entries = Object.entries(councilRoles).sort((a, b) => a[1].order - b[1].order);
+            container.innerHTML = entries.map(([id, info]) => `
+                <div class="council-role-item" data-role="${id}">
+                    <div class="council-role-info">
+                        <div class="council-role-name">${info.order}. ${info.is_chair ? '♛ ' : ''}${escapeHtml(info.name)}${info.is_chair ? ' · Chair' : ''}</div>
+                        <div class="council-role-model">${escapeHtml(info.model_name)}</div>
                     </div>
-                `;
-            }
-            container.innerHTML = html;
+                    <span class="council-role-light" data-role="${id}"></span>
+                </div>
+            `).join('');
         }
 
         function updateCouncilRoleStatus(role, status) {
@@ -6991,6 +6943,15 @@
             autoSaveTempChat();
         }
 
+        function sendCouncilUpdate() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            if (!isAIProcessing || !message) return;
+            socket.emit('send_message', { chat_id: getActiveChatId(), message });
+            addConsoleLog('User update queued for the next council stage boundary.');
+            input.value = '';
+        }
+
         function sendMessage() {
             const sendBtn = document.getElementById('sendButton');
             
@@ -7078,7 +7039,9 @@
 
         function setProcessingState(processing) {
             isAIProcessing = processing;
+            document.getElementById('councilUpdateButton').style.display = processing ? '' : 'none';
             const sendBtn = document.getElementById('sendButton');
+            sendBtn.disabled = false;
             if (processing) {
                 sendBtn.textContent = '⏹ Stop';
                 sendBtn.classList.add('stop-btn');
@@ -7100,7 +7063,10 @@
             socket.emit('stop_generation', { chat_id: targetChatId });
             addConsoleLog(`Stopping AI generation${targetChatId ? ` for ${targetChatId}` : ''}...`);
             if (!chatId || targetChatId === getActiveChatId()) {
-                setProcessingState(false);
+                const button = document.getElementById('sendButton');
+                button.disabled = true;
+                button.textContent = 'Stopping…';
+                document.getElementById('councilUpdateButton').style.display = 'none';
             }
         }
 
@@ -7210,7 +7176,7 @@
             messageDiv.className = 'message ai streaming';
             messageDiv.innerHTML = `
                 <div class="message-wrapper">
-                    <div class="message-header">${data.bot_name}</div>
+                    <div class="message-header">${escapeHtml(data.bot_name || 'AI')}</div>
                     <div class="thinking-block" style="display:none">
                         <div class="thinking-header" onclick="toggleThinking(this)">
                             <span class="thinking-toggle">▶</span>
@@ -7340,7 +7306,10 @@
                 role_name: data.role_name || null,
                 thinking: data.thinking || '',
                 is_final_response: (typeof data.is_final_response === 'boolean') ? data.is_final_response : false,
-                stream_status: data.stopped ? 'stopped' : 'done',
+                stream_status: data.stream_status || (data.stopped ? 'stopped' : 'done'),
+                council_phase: data.council_phase || null,
+                council_round: data.council_round ?? null,
+                council_payload: data.council_payload || null,
                 target_role: data.target_role || null,
                 debate_cycle: (data.debate_cycle !== undefined && data.debate_cycle !== null) ? data.debate_cycle : null,
                 event_kind: data.event_kind || null,
@@ -7542,6 +7511,9 @@
             const mdCollapseBtn = entry.isNonFinal ? '' : '<button class="md-collapse-btn" onclick="toggleMarkdownCollapse(this)" title="Collapse/expand content">&#9660;</button>';
             messageDiv.setAttribute('data-raw-content', data.message);
             messageDiv.setAttribute('data-thinking', data.thinking || '');
+            messageDiv.setAttribute('data-council-phase', data.council_phase || '');
+            messageDiv.setAttribute('data-council-round', data.council_round ?? '');
+            messageDiv.setAttribute('data-council-payload', JSON.stringify(data.council_payload || {}));
             messageDiv.setAttribute('data-is-final-response', isFinalResponse ? 'true' : 'false');
             messageDiv.setAttribute('data-message-id', messageId);
             messageDiv.setAttribute('data-subrole-hidden', shouldHideSubroleIntermediate ? 'true' : 'false');
@@ -7574,7 +7546,7 @@
             messageDiv.classList.remove('streaming');
             messageDiv.innerHTML = `
                 <div class="message-wrapper">
-                    <div class="message-header">${data.bot_name}${mdCollapseBtn}</div>
+                    <div class="message-header">${escapeHtml(data.bot_name || 'AI')}${mdCollapseBtn}</div>
                     ${thinkingBlock}
                     <div class="message-content">${formattedContent}</div>
                     ${actionUI}
@@ -7719,15 +7691,15 @@
             });
         }
 
-        function isLeaderFinalResponseMessage(msg) {
+        function isCouncilFinalResponseMessage(msg) {
             if (!msg || msg.type !== 'ai') return false;
-            return isFinalResponseName(msg.sender || '');
+            return msg.is_final_response === true || isFinalResponseName(msg.sender || '');
         }
 
         function applyCollapseOnChatSwap(messageDiv, msg, isCouncilIntermediate) {
             if (!messageDiv || !msg || msg.type !== 'ai') return;
 
-            const keepExpanded = isLeaderFinalResponseMessage(msg);
+            const keepExpanded = isCouncilFinalResponseMessage(msg);
             if (keepExpanded) {
                 messageDiv.classList.remove('collapsed');
                 messageDiv.classList.remove('md-collapsed');
@@ -7747,6 +7719,7 @@
                 const state = ensureConversation(chatId);
                 if (state) {
                     state.is_generating = false;
+                    state.pending_message_id = null;
                     if (!['error', 'stopped'].includes(String(state.thinking_process.status || '').toLowerCase())) {
                         state.thinking_process.status = 'done';
                     }
@@ -7788,6 +7761,7 @@
                 const conversationWindow = getConvWindow();
                 if (conversationWindow) {
                     ensureThinkingProcessContainer(conversationWindow, state, chatId, { forceNew: false }, runGroupId);
+                    state.thinking_process.new_run_pending = false;
                 }
                 collapseOtherThinkingContainers(chatId, runGroupId);
             }
@@ -7853,7 +7827,7 @@
                     state.thinking_process.active_run_group_id = data.run_group_id;
                 }
                 state.thinking_process.status = 'running';
-                state.thinking_process.active_source = normalizeRoleLabel(data.role);
+                state.thinking_process.active_source = normalizeRoleLabel(data.role) + (data.council_phase ? ' · ' + data.council_phase : '');
                 const activeEntry = state.pending_message_id ? state.streaming[state.pending_message_id] : null;
                 if (activeEntry) {
                     updateThinkingPreviewFromEntry(chatId, activeEntry);
@@ -8324,6 +8298,9 @@
                     if (msg.run_id) {
                         messageDiv.setAttribute('data-run-id', msg.run_id);
                     }
+                    messageDiv.setAttribute('data-council-phase', msg.council_phase || '');
+                    messageDiv.setAttribute('data-council-round', msg.council_round ?? '');
+                    messageDiv.setAttribute('data-council-payload', JSON.stringify(msg.council_payload || {}));
                     if (msg.role_name) {
                         messageDiv.setAttribute('data-role-name', msg.role_name);
                     }
@@ -8689,6 +8666,9 @@
                         model_id: msg.getAttribute('data-model-id') || null,
                         target_role: msg.getAttribute('data-target-role') || null,
                         event_kind: msg.getAttribute('data-event-kind') || null,
+                        council_phase: msg.getAttribute('data-council-phase') || null,
+                        council_round: msg.getAttribute('data-council-round') === null ? null : Number(msg.getAttribute('data-council-round')),
+                        council_payload: parseStructuredJson(msg.getAttribute('data-council-payload') || '{}'),
                         debate_cycle: msg.getAttribute('data-debate-cycle') || null,
                         thinking: msg.getAttribute('data-thinking') || '',
                         is_final_response: msg.getAttribute('data-is-final-response') === 'true',

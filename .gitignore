@@ -8,18 +8,8 @@ gpt_responses/
 uploads/
 !uploads/.gitkeep
 test_pdf_upload_to_ai.py
-# Skills: ignore everything under skills except core runtime skills
-skills/*
-!skills/analyzer-skill/
-!skills/analyzer-skill/**
-!skills/creator-skill/
-!skills/creator-skill/**
-!skills/verifier-skill/
-!skills/verifier-skill/**
-!skills/researcher-skill/
-!skills/researcher-skill/**
-!skills/pdfer-skill/
-!skills/pdfer-skill/**
+# Local persistent memory
+skills/
 
 # Python environment and cache
 .venv/

@@ -1,301 +1,164 @@
 # AI Council
 
-AI Council is a local multi-model chat app that lets you send one prompt to a configurable skill-first agent workflow, stream outputs live, and manage chats through a lightweight web UI.
+AI Council is a local multi-model chat app built with Python, Flask and Socket.IO.
+Every member works on the **whole problem**, without a specialist identity. Members
+submit independent proposals, discuss in a fixed speaking order, and review the
+chair's draft before it becomes the final answer.
 
-It is built around a single Leader-agent loop that can select markdown skills, execute optional per-skill scripts, and manage persistent memory, all routed through an OpenAI-compatible API client.
+## Council procedure
 
-> ## Vibe coded notice
-> This project is **vibe coded**: it was built iteratively and fast, with a strong focus on getting useful behavior on screen quickly. Expect practical structure, evolving conventions, and occasional rough edges.
+1. **Independent proposals.** Every enabled seat, including the chair, submits a
+   complete proposal. Each receives the same prior conversation, source files and
+   initial instructions, without seeing the other proposals.
+2. **Ordered discussion.** Seats speak one at a time in the order of `council.members`.
+   Each seat gets exactly one turn per round and can address any aspect of the
+   problem. Later speakers see completed turns. A faster model never gets extra turns.
+   Discussion ends after a full round if nobody requests another round, or at the
+   configured round limit.
+3. **Chair draft.** The chair combines the useful ideas, evidence, uncertainties and
+   unresolved disagreements into a complete answer.
+4. **Private review.** Non-chair members review the exact draft, in seat order.
+   Each submits `approve`, `request_changes`, `reject` or `abstain`, with a reason.
+   Current ballots are hidden from subsequent voters and the UI until all reviews
+   finish. The chair does not vote on its own draft.
+5. **Revision and re-vote.** Approval requires **more than half of all enabled
+   non-chair seats**. Failed, timed-out, malformed or abstaining ballots do not
+   reduce that denominator. A rejected draft is revised and the entire electorate
+   votes again, up to `max_revisions`.
+6. **Final answer.** The approved draft is preserved verbatim, with the result and
+   ballot reasons shown alongside it. There is no additional model rewrite after
+   approval. If no draft passes, the final output is explicitly marked **Not approved**.
+   Majority agreement is not treated as factual proof.
 
-## What it does
+Every turn has a total time limit. A failed seat is marked and skipped; late output
+cannot enter a later turn. Stop cancels the sitting and prevents further turns or
+an approved final answer. The controller may finish before a blocked provider
+connection closes, but output from that connection is discarded.
 
-- Run a skill-first Leader-agent conversation from one UI
-- Stream responses in real time with Socket.IO
-- Configure role-to-model assignments in `config.json`
-- Manage available models and capabilities in `model.json`
-- Upload **PDFs**, **images**, and **Word OpenXML files** as chat context
-- Save named chats and auto-save temporary chats
-- Maintain persistent cross-chat memory in `skills/memories/memory.md`
-- Inspect backend state from the built-in **Backend** tab
-- Run a quick **Uptest** that sends a hello request to each configured council role and reports latency/status
+During generation, type a correction and choose **Update council**. Updates are
+applied at the next discussion/draft boundary so the independent proposal inputs
+stay consistent. An update received during drafting or voting invalidates approval
+of that draft and requires a revision and new ballot. If the revision budget is
+exhausted, the result remains Not approved.
 
-## Current architecture
+## Setup
 
-### Backend
+```bash
+git clone https://github.com/AetherWilson/AICouncil.git
+cd AICouncil
+python -m venv .venv
+# Linux/macOS:
+source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
 
-- **Python**
-- **Flask** for HTTP routes
-- **Flask-SocketIO** for live streaming updates
-- **OpenAI Python client** with optional custom `base_url`
+Copy `.env.example` to `.env` and fill in your OpenAI-compatible endpoint:
 
-### Frontend
+```env
+gpt_api_key="your-api-key"
+gpt_redirect_url=""
+```
 
-- Single-page HTML interface in `templates/index.html`
-- Markdown rendering via `marked`
-- Syntax highlighting via `highlight.js`
-- Math rendering via `KaTeX`
-
-### Utilities
-
-- `Pillow` for image handling
-- `opencc` for Simplified → Traditional Chinese conversion support
-- `python-dotenv` for environment loading
-- `httpx` for API transport
-
-## Project structure
-
-Key files and folders:
-
-- `main.py` — main Flask + Socket.IO app
-- `GPT_handle.py` — model request handling and streaming helpers
-- `services/config_store.py` — cached config/model loading
-- `services/memory_manager.py` — persistent memory file management
-- `templates/index.html` — main web UI
-- `config.json` — active role/model config
-- `config.json.example` — starter config
-- `model.json` — enabled model catalog and capability metadata
-- `skills/` — optional markdown skills and memory files
-- `chat_history/` — saved chats
-- `temp_chat_history/` — auto-saved temporary chats
-- `uploads/` — uploaded PDFs, images, and Word OpenXML files
-- `gpt_responses/` — request/response debug logs
-
-## Features in more detail
-
-### 1. Leader-agent workflow
-
-The app now runs a single Leader-agent planning loop. The Leader can:
-
-- call markdown skills discovered from `skills/`
-- optionally execute `skills/<skill>/scripts/*.py` tool scripts when planned
-- produce a final response
-- run memory extraction/writeback through `MemWriter` logic in `main.py`
-
-Key model assignments live in `config.json`.
-
-Example:
+Copy `config.json.example` to `config.json`, then select your models:
 
 ```json
 {
-  "Leader": "gpt-4o",
-  "lite_model": "gpt-4o-mini",
   "history_context_mode": "final_only",
-  "skills": {
+  "council": {
+    "chair": "chair",
+    "members": [
+      {"id": "chair", "name": "Chair", "model": "gpt-4o", "enabled": true},
+      {"id": "member-1", "name": "Member 1", "model": "gpt-4o-mini", "enabled": true},
+      {"id": "member-2", "name": "Member 2", "model": "gpt-4o", "enabled": true}
+    ],
+    "discussion_rounds": 2,
+    "max_revisions": 1,
+    "turn_timeout_seconds": 120
+  },
+  "memory": {
     "enabled": true,
-    "folder": "skills",
-    "allow_legacy_flat": true,
-    "model_map": {
-      "researcher-skill": "gpt-4o-mini",
-      "creator-skill": "gpt-4o",
-      "analyzer-skill": "gpt-4o",
-      "verifier-skill": "gpt-4o",
-      "pdfer-skill": "gemini-3.1-pro-preview"
-    }
+    "auto_extract": false,
+    "path": "skills/memories/memory.md"
   }
 }
 ```
 
-`lite_model` is used for lightweight internal tasks such as markdown skill file selection and memory-model fallback.
+- The member list determines speaking order. The chair can appear anywhere in it.
+- At least two enabled seats are required: the chair and one reviewer. IDs must
+  be unique, begin with a letter and contain only letters, digits, `_` or `-` (up
+  to 64 characters). Models may be reused for different seats, although selecting
+  different models can provide more varied proposals.
+- `discussion_rounds` is the maximum number of discussion rounds after proposals
+  (1–8). `max_revisions` counts revisions after the initial draft (0–5).
+- `turn_timeout_seconds` limits the entire turn, including streaming (1–600).
+  There are no automatic helper-model fallbacks or retries in council turns.
+- `history_context_mode` can be `final_only` (prior user turns and final answers)
+  or `all` (also include previous council contributions). User updates are retained
+  in either mode. Each sitting uses a frozen snapshot of history and source files.
+- `model.json` remains an optional catalog for model display names and the Models
+  API. The council uses the exact model IDs in its seat configuration.
 
-`history_context_mode` controls what prior assistant outputs are sent back into later model calls:
+Run `python main.py` (or `main.bat` on Windows), then open
+<http://localhost:5000>. The Backend tab shows the roster in speaking order and
+includes a user-triggered Uptest for checking connectivity to each seat's model.
 
-- `final_only` (recommended): include only prior Leader final responses plus user turns
-- `all`: include all prior assistant outputs (agent steps + intermediate outputs + final)
+## Files and memory
 
-### 2. Model registry
+PDFs and images are attached **directly to every model request**, including draft
+reviews. The configured models/endpoint are assumed to support native PDF and
+image inputs through the OpenAI-compatible API. Capability flags do not route
+files through another model. A missing/unreadable file fails the turn instead of
+silently answering without that source.
 
-`model.json` is the source of truth for available models. Each entry can include:
+Word OpenXML files (`.docx`, `.docm`, `.dotx`, `.dotm`) are extracted locally with
+`python-docx` and included as text. Legacy `.doc` files are unsupported. Uploads
+are limited to 16 MB per request.
 
-- `id`
-- `name`
-- `enabled`
-- `price`
-- `provider`
-- `support_images`
-- `support_pdf_input`
+The former researcher, creator, analyzer, verifier and PDF-reader skills, skill
+selection models, upload-time PDF summaries and model-based memory extraction
+have been removed. Uploading/restoring a PDF makes **no LLM request**. Existing
+persistent memory can still be read into council context and managed manually
+through the Memory UI/API or the configured file. `auto_extract` is always false.
 
-This makes it easy to expose only the models you actually want available in the UI.
+## Upgrading an older installation
 
-### 3. File uploads
+An existing `config.json` without a `council` object is adapted in memory:
+`Leader` becomes the chair; existing specialist model assignments become neutral
+numbered seats in their former order. Duplicate specialist model IDs are grouped
+into one seat. If no reviewer model is configured, one neutral reviewer uses the
+chair model. The old PDF reader is not promoted to a seat. Existing settings and
+credentials are not overwritten; use the new config format to explicitly choose
+your electorate and speaking order. Old `skills`, `lite_model` and `agent_loop`
+settings no longer execute anything.
 
-The current app supports:
+Old saved chats remain readable. New records retain member/model identity,
+phase, round, draft version, ballots and approval status. The UI groups the council
+record in an expandable **Council Discussion** area and highlights the final answer.
 
-- `.pdf`
-- `.jpg`
-- `.jpeg`
-- `.png`
-- `.docx`
-- `.docm`
-- `.dotx`
-- `.dotm`
+## Project structure
 
-Legacy `.doc` files are not supported.
+- `main.py`: HTTP/Socket.IO routes, ordered-turn streaming, attachments and persistence
+- `services/council_workflow.py`: proposals, discussion, drafting and private voting
+- `services/config_store.py`: seat validation, defaults and legacy configuration adapter
+- `services/memory_manager.py`: local persistent memory and manual editing
+- `GPT_handle.py`: OpenAI-compatible requests and native file inputs
+- `templates/index.html`: chat UI and council record
+- `tests/`: deterministic workflow and Flask integration tests with simulated models
 
-Uploaded files are stored in `uploads/` and registered against the active conversation.
+Chats (`chat_history/`, `temp_chat_history/`), uploads, memory, credentials and
+request logs (`gpt_responses/`) stay local and are excluded from Git. Old temporary
+chats are cleaned up automatically on subsequent days.
 
-For PDFs:
-
-- upload-time brief is generated automatically by `pdfer-skill` model routing
-- Leader reads the brief before deciding whether deeper PDF reads are needed
-- for PDF-related asks, Leader is forced to call `pdfer-skill` first
-- `pdfer-skill` receives filename-scoped PDF inputs and can be called repeatedly for iterative discovery
-- brief metadata (summary/topics/confidence) is stored with each uploaded PDF and persisted with chats
-
-For images:
-
-- images are converted to data URLs for model input where supported
-
-For Word OpenXML files:
-
-- text is extracted on the backend
-- extracted content is injected into role context for all models
-
-### 4. Chat persistence
-
-There are two kinds of chat storage:
-
-- **Saved chats** in `chat_history/`
-- **Temporary chats** in `temp_chat_history/`
-
-Temporary chats are meant for same-day work and are cleaned up automatically when old.
-
-### 5. Persistent memory
-
-Cross-chat memory is managed through:
-
-- `services/memory_manager.py`
-- `skills/memories/memory.md`
-
-The memory system is intended to store useful long-lived context and inject it into later conversations.
-
-### 6. Skills support
-
-Skills are loaded from `skills/` and can provide both markdown instructions and optional local scripts.
-
-The flow is:
-
-1. Persistent memory from `skills/memories/memory.md` is loaded into Leader context by default
-2. The Leader-agent can call discovered skills directly from `skills/`
-3. A planned local tool call can run `scripts/<name>.py` inside the target skill folder
-
-Local script execution is sandboxed to the skill's own `scripts/` directory and expects JSON on stdout.
-
-### 7. Backend monitoring
-
-The UI includes a **Backend** tab where you can:
-
-- inspect backend-related panels
-- run an **Uptest** against configured council models
-- view role/model availability and response timing behavior
-
-## Requirements
-
-From `requirements.txt`:
-
-- `flask`
-- `flask-socketio`
-- `python-socketio`
-- `openai`
-- `httpx`
-- `python-dotenv`
-- `Pillow`
-- `python-docx`
-- `opencc`
-
-## Setup
-
-### 1. Clone the repo
+## Validation
 
 ```bash
-git clone <your-repo-url>
-cd Council
+python -m unittest discover -s tests -v
+python -m compileall -q main.py GPT_handle.py services tests
 ```
 
-### 2. Create and activate a virtual environment
-
-Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-Copy `.env.example` to `.env` and fill in your values:
-
-```env
-gpt_api_key="your-api-key-here"
-gpt_redirect_url="your-redirect-url-here"
-```
-
-Notes:
-
-- `gpt_api_key` is your API key
-- `gpt_redirect_url` can point to an OpenAI-compatible endpoint
-- `gpt_redirect_url` can be left empty if you want the default OpenAI endpoint behavior
-
-### 5. Configure council roles
-
-Copy:
-
-- `config.json.example` → `config.json`
-
-Then edit the role-to-model mapping as needed.
-
-### 6. Review enabled models
-
-Edit `model.json` to decide:
-
-- which models are enabled
-- provider labels
-- price tiers
-- image support
-- PDF support
-
-## Running the app
-
-### Windows helper
-
-```bat
-main.bat
-```
-
-### Direct run
-
-```bash
-python main.py
-```
-
-Then open:
-
-```text
-http://localhost:5000
-```
-
-## Basic usage
-
-1. Open the web UI
-2. Choose the bots/models you want involved
-3. Type a prompt
-4. Optionally upload PDFs or images
-5. Watch responses stream in live
-6. Save the chat or let it remain temporary
-
-## Notes and caveats
-
-- This is a **local app-first** workflow, not a polished SaaS product
-- The codebase is intentionally flexible and may change quickly
-- Uploaded files, saved chats, temp chats, and debug logs are stored locally
-- Some behavior depends on whether your configured endpoint supports specific model capabilities
-- The project contains practical logging and persistence features, but it is still very much an evolving tool
-
-## License
-
-Add your preferred license here if you plan to distribute the project.
+Tests use simulated models and do not require a paid API request. They cover
+ordered turns, independent proposal inputs, hidden ballots, majority thresholds,
+revisions, failure/timeout/cancellation handling, direct PDF inputs, metadata
+persistence and old chat compatibility. Real model quality and endpoint file
+support depend on the selected models and provider.

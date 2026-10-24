@@ -190,10 +190,10 @@ def _build_user_content(user_prompt, image_urls=None, pdf_inputs=None):
             file_path = pdf_info.get('filepath')
             if not file_path:
                 continue
+            filename = pdf_info.get('filename') or os.path.basename(file_path)
             try:
                 with open(file_path, 'rb') as pdf_file:
                     encoded = base64.b64encode(pdf_file.read()).decode('utf-8')
-                filename = pdf_info.get('filename') or os.path.basename(file_path)
                 content.append({
                     "type": "file",
                     "file": {
@@ -201,12 +201,8 @@ def _build_user_content(user_prompt, image_urls=None, pdf_inputs=None):
                         "file_data": f"data:application/pdf;base64,{encoded}"
                     }
                 })
-            except FileNotFoundError:
-                logger.warning("Skipping missing PDF file: %s", file_path)
-                continue
             except OSError as exc:
-                logger.warning("Skipping unreadable PDF file %s: %s", file_path, exc)
-                continue
+                raise ValueError(f"Cannot attach PDF: {filename}") from exc
 
     return content
 
@@ -301,7 +297,7 @@ OUTPUT
     log_info("gpt_responses", f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{model}.txt", log_content)
     return f"{prefix or ''}{content}"
 
-def completion_response_stream(model, system_prompt, user_prompt, chat_history=None, prefix=None, temperature=1.0, image_urls=None, pdf_inputs=None):
+def completion_response_stream(model, system_prompt, user_prompt, chat_history=None, prefix=None, temperature=1.0, image_urls=None, pdf_inputs=None, timeout_seconds=None, cancel_event=None):
     """
     使用OpenAI API以串流模式生成聊天回應，逐塊產出文字。
     :param model: 使用的模型名稱。
@@ -323,7 +319,10 @@ def completion_response_stream(model, system_prompt, user_prompt, chat_history=N
     )
 
     try:
-        response = client.chat.completions.create(
+        request_client = client.with_options(timeout=timeout_seconds, max_retries=0) if timeout_seconds is not None else client
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        response = request_client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
@@ -346,6 +345,8 @@ def completion_response_stream(model, system_prompt, user_prompt, chat_history=N
 
     try:
         for chunk in response:
+            if cancel_event is not None and cancel_event.is_set():
+                return
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta

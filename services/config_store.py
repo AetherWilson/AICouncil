@@ -8,29 +8,84 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 DEFAULT_COUNCIL_CONFIG = {
-    'Leader': 'gpt-4o',
     'history_context_mode': 'final_only',
-    'skills': {
-        'enabled': True,
-        'folder': 'skills',
-        'allow_legacy_flat': True,
-        'model_map': {
-            'researcher-skill': 'gpt-4o-mini',
-            'creator-skill': 'gpt-4o',
-            'analyzer-skill': 'gpt-4o',
-            'verifier-skill': 'gpt-4o',
-            'pdfer-skill': 'gemini-3.1-pro-preview'
-        }
-    },
-    'agent_loop': {
-        'warning_interval': 10
+    'council': {
+        'chair': 'chair',
+        'members': [
+            {'id': 'chair', 'name': 'Chair', 'model': 'gpt-4o', 'enabled': True},
+            {'id': 'member-1', 'name': 'Member 1', 'model': 'gpt-4o-mini', 'enabled': True},
+            {'id': 'member-2', 'name': 'Member 2', 'model': 'gpt-4o', 'enabled': True},
+        ],
+        'discussion_rounds': 2,
+        'max_revisions': 1,
+        'turn_timeout_seconds': 120,
     },
     'memory': {
         'enabled': True,
-        'auto_extract': True,
-        'path': os.path.join('skills', 'memories', 'memory.md')
-    }
+        'auto_extract': False,
+        'path': os.path.join('skills', 'memories', 'memory.md'),
+    },
 }
+
+
+def _bounded_int(value, default, minimum, maximum):
+    try:
+        return max(minimum, min(maximum, int(value)))
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
+def normalize_council(config):
+    """Validate explicit seats, preserving list order; adapt old model assignments."""
+    raw = config.get('council')
+    if raw is None:
+        defaults = DEFAULT_COUNCIL_CONFIG['council']
+        leader = str(config.get('Leader') or defaults['members'][0]['model']).strip()
+        models = []
+        skills = config.get('skills') if isinstance(config.get('skills'), dict) else {}
+        mapping = skills.get('model_map') if isinstance(skills.get('model_map'), dict) else {}
+        for role in ('Researcher', 'Creator', 'Creative_Writer', 'Analyzer', 'Verifier'):
+            model = str(config.get(role) or '').strip()
+            if model and model not in models:
+                models.append(model)
+        for key in ('researcher-skill', 'creator-skill', 'analyzer-skill', 'verifier-skill'):
+            model = str(mapping.get(key) or '').strip()
+            if model and model not in models:
+                models.append(model)
+        if not models:
+            models = [leader]
+        raw = dict(defaults, members=[{'id': 'chair', 'name': 'Chair', 'model': leader}]
+                   + [{'id': f'member-{i}', 'name': f'Member {i}', 'model': model}
+                      for i, model in enumerate(models, 1)])
+    if not isinstance(raw, dict):
+        raise ValueError('council must be an object')
+    seats = raw.get('members')
+    if not isinstance(seats, list):
+        raise ValueError('council.members must be an ordered list')
+    members, seen = [], set()
+    for seat in seats:
+        if not isinstance(seat, dict):
+            raise ValueError('Each council member must be an object')
+        if seat.get('enabled', True) is False:
+            continue
+        member_id = str(seat.get('id') or '').strip()
+        model = str(seat.get('model') or '').strip()
+        if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,63}', member_id) or member_id in seen:
+            raise ValueError('Council member IDs must be unique letters/digits/underscores/hyphens, starting with a letter')
+        if not model:
+            raise ValueError(f'Missing model for council member {member_id}')
+        seen.add(member_id)
+        members.append({'id': member_id, 'name': str(seat.get('name') or member_id).strip(),
+                        'model': model, 'enabled': True})
+    chair = str(raw.get('chair') or 'chair').strip()
+    if chair not in seen or len(members) < 2:
+        raise ValueError('Council needs an enabled chair and at least one other enabled member')
+    return {
+        'members': members, 'chair': chair,
+        'discussion_rounds': _bounded_int(raw.get('discussion_rounds'), 2, 1, 8),
+        'max_revisions': _bounded_int(raw.get('max_revisions'), 1, 0, 5),
+        'turn_timeout_seconds': _bounded_int(raw.get('turn_timeout_seconds'), 120, 1, 600),
+    }
 
 
 def _deep_merge(base: Any, override: Any) -> Any:
@@ -50,7 +105,7 @@ class ConfigStore:
         self.cache_ttl_seconds = cache_ttl_seconds
         self._cache: Dict[str, Dict[str, Any]] = {}
 
-    def _read_json_cached(self, filename: str, fallback: Any) -> Any:
+    def _read_json_cached(self, filename: str, fallback: Any, strict: bool = False) -> Any:
         path = os.path.join(self.base_dir, filename)
         now = time.time()
         entry = self._cache.get(path)
@@ -65,12 +120,18 @@ class ConfigStore:
         except FileNotFoundError:
             value = fallback
         except json.JSONDecodeError as exc:
+            if strict:
+                raise ValueError(f'Invalid JSON in {filename}') from exc
             logger.warning("Invalid JSON in %s: %s", path, exc)
             value = fallback
         except UnicodeDecodeError as exc:
+            if strict:
+                raise ValueError(f'Invalid encoding in {filename}') from exc
             logger.warning("Invalid encoding in %s: %s", path, exc)
             value = fallback
         except OSError as exc:
+            if strict:
+                raise ValueError(f'Unable to read {filename}') from exc
             logger.warning("Unable to read %s: %s", path, exc)
             value = fallback
 
@@ -81,10 +142,19 @@ class ConfigStore:
         return value
 
     def load_config(self) -> Dict[str, Any]:
-        config = self._read_json_cached('config.json', dict(DEFAULT_COUNCIL_CONFIG))
+        config = self._read_json_cached('config.json', {}, strict=True)
         if not isinstance(config, dict):
-            return dict(DEFAULT_COUNCIL_CONFIG)
+            raise ValueError('config.json must contain an object')
         merged = _deep_merge(DEFAULT_COUNCIL_CONFIG, config)
+        # Normalize the original council object so legacy config and missing seats
+        # are not accidentally hidden by deep-merged defaults.
+        merged['council'] = normalize_council(config) if config else normalize_council(DEFAULT_COUNCIL_CONFIG)
+        if not isinstance(merged.get('memory'), dict):
+            raise ValueError('memory must be an object')
+        merged['memory']['auto_extract'] = False
+        for key in ('Leader', 'lite_model', 'skills', 'agent_loop', 'MarkReader', 'MD_Reader',
+                    'Researcher', 'Creator', 'Creative_Writer', 'Analyzer', 'Verifier'):
+            merged.pop(key, None)
         return merged
 
     def load_models(self) -> List[Dict[str, Any]]:

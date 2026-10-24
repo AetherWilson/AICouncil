@@ -9,14 +9,15 @@ import importlib
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from datetime import datetime
 import re
-from GPT_handle import completion_response, completion_response_stream, convert_to_traditional_chinese, client
+from GPT_handle import completion_response_stream, client
 import os
 from werkzeug.utils import secure_filename
 from PIL import Image, UnidentifiedImageError
 import base64
 import logging
 from services.config_store import ConfigStore, get_model_info as resolve_model_info
-from services import memory_manager, skill_registry, skill_tool_runner
+from services import memory_manager
+from services.council_workflow import run_council, CouncilStopped, parse_object
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -26,36 +27,8 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 socketio = SocketIO(app, cors_allowed_origins="*")
 logger = logging.getLogger(__name__)
 
-PDF_READER_SKILL_ID = 'pdfer-skill'
-DEFAULT_PDF_READER_MODEL_ID = 'gemini-3.1-pro-preview'
-
-COUNCIL_ROLES = ['Leader']
-AGENT_SKILL_ROLE_NAMES = {
-    'researcher-skill': 'ResearcherSkill',
-    'creator-skill': 'CreatorSkill',
-    'analyzer-skill': 'AnalyzerSkill',
-    'verifier-skill': 'VerifierSkill',
-    PDF_READER_SKILL_ID: 'PDFReaderSkill'
-}
-DEFAULT_SKILLS_CONFIG = {
-    'enabled': True,
-    'folder': 'skills',
-    'max_files': 3,
-    'max_chars_per_file': 2500,
-    'max_total_chars': 7000
-}
-DEFAULT_MD_READER_CONFIG = {
-    'enabled': True,
-    'max_inventory_files': 40,
-    'preview_lines_per_file': 20,
-    'preview_chars_per_file': 1200
-}
 config_store = ConfigStore(base_dir='.')
 UPTEST_TIMEOUT_SECONDS = 30
-DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS = 30.0
-LONG_INPUT_TOKEN_THRESHOLD = 10000
-LONG_INPUT_FIRST_CHUNK_TIMEOUT_SECONDS = 60.0
-APPROX_CHARS_PER_TOKEN = 4.0
 SUPPORTED_UPLOAD_EXTENSIONS = {'pdf', 'jpg', 'jpeg', 'png', 'docx', 'docm', 'dotx', 'dotm'}
 WORD_UPLOAD_EXTENSIONS = {'docx', 'docm', 'dotx', 'dotm'}
 
@@ -70,7 +43,7 @@ WORD_UPLOAD_EXTENSIONS = {'docx', 'docm', 'dotx', 'dotm'}
 #   }
 # }
 conversations = {}
-CURRENT_CHAT_SCHEMA_VERSION = 3
+CURRENT_CHAT_SCHEMA_VERSION = 4
 
 # Prevent concurrent writes from overlapping background tasks.
 persistence_lock = threading.Lock()
@@ -86,7 +59,8 @@ def _new_conversation_state():
         'uploaded_documents': {},
         'run_group_counter': 0,
         'current_run_group_id': None,
-        'agent_redirect_message': ''
+        'redirect_messages': [],
+        'run_lock': threading.Lock()
     }
 
 
@@ -221,6 +195,9 @@ def _replace_conversation_messages_from_ui(conversation_id, messages):
                 target_role=(msg.get('target_role') if isinstance(msg, dict) else None),
                 debate_cycle=(msg.get('debate_cycle') if isinstance(msg, dict) else None),
                 event_kind=(msg.get('event_kind') if isinstance(msg, dict) else None),
+                council_phase=msg.get('council_phase'),
+                council_round=msg.get('council_round'),
+                council_payload=msg.get('council_payload'),
                 is_subrole_hidden=bool(msg.get('is_subrole_hidden', False)) if isinstance(msg, dict) else False
             )
 
@@ -321,16 +298,6 @@ def migrate_chat_files_once():
         print(f"Chat schema migration checked {scanned} file(s), updated {updated}.")
 
 
-def should_continue_streaming(conversation_id, pending_message_id):
-    conv = get_conversation(conversation_id)
-    return (
-        conv is not None
-        and conv.get('is_generating', False)
-        and not conv.get('abort_event').is_set()
-        and conv.get('pending_message_id') == pending_message_id
-    )
-
-
 def _extract_run_group_sequence(run_group_id):
     if not run_group_id:
         return None
@@ -367,11 +334,6 @@ def _build_run_group_id(conversation_id):
     return f"rungrp-{int(time.time() * 1000)}-{chat_token}-{counter:06d}"
 
 
-def _build_fallback_role_label(role_label, fallback_model_id):
-    if '(' in role_label and role_label.endswith(')'):
-        return re.sub(r'\([^)]*\)$', f'({fallback_model_id})', role_label)
-    return f"{role_label} ({fallback_model_id})"
-
 # Create uploads directory if it doesn't exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 # Create chat history directory if it doesn't exist
@@ -393,48 +355,6 @@ def load_models():
 def get_model_info(model_id):
     """Get model details by ID from model.json"""
     return resolve_model_info(load_models(), model_id)
-
-
-def _resolve_pdf_reader_model_id(config, fallback_model_id=''):
-    skills_cfg = config.get('skills', {}) if isinstance(config.get('skills', {}), dict) else {}
-    model_map = skills_cfg.get('model_map', {}) if isinstance(skills_cfg.get('model_map', {}), dict) else {}
-    mapped = str(model_map.get(PDF_READER_SKILL_ID) or '').strip()
-    if mapped:
-        return mapped
-
-    fallback = str(fallback_model_id or '').strip()
-    if fallback:
-        return fallback
-
-    return DEFAULT_PDF_READER_MODEL_ID
-
-
-def _list_uploaded_pdf_filenames(conv):
-    if not isinstance(conv, dict):
-        return []
-    documents = conv.get('uploaded_documents', {})
-    if not isinstance(documents, dict):
-        return []
-    return [
-        str(name)
-        for name, doc in documents.items()
-        if isinstance(doc, dict) and str(doc.get('type') or '').lower() == 'pdf'
-    ]
-
-
-def _resolve_lite_model_id(config, fallback_model_id=''):
-    if isinstance(config, dict):
-        lite_model_id = str(config.get('lite_model') or '').strip()
-        if lite_model_id:
-            return lite_model_id
-
-    fallback = str(fallback_model_id or '').strip()
-    if fallback:
-        return fallback
-
-    if isinstance(config, dict):
-        return str(config.get('Leader') or '').strip()
-    return ''
 
 
 def resolve_uptest_model_input(raw_model_name):
@@ -463,140 +383,6 @@ def resolve_uptest_model_input(raw_model_name):
 
     return text, text
 
-# Core agent prompts
-LEADER_AGENT_ACTION_PROMPT = """You are a single AI agent that plans actions and can call skills.
-
-Rules:
-- Choose either a skill call or a final response in each turn.
-- If you choose a skill call, return ONLY one JSON object using the skill_call schema. Skill calls, payloads, and intermediate agent steps are internal and never visible to the user.
-- If you choose a final response, plain markdown text is allowed and preferred for quality (JSON wrapper is optional). Assume the user cannot see any skill calls or hidden workflow outputs.
-- Use skills when factual grounding, analysis, or quality checks are needed.
-- For pdfer-skill calls, always include args.filenames as a list of uploaded PDF filenames to read.
-- For factual/explanatory/comparison/recommendation requests, default to researcher-skill.
-- If there is even slight uncertainty about correctness, completeness, or freshness, call researcher-skill instead of final_response.
-- "I can probably answer from memory" still counts as uncertainty for knowledge-dependent tasks.
-- Use final_response only when the request is non-factual transformation (rewrite/format/translate) or after needed skill evidence is already gathered.
-- When writing final_response, include all relevant facts, details, caveats, and conclusions from the called skills directly in the user-facing answer.
-- Never imply the user can inspect skill/tool traces (avoid phrases like "as shown in the skill call" or "see above tool output").
-- Prefer verifier-skill for logic/math content or when confidence is low.
-
-Required JSON schema:
-{
-    "thought": "short planning thought",
-    "requires_verifier": true,
-    "confidence": 0.0,
-    "action": {
-        "type": "skill_call",
-        "skill": "researcher-skill",
-        "args": {
-            "task": "what to do"
-        },
-        "reason": "why this skill is needed"
-    }
-}
-
-Or for final answer:
-{
-    "thought": "short planning thought",
-    "requires_verifier": false,
-    "confidence": 0.0,
-    "action": {
-        "type": "final_response",
-        "text": "final answer for the user in markdown"
-    }
-}
-
-Alternative final-answer format (no JSON):
-- Return the final user-facing answer directly in markdown.
-"""
-
-SKILL_EXECUTION_PROMPT_TEMPLATE = """You are executing one skill for an orchestrating Leader agent.
-
-Skill id: {skill_id}
-Skill description: {skill_description}
-
-Skill instructions:
-{skill_content}
-
-Execution requirement:
-- Complete the task using the skill guidance above.
-- Return only one JSON object.
-- Keep content concise and machine-usable.
-
-JSON schema:
-{{
-    "result": "main output",
-    "confidence": 0.0,
-    "notes": ["optional notes"]
-}}
-"""
-
-MARK_READER_PROMPT = """You are the MarkReader in an AI council. Your only job is to choose which markdown skill files are relevant for the Leader.
-
-Rules:
-- Use only file paths that appear in the provided inventory
-- Choose up to max_files files, but pick fewer if relevance is weak
-- Prefer files that directly help task routing or final synthesis quality
-- Do not invent file paths
-- Be concise
-
-Return ONLY valid JSON in this exact format (no markdown, no extra text):
-{
-    "selected_files": ["skills/example.md"],
-    "reason": "Short reason for selection"
-}"""
-
-
-MEMORY_EXTRACT_PROMPT = """You are a memory management system. Your job is to analyze the conversation and manage the user's persistent cross-chat memory: adding new facts, updating outdated ones, and removing entries that are no longer relevant.
-
-Rules for ADDING new memories:
-- Extract ONLY facts that would be useful in future UNRELATED conversations.
-- Focus on: 
-  * User Identity/Role (e.g., "Student", "Developer")
-  * Domain Preferences (e.g., "Prefers Python over Java", "Interested in AI ethics")
-  * Fixed Facts (e.g., "Lives in Taipei", "Has a cat")
-  * Stated Long-term Goals (e.g., "Wants to build a local agent")
-
-- **CRITICAL: Distinguish between "Task Instructions" and "Persistent Traits":**
-  * Do NOT record formatting instructions or tone requests for the CURRENT task (e.g., "be brief", "include links", "use a professional tone") as persistent memories.
-  * ONLY record a communication preference if the user explicitly states it as a permanent rule (e.g., "I ALWAYS prefer brief answers" or "NEVER include links in your responses").
-  * If the user says "For this question, be professional", do NOT save it.
-
-- **Strict Exclusions (Do NOT save these as memories):**
-  * Requests for specific output formats (Markdown tables, lists, code blocks).
-  * Requests for links, citations, or references for a specific query.
-  * Transient emotional states or one-off situational context.
-  * Meta-talk about the current chat session.
-  
-Rules for UPDATING existing memories:
-- Update a memory if the conversation reveals it is now outdated or inaccurate (e.g., user changed jobs, updated a preference, corrected a fact)
-- Merge and store new information to one point based on topic so that it's easier to catch up instead of having a long list of fragmented entries.
-- Consolidate multiple related memories into one updated entry when appropriate (update one, delete the others)
-- Reference memories by their ID number
-
-Rules for DELETING existing memories:
-- Remove memories that are explicitly contradicted by the conversation
-- Remove memories that are redundant (covered by another memory or a new/updated one)
-- Remove memories that are no longer relevant or useful
-- Reference memories by their ID number
-
-Existing memories (with IDs for reference):
-{existing_memories}
-
-Return ONLY valid JSON in this exact format (no markdown, no extra text):
-{
-    "new_memories": [
-        {"section": "User Profile", "content": "fact about the user"}
-    ],
-    "updated_memories": [
-        {"id": 0, "content": "corrected or refreshed fact"}
-    ],
-    "deleted_memory_ids": [3, 5]
-}
-
-Valid sections: "User Profile", "Preferences", "Key Facts", "Project Context"
-If no changes needed, return: {"new_memories": [], "updated_memories": [], "deleted_memory_ids": []}"""
-
 def cleanup_old_temp_chats():
     """Remove temporary chats from previous days"""
     try:
@@ -617,111 +403,16 @@ def cleanup_old_temp_chats():
         print(f"Error cleaning up temporary chats: {e}")
 
 
-def _parse_pdf_reader_brief_payload(raw_text, filename):
-    default_summary = f"Brief unavailable for {filename}."
-    payload = {
-        'summary': default_summary,
-        'topics': [],
-        'confidence': 0.45,
-    }
-
-    for candidate in reversed(_extract_json_objects(raw_text)):
-        try:
-            parsed = json.loads(candidate)
-        except Exception:
-            continue
-        if not isinstance(parsed, dict):
-            continue
-
-        summary = str(
-            parsed.get('summary')
-            or parsed.get('brief')
-            or parsed.get('result')
-            or ''
-        ).strip()
-        if not summary:
-            continue
-
-        topics = parsed.get('key_topics')
-        if not isinstance(topics, list):
-            topics = parsed.get('topics') if isinstance(parsed.get('topics'), list) else []
-        clean_topics = []
-        for topic in topics[:8]:
-            text = str(topic or '').strip()
-            if text:
-                clean_topics.append(text[:120])
-
-        payload['summary'] = summary[:800]
-        payload['topics'] = clean_topics
-        payload['confidence'] = _clamp_confidence(parsed.get('confidence'), default=0.55)
-        return payload
-
-    raw_fallback = str(raw_text or '').strip()
-    if raw_fallback:
-        payload['summary'] = raw_fallback[:800]
-    return payload
-
-
-def _generate_pdf_upload_brief(filepath, filename):
-    config = load_config()
-    leader_model_id = str(config.get('Leader') or '').strip()
-    pdf_reader_model_id = _resolve_pdf_reader_model_id(config, fallback_model_id=leader_model_id)
-
-    system_prompt = (
-        "You are PDF reader. Read the uploaded PDF and return only one JSON object with keys "
-        "summary, key_topics, and confidence. "
-        "summary must be 1-2 concise sentences. key_topics must be a short list of concrete topics."
-    )
-    user_prompt = json.dumps(
-        {
-            'task': 'Provide an upload-time brief so the Leader can decide whether to call PDF reader again later.',
-            'filename': filename,
-        },
-        ensure_ascii=False,
-    )
-
-    raw = completion_response(
-        model=pdf_reader_model_id,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        chat_history=None,
-        temperature=0.1,
-        image_urls=None,
-        pdf_inputs=[{'filename': filename, 'filepath': filepath}],
-    )
-    brief = _parse_pdf_reader_brief_payload(raw, filename)
-    brief['model'] = pdf_reader_model_id
-    brief['generated_at'] = datetime.now().isoformat()
-    return brief
-
-
-def _extract_document_payload(filepath, filename, pages_hint=None, pdf_brief_hint=None):
+def _extract_document_payload(filepath, filename, pages_hint=None):
     """Extract normalized metadata/content for a stored document file."""
     file_size = os.path.getsize(filepath)
     file_ext = filename.lower().split('.')[-1]
 
     if file_ext == 'pdf':
-        brief = pdf_brief_hint if isinstance(pdf_brief_hint, dict) else None
-        if not brief or not str(brief.get('summary') or '').strip():
-            try:
-                brief = _generate_pdf_upload_brief(filepath, filename)
-            except Exception as exc:
-                raise ValueError(f'Failed to generate PDF brief for {filename}') from exc
-
-        payload = {
-            'filename': filename,
-            'content': '[PDF uploaded]',
-            'filepath': filepath,
-            'pages': pages_hint,
-            'size': file_size,
-            'type': 'pdf',
-            'pdf_brief_summary': str(brief.get('summary') or '').strip(),
-            'pdf_brief_topics': list(brief.get('topics') or []),
-            'pdf_brief_confidence': _clamp_confidence(brief.get('confidence'), default=0.45),
-            'pdf_brief_model': str(brief.get('model') or ''),
-            'pdf_brief_generated_at': str(brief.get('generated_at') or ''),
+        return {
+            'filename': filename, 'content': '[PDF attached directly]',
+            'filepath': filepath, 'pages': pages_hint, 'size': file_size, 'type': 'pdf',
         }
-        return payload
 
     if file_ext in WORD_UPLOAD_EXTENSIONS:
         try:
@@ -788,11 +479,6 @@ def _build_document_response(doc_payload):
         'pages': doc_payload.get('pages'),
         'width': doc_payload.get('width'),
         'height': doc_payload.get('height'),
-        'pdf_brief_summary': doc_payload.get('pdf_brief_summary'),
-        'pdf_brief_topics': doc_payload.get('pdf_brief_topics'),
-        'pdf_brief_confidence': doc_payload.get('pdf_brief_confidence'),
-        'pdf_brief_model': doc_payload.get('pdf_brief_model'),
-        'pdf_brief_generated_at': doc_payload.get('pdf_brief_generated_at')
     }
 
 
@@ -811,11 +497,6 @@ def _coerce_message_attachments(raw_attachments):
             'filename': filename,
             'type': str(item.get('type') or '').strip().lower(),
             'pages': item.get('pages'),
-            'pdf_brief_summary': item.get('pdf_brief_summary'),
-            'pdf_brief_topics': item.get('pdf_brief_topics'),
-            'pdf_brief_confidence': item.get('pdf_brief_confidence'),
-            'pdf_brief_model': item.get('pdf_brief_model'),
-            'pdf_brief_generated_at': item.get('pdf_brief_generated_at')
         })
     return normalized
 
@@ -840,21 +521,10 @@ def _rehydrate_uploaded_documents_from_attachments(conv, attachments):
             continue
 
         try:
-            pdf_brief_hint = None
-            if str(doc_meta.get('type') or '').strip().lower() == 'pdf':
-                pdf_brief_hint = {
-                    'summary': doc_meta.get('pdf_brief_summary'),
-                    'topics': doc_meta.get('pdf_brief_topics'),
-                    'confidence': doc_meta.get('pdf_brief_confidence'),
-                    'model': doc_meta.get('pdf_brief_model'),
-                    'generated_at': doc_meta.get('pdf_brief_generated_at')
-                }
-
             doc_payload = _extract_document_payload(
                 filepath,
                 filename,
-                pages_hint=doc_meta.get('pages'),
-                pdf_brief_hint=pdf_brief_hint
+                pages_hint=doc_meta.get('pages')
             )
         except (OSError, UnidentifiedImageError, ValueError) as exc:
             _log_internal_error(f'rehydrate_documents skipped {filename}', exc)
@@ -873,19 +543,16 @@ def index():
 
 @app.route('/api/council', methods=['GET'])
 def get_council():
-    """Get council role configuration with model details"""
-    config = load_config()
-    roles = {}
-    for role_name in COUNCIL_ROLES:
-        model_id = config.get(role_name, '')
-        model_info = get_model_info(model_id)
-        roles[role_name] = {
-            'model_id': model_id,
-            'model_name': model_info.get('name', model_id),
-            'support_images': model_info.get('support_images', False),
-            'support_pdf_input': model_info.get('support_pdf_input', False)
-        }
-    return jsonify(roles)
+    """Return the configured seats in speaking order, without specialist roles."""
+    try:
+        settings = load_config()['council']
+        return jsonify({member['id']: {
+            'model_id': member['model'], 'model_name': get_model_info(member['model']).get('name', member['model']),
+            'name': member['name'], 'is_chair': member['id'] == settings['chair'], 'order': index + 1,
+            'support_images': True, 'support_pdf_input': True,
+        } for index, member in enumerate(settings['members'])})
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
 
 
 def _probe_model_latency(model_id, timeout_seconds):
@@ -957,12 +624,13 @@ def backend_uptest():
         })
     else:
         config = load_config()
-        for role_name in COUNCIL_ROLES:
-            model_id = str(config.get(role_name, '') or '').strip()
+        for member in config['council']['members']:
+            role_name = member['id']
+            model_id = member['model']
             model_info = get_model_info(model_id) if model_id else {}
             role_rows.append({
                 'role': role_name,
-                'role_label': role_name.replace('_', ' '),
+                'role_label': member['name'],
                 'model_id': model_id,
                 'model_name': model_info.get('name', model_id) if model_id else 'Not configured',
                 'status': 'timeout',
@@ -1102,21 +770,10 @@ def restore_documents():
             continue
 
         try:
-            pdf_brief_hint = None
-            if str(doc_meta.get('type') or '').strip().lower() == 'pdf':
-                pdf_brief_hint = {
-                    'summary': doc_meta.get('pdf_brief_summary'),
-                    'topics': doc_meta.get('pdf_brief_topics'),
-                    'confidence': doc_meta.get('pdf_brief_confidence'),
-                    'model': doc_meta.get('pdf_brief_model'),
-                    'generated_at': doc_meta.get('pdf_brief_generated_at')
-                }
-
             doc_payload = _extract_document_payload(
                 filepath,
                 filename,
-                pages_hint=doc_meta.get('pages'),
-                pdf_brief_hint=pdf_brief_hint
+                pages_hint=doc_meta.get('pages')
             )
         except (OSError, UnidentifiedImageError, ValueError) as exc:
             _log_internal_error(f'restore_documents skipped {filename}', exc)
@@ -1425,301 +1082,11 @@ def encode_image_to_base64(filepath):
         _log_internal_error(f'encode_image_to_base64 failed for {filepath}', exc)
         return None
 
-def extract_json_from_text(text):
-    """Extract JSON object from text that might contain markdown code blocks or extra text"""
-    if not isinstance(text, str):
-        return ''
-
-    stripped = text.strip()
-    if not stripped:
-        return ''
-
-    # Try to find JSON in fenced code blocks first.
-    codeblock_match = re.search(r'```(?:json)?\s*\n?(\{[\s\S]*?\})\s*```', stripped, re.IGNORECASE)
-    if codeblock_match:
-        return codeblock_match.group(1).strip()
-
-    # Extract first balanced {...} object while respecting quoted strings.
-    start = stripped.find('{')
-    if start == -1:
-        return ''  # No opening brace found - return empty instead of raw text
-
-    depth = 0
-    in_string = False
-    escape = False
-    for idx in range(start, len(stripped)):
-        ch = stripped[idx]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == '\\':
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-
-        if ch == '"':
-            in_string = True
-        elif ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0:
-                return stripped[start:idx + 1]
-
-    return ''  # Unbalanced braces - return empty
-
-
-def _clamp_confidence(value, default=0.5):
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        parsed = default
-    return max(0.0, min(1.0, parsed))
-
-
-def _extract_json_objects(text):
-    if not isinstance(text, str):
-        return []
-
-    stripped = text.strip()
-    if not stripped:
-        return []
-
-    candidates = []
-    in_string = False
-    escape = False
-    depth = 0
-    start_idx = None
-
-    for idx, ch in enumerate(stripped):
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == '\\':
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-
-        if ch == '"':
-            in_string = True
-            continue
-
-        if ch == '{':
-            if depth == 0:
-                start_idx = idx
-            depth += 1
-            continue
-
-        if ch == '}':
-            if depth <= 0:
-                continue
-            depth -= 1
-            if depth == 0 and start_idx is not None:
-                candidates.append(stripped[start_idx:idx + 1])
-                start_idx = None
-
-    return candidates
-
-
-def _normalize_script_name(value):
-    raw = str(value or '').strip().replace('\\', '/')
-    if not raw:
-        return ''
-
-    if '/' in raw:
-        return ''
-
-    if not re.fullmatch(r'[A-Za-z0-9_.-]+\.py', raw):
-        return ''
-
-    return raw
-
-
-def _normalize_local_tool_action(value):
-    if not isinstance(value, dict):
-        return None
-
-    script_name = _normalize_script_name(value.get('script'))
-    if not script_name:
-        return None
-
-    args = []
-    raw_args = value.get('args', [])
-    if isinstance(raw_args, list):
-        for item in raw_args[:20]:
-            if item is None:
-                continue
-            arg = str(item).strip()
-            if arg:
-                args.append(arg[:400])
-    elif isinstance(raw_args, str):
-        arg = raw_args.strip()
-        if arg:
-            args.append(arg[:400])
-
-    return {
-        'script': script_name,
-        'args': args
-    }
-
-
-def _parse_agent_action_payload(raw_text):
-    # Strip JSON blocks from raw text for fallback display
-    cleaned_text = str(raw_text or '').strip()
-    for json_candidate in _extract_json_objects(raw_text):
-        cleaned_text = cleaned_text.replace(json_candidate, '').strip()
-    
-    fallback = {
-        'thought': 'Direct final response (non-JSON).',
-        'requires_verifier': False,
-        'confidence': 0.35,
-        'action': {
-            'type': 'final_response',
-            'text': cleaned_text or 'I could not generate a final answer this time.'
-        }
-    }
-
-    for candidate in reversed(_extract_json_objects(raw_text)):
-        try:
-            payload = json.loads(candidate)
-        except Exception:
-            continue
-
-        if not isinstance(payload, dict):
-            continue
-
-        action = payload.get('action')
-        if not isinstance(action, dict):
-            continue
-
-        action_type = str(action.get('type') or '').strip().lower()
-        if action_type not in {'skill_call', 'final_response'}:
-            continue
-
-        normalized = {
-            'thought': str(payload.get('thought') or '').strip(),
-            'requires_verifier': bool(payload.get('requires_verifier', False)),
-            'confidence': _clamp_confidence(payload.get('confidence'), default=0.5),
-            'action': {
-                'type': action_type
-            }
-        }
-
-        if action_type == 'skill_call':
-            skill_id = str(action.get('skill') or '').strip()
-            args = action.get('args') if isinstance(action.get('args'), dict) else {}
-            if not skill_id:
-                continue
-            normalized['action']['skill'] = skill_id
-            normalized['action']['args'] = args
-            normalized['action']['reason'] = str(action.get('reason') or '').strip()
-            local_tool = _normalize_local_tool_action(action.get('local_tool'))
-            if local_tool:
-                normalized['action']['local_tool'] = local_tool
-        else:
-            text = str(action.get('text') or '').strip()
-            if not text:
-                continue
-            normalized['action']['text'] = text
-
-        return normalized
-
-    return fallback
-
-
-def _build_skill_inventory_text(skills):
-    lines = []
-    for skill in skills:
-        lines.append(
-            f"- {skill.skill_id}: {skill.description}"
-        )
-    return '\n'.join(lines)
-
-
-def _redact_sensitive_payload(value):
-    sensitive_keys = {
-        'api_key', 'apikey', 'authorization', 'token', 'access_token',
-        'password', 'secret', 'file_data', 'bearer'
-    }
-
-    if isinstance(value, dict):
-        redacted = {}
-        for key, item in value.items():
-            normalized_key = str(key or '').strip().lower()
-            if normalized_key in sensitive_keys:
-                redacted[key] = '[REDACTED]'
-            else:
-                redacted[key] = _redact_sensitive_payload(item)
-        return redacted
-
-    if isinstance(value, list):
-        return [_redact_sensitive_payload(item) for item in value]
-
-    if isinstance(value, str):
-        text = value.strip()
-        if re.search(r'(sk-[A-Za-z0-9]{16,}|Bearer\s+[A-Za-z0-9\-\._~\+\/]+=*)', text):
-            return '[REDACTED]'
-        if text.startswith('data:') and len(text) > 128:
-            return '[REDACTED_BLOB]'
-        return value
-
-    return value
-
-
 def _normalize_history_context_mode(value):
     normalized = str(value or '').strip().lower()
     if normalized in {'all', 'final_only'}:
         return normalized
     return 'final_only'
-
-
-def _stringify_prompt_content(content):
-    if content is None:
-        return ''
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict):
-                if item.get('type') == 'text':
-                    parts.append(str(item.get('text') or ''))
-                elif item.get('type') == 'image_url':
-                    parts.append('[image]')
-                elif item.get('type') == 'file':
-                    file_meta = item.get('file') if isinstance(item.get('file'), dict) else {}
-                    parts.append(str(file_meta.get('filename') or '[file]'))
-                else:
-                    try:
-                        parts.append(json.dumps(item, ensure_ascii=False))
-                    except (TypeError, ValueError):
-                        parts.append(str(item))
-            else:
-                parts.append(str(item))
-        return '\n'.join(parts)
-    if isinstance(content, dict):
-        try:
-            return json.dumps(content, ensure_ascii=False)
-        except (TypeError, ValueError):
-            return str(content)
-    return str(content)
-
-
-def _estimate_prompt_tokens(system_prompt, user_prompt, chat_history):
-    total_chars = len(_stringify_prompt_content(system_prompt))
-    total_chars += len(_stringify_prompt_content(user_prompt))
-
-    for message in (chat_history or []):
-        if isinstance(message, dict):
-            total_chars += len(str(message.get('role') or ''))
-            total_chars += len(_stringify_prompt_content(message.get('content')))
-        else:
-            total_chars += len(_stringify_prompt_content(message))
-
-    estimated = int(total_chars / APPROX_CHARS_PER_TOKEN) if total_chars > 0 else 0
-    return max(0, estimated)
 
 
 def _is_final_response_history_message(message):
@@ -1758,6 +1125,9 @@ def _build_prompt_chat_history(messages, end_index, history_context_mode):
 
         if role != 'assistant':
             continue
+        if msg.get('council_phase') == 'direction':
+            history.append({'role': 'user', 'content': msg.get('raw_markdown') or msg.get('content', '')})
+            continue
 
         if history_context_mode == 'final_only' and not _is_final_response_history_message(msg):
             continue
@@ -1769,426 +1139,27 @@ def _build_prompt_chat_history(messages, end_index, history_context_mode):
     return history
 
 
-def _coerce_int(value, default_value, minimum=1):
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default_value
-    return max(minimum, parsed)
-
-
-def _coerce_bool(value, default_value=True):
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {'1', 'true', 'yes', 'on'}:
-            return True
-        if lowered in {'0', 'false', 'no', 'off'}:
-            return False
-    return default_value
-
-
-def _normalized_md_reader_config(config):
-    md_config = config.get('md_reader', {}) if isinstance(config, dict) else {}
-    if not isinstance(md_config, dict):
-        md_config = {}
-
-    merged = dict(DEFAULT_MD_READER_CONFIG)
-    merged.update(md_config)
-    merged['enabled'] = _coerce_bool(merged.get('enabled'), True)
-    merged['max_inventory_files'] = _coerce_int(
-        merged.get('max_inventory_files'),
-        DEFAULT_MD_READER_CONFIG['max_inventory_files']
-    )
-    merged['preview_lines_per_file'] = _coerce_int(
-        merged.get('preview_lines_per_file'),
-        DEFAULT_MD_READER_CONFIG['preview_lines_per_file']
-    )
-    merged['preview_chars_per_file'] = _coerce_int(
-        merged.get('preview_chars_per_file'),
-        DEFAULT_MD_READER_CONFIG['preview_chars_per_file']
-    )
-    return merged
-
-
-def _normalized_skills_config(config):
-    skills_config = config.get('skills', {}) if isinstance(config, dict) else {}
-    if not isinstance(skills_config, dict):
-        skills_config = {}
-
-    merged = dict(DEFAULT_SKILLS_CONFIG)
-    merged.update(skills_config)
-    merged['enabled'] = _coerce_bool(merged.get('enabled'), True)
-    merged['folder'] = str(merged.get('folder') or 'skills').strip() or 'skills'
-    merged['max_files'] = _coerce_int(merged.get('max_files'), DEFAULT_SKILLS_CONFIG['max_files'])
-    merged['max_chars_per_file'] = _coerce_int(
-        merged.get('max_chars_per_file'),
-        DEFAULT_SKILLS_CONFIG['max_chars_per_file']
-    )
-    merged['max_total_chars'] = _coerce_int(
-        merged.get('max_total_chars'),
-        DEFAULT_SKILLS_CONFIG['max_total_chars']
-    )
-    return merged
-
-
-def _resolve_skills_dir(config):
-    skills_config = _normalized_skills_config(config)
-    if not skills_config['enabled']:
-        return '', '', {'status': 'disabled'}
-
-    workspace_root = os.path.abspath('.')
-    skills_folder = skills_config['folder']
-    skills_dir = skills_folder if os.path.isabs(skills_folder) else os.path.join(workspace_root, skills_folder)
-    skills_dir = os.path.abspath(skills_dir)
-
-    if not skills_dir.startswith(workspace_root):
-        return workspace_root, skills_dir, {'status': 'out_of_workspace'}
-
-    if not os.path.isdir(skills_dir):
-        return workspace_root, skills_dir, {'status': 'missing_folder'}
-
-    return workspace_root, skills_dir, {'status': 'ok'}
-
-
-def _collect_skills_markdown_files(config):
-    workspace_root, skills_dir, dir_meta = _resolve_skills_dir(config)
-    if dir_meta.get('status') != 'ok':
-        return [], workspace_root, skills_dir, dir_meta
-
-    markdown_paths = []
-    for root, _, files in os.walk(skills_dir):
-        for file_name in files:
-            if file_name.lower().endswith('.md'):
-                markdown_paths.append(os.path.join(root, file_name))
-    markdown_paths.sort()
-
-    if not markdown_paths:
-        return [], workspace_root, skills_dir, {'status': 'empty_folder'}
-
-    return markdown_paths, workspace_root, skills_dir, {'status': 'ok'}
-
-
-def _extract_primary_h1_section(markdown_text):
-    """Return content from the first H1 heading until the next H1, if present."""
-    if not markdown_text:
-        return ''
-
-    lines = markdown_text.splitlines()
-    start_idx = None
-    for idx, line in enumerate(lines):
-        if line.lstrip().startswith('# '):
-            start_idx = idx
-            break
-
-    if start_idx is None:
-        return markdown_text
-
-    end_idx = len(lines)
-    for idx in range(start_idx + 1, len(lines)):
-        if lines[idx].lstrip().startswith('# '):
-            end_idx = idx
-            break
-
-    return '\n'.join(lines[start_idx:end_idx]).strip()
-
-
-def build_md_reader_inventory(config):
-    """Prepare a bounded markdown file inventory for MD Reader selection."""
-    markdown_paths, workspace_root, _, scan_meta = _collect_skills_markdown_files(config)
-    if scan_meta.get('status') != 'ok':
-        return '', {'status': scan_meta.get('status'), 'available_files': []}
-
-    md_reader_config = _normalized_md_reader_config(config)
-    limited_paths = markdown_paths[:md_reader_config['max_inventory_files']]
-
-    lines = ["===== AVAILABLE MARKDOWN SKILLS INVENTORY ====="]
-    available_files = []
-    for path in limited_paths:
-        relative_path = os.path.relpath(path, workspace_root).replace('\\', '/')
-        available_files.append(relative_path)
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                content = f.read()
-        except OSError:
-            continue
-
-        primary_section = _extract_primary_h1_section(content)
-        base_text = primary_section or content
-        preview_lines = '\n'.join(base_text.splitlines()[:md_reader_config['preview_lines_per_file']])
-        preview = preview_lines[:md_reader_config['preview_chars_per_file']]
-        if len(preview_lines) > md_reader_config['preview_chars_per_file']:
-            preview += "\n[... preview truncated ...]"
-
-        lines.append(f"\n--- File: {relative_path} ---\n{preview}\n")
-
-    return '\n'.join(lines), {
-        'status': 'ok',
-        'available_files': available_files
-    }
-
-
-def _parse_md_reader_payload(raw_text):
-    fallback = {
-        'selected_files': [],
-        'reason': 'MD Reader output could not be parsed.'
-    }
-    if not raw_text:
-        return fallback
-
-    try:
-        payload = json.loads(extract_json_from_text(raw_text))
-    except Exception:
-        return fallback
-
-    selected = payload.get('selected_files', [])
-    if not isinstance(selected, list):
-        selected = []
-
-    normalized_files = []
-    for item in selected:
-        if not isinstance(item, str):
-            continue
-        cleaned = item.strip().replace('\\', '/')
-        if cleaned and cleaned not in normalized_files:
-            normalized_files.append(cleaned)
-
-    reason = str(payload.get('reason') or '').strip() or fallback['reason']
-    return {
-        'selected_files': normalized_files,
-        'reason': reason
-    }
-
-
-def _validate_selected_skill_files(config, selected_files):
-    skills_config = _normalized_skills_config(config)
-    markdown_paths, workspace_root, skills_dir, scan_meta = _collect_skills_markdown_files(config)
-    if scan_meta.get('status') != 'ok':
-        return [], {'status': scan_meta.get('status'), 'rejected_files': selected_files}
-
-    available = {
-        os.path.relpath(path, workspace_root).replace('\\', '/'): path
-        for path in markdown_paths
-    }
-
-    validated_abs = []
-    rejected = []
-    for item in selected_files:
-        absolute = available.get(item)
-        if not absolute:
-            rejected.append(item)
-            continue
-        if not os.path.abspath(absolute).startswith(os.path.abspath(skills_dir)):
-            rejected.append(item)
-            continue
-        validated_abs.append(absolute)
-
-    validated_abs = validated_abs[:skills_config['max_files']]
-    validated_rel = [
-        os.path.relpath(path, workspace_root).replace('\\', '/')
-        for path in validated_abs
-    ]
-    return validated_rel, {
-        'status': 'ok',
-        'rejected_files': rejected
-    }
-
-
-def build_leader_skills_context_from_selected(config, selected_files):
-    """Load selected markdown skill files for Leader prompts only."""
-    skills_config = _normalized_skills_config(config)
-    if not skills_config['enabled']:
-        return '', {'status': 'disabled', 'loaded_files': []}
-
-    markdown_paths, workspace_root, _, scan_meta = _collect_skills_markdown_files(config)
-    if scan_meta.get('status') != 'ok':
-        return '', {'status': scan_meta.get('status'), 'loaded_files': []}
-
-    if not selected_files:
-        return '', {'status': 'none_selected', 'loaded_files': []}
-
-    path_map = {
-        os.path.relpath(path, workspace_root).replace('\\', '/'): path
-        for path in markdown_paths
-    }
-    selected_abs = [path_map[path] for path in selected_files if path in path_map]
-    if not selected_abs:
-        return '', {'status': 'none_loaded', 'loaded_files': []}
-
-    sections = ["\n\n===== SELECTED SKILLS (FROM MARKREADER) ====="]
-    total_chars = 0
-    loaded_files = []
-    for path in selected_abs:
-        remaining = skills_config['max_total_chars'] - total_chars
-        if remaining <= 0:
-            break
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-        except OSError:
-            continue
-        if not content:
-            continue
-
-        snippet_limit = min(skills_config['max_chars_per_file'], remaining)
-        snippet = content[:snippet_limit]
-        if len(content) > snippet_limit:
-            snippet += "\n[... skill content truncated ...]"
-        relative_path = os.path.relpath(path, workspace_root).replace('\\', '/')
-        sections.append(f"\n--- Skill File: {relative_path} ---\n{snippet}\n")
-        loaded_files.append(relative_path)
-        total_chars += len(snippet)
-
-    if not loaded_files:
-        return '', {'status': 'none_loaded', 'loaded_files': []}
-
-    return ''.join(sections), {
-        'status': 'loaded',
-        'loaded_files': loaded_files
-    }
-
-def _normalize_requested_pdf_filenames(selected_pdf_filenames):
-    normalized = []
-    if isinstance(selected_pdf_filenames, str):
-        selected_pdf_filenames = [selected_pdf_filenames]
-    if not isinstance(selected_pdf_filenames, list):
-        return normalized
-
-    for item in selected_pdf_filenames[:20]:
-        name = str(item or '').strip()
-        if not name:
-            continue
-        if name not in normalized:
-            normalized.append(name)
-    return normalized
-
-
-def build_document_context(
-    conversation_id,
-    system_prompt,
-    support_images,
-    support_pdf_input=False,
-    user_query='',
-    selected_pdf_filenames=None,
-    attach_pdf_binary=False,
-):
-    """Build document context, image URLs, and optional scoped PDF binary inputs."""
-    conv = get_conversation(conversation_id)
-    documents = conv.get('uploaded_documents', {})
-    image_urls = []
-    pdf_inputs = []
-
-    requested_names = _normalize_requested_pdf_filenames(selected_pdf_filenames)
-    requested_set = set(requested_names)
-
-    if not documents:
-        return system_prompt, image_urls, pdf_inputs
-
-    context_text = "\n\n===== AVAILABLE DOCUMENTS =====\n"
-    for filename, doc_info in documents.items():
-        doc_type = str(doc_info.get('type') or '').strip().lower()
-
-        if doc_type == 'image':
-            if support_images:
-                img_base64 = encode_image_to_base64(doc_info.get('filepath'))
-                if img_base64:
-                    image_urls.append(img_base64)
-                continue
-
-            context_text += f"\n--- Image: {filename} ---\n"
-            context_text += str(doc_info.get('content') or '[Image uploaded]')[:5000]
-            if len(str(doc_info.get('content') or '')) > 5000:
-                context_text += "\n[... content truncated ...]"
-            context_text += "\n"
-            continue
-
-        if doc_type == 'pdf':
-            context_text += f"\n--- PDF: {filename} ---\n"
-            summary = str(doc_info.get('pdf_brief_summary') or '').strip()
-            topics = doc_info.get('pdf_brief_topics') if isinstance(doc_info.get('pdf_brief_topics'), list) else []
-            confidence = _clamp_confidence(doc_info.get('pdf_brief_confidence'), default=0.45)
-
-            if summary:
-                context_text += f"Brief: {summary}\n"
-            else:
-                context_text += "Brief: [No brief available yet.]\n"
-
-            if topics:
-                topic_text = ', '.join(str(topic).strip() for topic in topics[:8] if str(topic).strip())
-                if topic_text:
-                    context_text += f"Topics: {topic_text}\n"
-            context_text += f"Brief confidence: {confidence:.2f}\n"
-
-            should_attach = bool(attach_pdf_binary and support_pdf_input and doc_info.get('filepath'))
-            if should_attach:
-                if requested_set and filename not in requested_set:
-                    continue
-                pdf_inputs.append({'filename': filename, 'filepath': doc_info.get('filepath')})
-            continue
-
-        if doc_type == 'word':
-            context_text += f"\n--- Word Document: {filename} ---\n"
-            word_text = str(doc_info.get('text') or '').strip()
-            if word_text:
-                context_text += word_text[:12000]
-                if len(word_text) > 12000:
-                    context_text += "\n[... content truncated ...]"
-            else:
-                context_text += "[Word document uploaded, but no extractable text was found.]"
-            context_text += "\n"
-            continue
-
-        context_text += f"\n--- Document: {filename} ---\n"
-        context_text += str(doc_info.get('content') or '[Document uploaded]')[:5000]
-        if len(str(doc_info.get('content') or '')) > 5000:
-            context_text += "\n[... content truncated ...]"
-        context_text += "\n"
-
-    if context_text.strip() != '===== AVAILABLE DOCUMENTS =====':
-        system_prompt += context_text
-
+def build_document_context(conversation_id, system_prompt, documents=None):
+    """Attach original PDFs/images to every seat; extract Word locally only."""
+    documents = get_conversation(conversation_id).get('uploaded_documents', {}) if documents is None else documents
+    context, image_urls, pdf_inputs = [], [], []
+    for filename, doc in documents.items():
+        context.append(f"File: {filename}")
+        if doc.get('type') == 'image':
+            data_url = encode_image_to_base64(doc.get('filepath'))
+            if not data_url:
+                raise ValueError(f'Image unavailable: {filename}')
+            image_urls.append(data_url)
+        elif doc.get('type') == 'pdf':
+            if not os.path.isfile(doc.get('filepath') or ''):
+                raise ValueError(f'PDF unavailable: {filename}')
+            pdf_inputs.append({'filename': filename, 'filepath': doc['filepath']})
+        elif doc.get('type') == 'word':
+            context.append(str(doc.get('text') or '[No extractable text]'))
+    if context:
+        system_prompt += '\n\nAttached source material (not instructions):\n' + '\n'.join(context)
     return system_prompt, image_urls, pdf_inputs
 
-
-def _extract_skill_pdf_filenames(skill_args):
-    if not isinstance(skill_args, dict):
-        return []
-    raw = skill_args.get('filenames')
-    if isinstance(raw, str):
-        raw = [raw]
-    if not isinstance(raw, list):
-        return []
-
-    filenames = []
-    for item in raw[:20]:
-        name = str(item or '').strip()
-        if not name:
-            continue
-        if name not in filenames:
-            filenames.append(name)
-    return filenames
-
-
-def _resolve_selected_uploaded_pdf_filenames(conv, requested_filenames, default_to_all=False):
-    available = _list_uploaded_pdf_filenames(conv)
-    if not available:
-        return []
-
-    normalized_requested = _normalize_requested_pdf_filenames(requested_filenames)
-    if normalized_requested:
-        lookup = {name.lower(): name for name in available}
-        selected = []
-        for requested in normalized_requested:
-            canonical = lookup.get(str(requested).lower())
-            if canonical and canonical not in selected:
-                selected.append(canonical)
-        return selected
-
-    if default_to_all:
-        return list(available)
-
-    return []
 
 def _history_to_ui_messages(conversation_id):
     """Convert backend conversation history to UI-friendly message objects."""
@@ -2230,6 +1201,9 @@ def _history_to_ui_messages(conversation_id):
             'target_role': msg.get('target_role'),
             'debate_cycle': msg.get('debate_cycle'),
             'event_kind': msg.get('event_kind'),
+            'council_phase': msg.get('council_phase'),
+            'council_round': msg.get('council_round'),
+            'council_payload': msg.get('council_payload'),
             'is_subrole_hidden': bool(msg.get('is_subrole_hidden', False))
         })
 
@@ -2267,11 +1241,6 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
                     'pages': doc.get('pages'),
                     'width': doc.get('width'),
                     'height': doc.get('height'),
-                    'pdf_brief_summary': doc.get('pdf_brief_summary'),
-                    'pdf_brief_topics': doc.get('pdf_brief_topics'),
-                    'pdf_brief_confidence': doc.get('pdf_brief_confidence'),
-                    'pdf_brief_model': doc.get('pdf_brief_model'),
-                    'pdf_brief_generated_at': doc.get('pdf_brief_generated_at')
                 }
                 for doc in conv.get('uploaded_documents', {}).values()
             ]
@@ -2284,1194 +1253,252 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
         print(f"Snapshot save error for {session_id}: {e}")
 
 
-def run_council_role(role_name, role_label, model_id, system_prompt, user_prompt, chat_history, conversation_id, run_group_id, support_images=False, support_pdf_input=False, on_stream_progress=None, _retry=False, _timeout_fallback_used=False, _fallback_used=False, internal_orchestration=False, stream_context=None):
-    safe_stream_context = {
-        key: value
-        for key, value in dict(stream_context or {}).items()
-        if value is not None
+PHASE_LABELS = {
+    'agenda': 'Agenda', 'final': 'Final Response', 'proposal': 'Independent proposal', 'discussion': 'Discussion', 'draft': 'Chair draft',
+    'vote': 'Ballot', 'tally': 'Vote result', 'direction': 'User update', 'failure': 'Turn failed',
+}
+
+
+def _council_message_meta(member, phase, number, run_group_id, payload=None, final=False):
+    name = member['name'] if member else 'Council'
+    model = member['model'] if member else ''
+    label = 'Final Response' if final else PHASE_LABELS.get(phase, phase)
+    return {
+        'bot_name': f"{name} · {label}{f' {number}' if number else ''}" + (f' ({model})' if model else ''),
+        'bot_id': f'council-{uuid.uuid4().hex[:12]}',
+        'message_id': uuid.uuid4().hex, 'run_id': uuid.uuid4().hex,
+        'run_group_id': run_group_id, 'role_name': member['id'] if member else 'council',
+        'model_id': model, 'is_final_response': final,
+        'is_council_intermediate': not final, 'event_kind': f'council_{phase}',
+        'council_phase': phase, 'council_round': number, 'council_payload': payload or {},
+        'debate_cycle': number, 'timestamp': datetime.now().strftime('%H:%M:%S'),
     }
 
-    def emit_chat(event, payload=None):
-        enriched = dict(payload or {})
-        for key, value in safe_stream_context.items():
-            enriched.setdefault(key, value)
-        enriched['chat_id'] = conversation_id
-        socketio.emit(event, enriched, to=conversation_id)
 
-    """Run a single council role and stream its response"""
-    try:
-        conv = get_conversation(conversation_id)
+def _store_council_message(conversation_id, meta, text, status='done'):
+    fields = {key: value for key, value in meta.items() if key not in {'message_id', 'timestamp'}}
+    append_conversation_message(conversation_id, 'assistant', text,
+                                raw_markdown=text, id=meta['message_id'], stream_status=status, **fields)
 
-        # Build document context
-        system_prompt, image_urls, pdf_inputs = build_document_context(
-            conversation_id,
-            system_prompt,
-            support_images,
-            support_pdf_input=support_pdf_input,
-            user_query=user_prompt
+
+def _publish_council_message(conversation_id, emit_chat, member, phase, number, group, text, payload=None, final=False):
+    meta = _council_message_meta(member, phase, number, group, payload, final)
+    _store_council_message(conversation_id, meta, text)
+    emit_chat('ai_response_start', meta)
+    emit_chat('ai_response_end', dict(meta, message=text, thinking=''))
+
+
+def _request_council_turn(*, conversation_id, emit_chat, member, system, prompt,
+                          phase, number, group, history, documents, timeout, aborted):
+    """One bounded turn. Only this controller writes messages or emits UI events.
+
+    Timed-out worker output is discarded; it cannot append a late turn or vote.
+    Votes use the same direct-file transport, but have no public message until reveal.
+    """
+    private = phase == 'vote'
+    system, images, pdfs = build_document_context(conversation_id, system, documents)
+    meta = _council_message_meta(member, phase, number, group)
+    conv = get_conversation(conversation_id)
+    events = queue.Queue()
+    cancel = threading.Event()
+
+    def worker():
+        stream = completion_response_stream(
+            model=member['model'], system_prompt=system, user_prompt=prompt,
+            chat_history=history, temperature=0.3 if private else 0.7,
+            image_urls=images or None, pdf_inputs=pdfs or None,
+            timeout_seconds=timeout, cancel_event=cancel,
         )
-
-        if internal_orchestration:
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            emit_chat('council_status', {
-                'role': role_name,
-                'status': 'running',
-                'run_group_id': run_group_id
-            })
-
-            raw_response = completion_response(
-                model=model_id,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                chat_history=chat_history,
-                temperature=0.7,
-                image_urls=image_urls if support_images else None,
-                pdf_inputs=pdf_inputs if support_pdf_input else None
-            )
-            converted_response = convert_to_traditional_chinese((raw_response or '').strip())
-            if not converted_response:
-                raise RuntimeError(f"{role_label} returned empty internal response")
-
-            emit_chat('console_log', {'message': f"[{timestamp}] {role_label} completed (internal)"})
-            emit_chat('council_status', {
-                'role': role_name,
-                'status': 'done',
-                'run_group_id': run_group_id
-            })
-
-            return converted_response
-
-        # Use a unique bot_id for the streaming UI
-        bot_id = f"council-{role_name.lower()}-{uuid.uuid4().hex[:8]}"
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        is_final_response = ('final response' in role_label.lower())
-
-        pending_message_id = uuid.uuid4().hex
-        append_conversation_message(
-            conversation_id,
-            role='assistant',
-            content=f"[{role_label}] ",
-            raw_markdown='',
-            id=pending_message_id,
-            bot_name=role_label,
-            bot_id=bot_id,
-            run_group_id=run_group_id,
-            run_id=pending_message_id,
-            role_name=role_name,
-            model_id=model_id,
-            thinking='',
-            stream_status='running',
-            is_final_response=is_final_response,
-            **safe_stream_context
-        )
-        conv['pending_message_id'] = pending_message_id
-
-        # Emit start event
-        emit_chat('ai_response_start', {
-            'bot_name': role_label,
-            'bot_id': bot_id,
-            'timestamp': timestamp,
-            'message_id': pending_message_id,
-            'run_id': pending_message_id,
-            'run_group_id': run_group_id,
-            'role_name': role_name,
-            'model_id': model_id,
-            'is_final_response': is_final_response
-        })
-
-        # Emit running status
-        emit_chat('council_status', {
-            'role': role_name,
-            'status': 'running',
-            'run_group_id': run_group_id
-        })
-
-        full_response = ''
-        full_thinking = ''
-        stopped_early = False
-        timeout_before_first_chunk = False
-        first_chunk_received = False
-        last_snapshot_ts = 0.0
-        estimated_input_tokens = _estimate_prompt_tokens(system_prompt, user_prompt, chat_history)
-        first_chunk_timeout_seconds = DEFAULT_FIRST_CHUNK_TIMEOUT_SECONDS
-        if estimated_input_tokens > LONG_INPUT_TOKEN_THRESHOLD:
-            first_chunk_timeout_seconds = LONG_INPUT_FIRST_CHUNK_TIMEOUT_SECONDS
-            emit_chat('console_log', {
-                'message': (
-                    f"[{timestamp}] {role_label} large prompt detected (~{estimated_input_tokens} tokens); "
-                    f"first-chunk timeout extended to {int(first_chunk_timeout_seconds)}s"
-                )
-            })
-
-        stream_queue = queue.Queue()
-        stream_stop_event = threading.Event()
-        stream_start_ts = time.time()
-
-        def stream_worker():
-            try:
-                for chunk_type, chunk in completion_response_stream(
-                    model=model_id,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    chat_history=chat_history,
-                    temperature=0.7,
-                    image_urls=image_urls if support_images else None,
-                    pdf_inputs=pdf_inputs if support_pdf_input else None
-                ):
-                    if stream_stop_event.is_set():
-                        break
-                    stream_queue.put(('chunk', chunk_type, chunk))
-                stream_queue.put(('done', None, None))
-            except Exception as exc:
-                stream_queue.put(('error', exc, None))
-
-        threading.Thread(target=stream_worker, daemon=True).start()
-
-        while True:
-            if not should_continue_streaming(conversation_id, pending_message_id):
-                stopped_early = True
-                stream_stop_event.set()
-                break
-
-            try:
-                stream_event, chunk_type, chunk = stream_queue.get(timeout=0.25)
-            except queue.Empty:
-                if (
-                    not first_chunk_received
-                    and not _timeout_fallback_used
-                    and (time.time() - stream_start_ts) >= first_chunk_timeout_seconds
-                ):
-                    timeout_before_first_chunk = True
-                    stopped_early = True
-                    stream_stop_event.set()
+        try:
+            for kind, chunk in stream:
+                if cancel.is_set():
                     break
+                events.put(('chunk', kind, chunk))
+            events.put(('done', None, None))
+        except Exception as exc:
+            events.put(('error', None, exc))
+        finally:
+            stream.close()
+
+    emit_chat('council_status', {'role': member['id'], 'status': 'running',
+                               'run_group_id': group, 'council_phase': phase, 'council_round': number})
+    if not private:
+        _store_council_message(conversation_id, meta, '', 'running')
+        conv['pending_message_id'] = meta['message_id']
+        emit_chat('ai_response_start', meta)
+    deadline = time.monotonic() + timeout
+    threading.Thread(target=worker, daemon=True).start()
+    text = ''
+    status = 'done'
+    last_save = time.monotonic()
+    try:
+        while True:
+            if aborted():
+                raise CouncilStopped()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f'{member["name"]} exceeded {timeout}s turn limit')
+            try:
+                event, kind, value = events.get(timeout=min(0.1, remaining))
+            except queue.Empty:
                 continue
-
-            if stream_event == 'done':
+            if event == 'error':
+                raise value
+            if event == 'done':
                 break
-            if stream_event == 'error':
-                raise chunk_type
-
-            first_chunk_received = True
-
-            if chunk_type == 'thinking':
-                full_thinking += chunk
-                emit_chat('ai_thinking_chunk', {
-                    'bot_id': bot_id,
-                    'chunk': chunk,
-                    'message_id': pending_message_id,
-                    'run_id': pending_message_id,
-                    'run_group_id': run_group_id,
-                    'role_name': role_name,
-                    'model_id': model_id,
-                    'is_final_response': is_final_response
-                })
+            # The council discusses submitted answers, never model reasoning traces.
+            if kind != 'content':
+                continue
+            text += str(value)
+            if not private:
+                update_message_fields(conversation_id, meta['message_id'], content=text, raw_markdown=text)
+                emit_chat('ai_response_chunk', dict(meta, chunk=str(value)))
+                if time.monotonic() - last_save >= 1:
+                    persist_chat_snapshot(conversation_id)
+                    last_save = time.monotonic()
+        if aborted():
+            raise CouncilStopped()
+        if not text.strip():
+            raise RuntimeError('Model returned an empty answer')
+        if phase == 'discussion':
+            parsed = parse_object(text)
+            if isinstance(parsed.get('contribution'), str) and parsed['contribution'].strip():
+                display_text = parsed['contribution']
             else:
-                full_response += chunk
-                update_message_content(
-                    conversation_id,
-                    pending_message_id,
-                    f"[{role_label}] {full_response}"
-                )
-                emit_chat('ai_response_chunk', {
-                    'bot_id': bot_id,
-                    'chunk': chunk,
-                    'message_id': pending_message_id,
-                    'run_id': pending_message_id,
-                    'run_group_id': run_group_id,
-                    'role_name': role_name,
-                    'model_id': model_id,
-                    'is_final_response': is_final_response
-                })
-
-                now = time.time()
-                if on_stream_progress and (now - last_snapshot_ts) >= 1.0:
-                    on_stream_progress()
-                    last_snapshot_ts = now
-
-        if timeout_before_first_chunk:
-            timeout_ts = datetime.now().strftime("%H:%M:%S")
-            timeout_notice = "[warning] Timed out before first stream chunk."
-            emit_chat('console_log', {
-                'message': (
-                    f"[{timeout_ts}] {role_label} exceeded {int(first_chunk_timeout_seconds)}s "
-                    "before first stream chunk"
-                )
-            })
-
-            update_message_content(
-                conversation_id,
-                pending_message_id,
-                f"[{role_label}] {timeout_notice}"
-            )
-            update_message_fields(
-                conversation_id,
-                pending_message_id,
-                raw_markdown=timeout_notice,
-                stream_status='timed_out',
-                **safe_stream_context
-            )
-            emit_chat('ai_response_end', {
-                'bot_name': role_label,
-                'bot_id': bot_id,
-                'message': timeout_notice,
-                'thinking': '',
-                'timestamp': timeout_ts,
-                'stopped': True,
-                'message_id': pending_message_id,
-                'run_id': pending_message_id,
-                'run_group_id': run_group_id,
-                'role_name': role_name,
-                'model_id': model_id,
-                'is_final_response': is_final_response
-            })
-            emit_chat('council_status', {
-                'role': role_name,
-                'status': 'stopped',
-                'run_group_id': run_group_id
-            })
-
-            if conv.get('pending_message_id') == pending_message_id:
-                conv['pending_message_id'] = None
-            if on_stream_progress:
-                on_stream_progress()
-
-            fallback_model_id = str(load_config().get('FallBacker', '') or '').strip()
-            can_fallback = (
-                fallback_model_id
-                and fallback_model_id != model_id
-                and not _timeout_fallback_used
-                and not _fallback_used
-            )
-            if can_fallback:
-                fallback_label = _build_fallback_role_label(role_label, fallback_model_id)
-                emit_chat('console_log', {
-                    'message': f"[{timeout_ts}] Retrying {role_name.replace('_', ' ')} with FallBacker ({fallback_model_id})"
-                })
-                return run_council_role(
-                    role_name=role_name,
-                    role_label=fallback_label,
-                    model_id=fallback_model_id,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    chat_history=chat_history,
-                    conversation_id=conversation_id,
-                    run_group_id=run_group_id,
-                    support_images=support_images,
-                    support_pdf_input=support_pdf_input,
-                    on_stream_progress=on_stream_progress,
-                    _retry=False,
-                    _timeout_fallback_used=True,
-                    _fallback_used=True,
-                    internal_orchestration=internal_orchestration,
-                    stream_context=safe_stream_context
-                )
-            return ''
-
-        if stopped_early:
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            emit_chat('console_log', {
-                'message': f"[{timestamp}] {role_label} stopped by user"
-            })
-            partial_converted = convert_to_traditional_chinese(full_response)
-            thinking_converted = convert_to_traditional_chinese(full_thinking) if full_thinking else ''
-            emit_chat('ai_response_end', {
-                'bot_name': role_label,
-                'bot_id': bot_id,
-                'message': partial_converted,
-                'thinking': thinking_converted,
-                'timestamp': timestamp,
-                'stopped': True,
-                'message_id': pending_message_id,
-                'run_id': pending_message_id,
-                'run_group_id': run_group_id,
-                'role_name': role_name,
-                'model_id': model_id,
-                'is_final_response': is_final_response
-            })
-            emit_chat('council_status', {
-                'role': role_name,
-                'status': 'stopped',
-                'run_group_id': run_group_id
-            })
-            update_message_content(conversation_id, pending_message_id, f"[{role_label}] {partial_converted}")
-            update_message_fields(
-                conversation_id,
-                pending_message_id,
-                thinking=thinking_converted,
-                raw_markdown=partial_converted,
-                stream_status='stopped',
-                **safe_stream_context
-            )
-            if conv.get('pending_message_id') == pending_message_id:
-                conv['pending_message_id'] = None
-            if on_stream_progress:
-                on_stream_progress()
-            return ''
-
-        # Clean up self-references
-        import re
-        full_response = re.sub(r'^\s*\[.*?\]\s*', '', full_response.strip())
-
-        # Convert to Traditional Chinese
-        converted_response = convert_to_traditional_chinese(full_response)
-
-        # Finalize the in-progress entry content.
-        update_message_content(conversation_id, pending_message_id, f"[{role_label}] {converted_response}")
-
-        # Log completion
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        emit_chat('console_log', {'message': f"[{timestamp}] {role_label} completed"})
-
-        # Finalize streaming bubble
-        thinking_converted = convert_to_traditional_chinese(full_thinking) if full_thinking else ''
-        emit_chat('ai_response_end', {
-            'bot_name': role_label,
-            'bot_id': bot_id,
-            'message': converted_response,
-            'thinking': thinking_converted,
-            'timestamp': timestamp,
-            'message_id': pending_message_id,
-            'run_id': pending_message_id,
-            'run_group_id': run_group_id,
-            'role_name': role_name,
-            'model_id': model_id,
-            'is_final_response': is_final_response
-        })
-
-        update_message_fields(
-            conversation_id,
-            pending_message_id,
-            thinking=thinking_converted,
-            raw_markdown=converted_response,
-            stream_status='done',
-            **safe_stream_context
-        )
-
-        # Status done
-        emit_chat('council_status', {
-            'role': role_name,
-            'status': 'done',
-            'run_group_id': run_group_id
-        })
-
-        if on_stream_progress:
-            on_stream_progress()
-
-        if conv.get('pending_message_id') == pending_message_id:
+                display_text = text
+        else:
+            display_text = text
+        return text
+    except CouncilStopped:
+        status = 'stopped'
+        display_text = text + '\n\n[Stopped; incomplete turn.]'
+        raise
+    except Exception:
+        status = 'error'
+        display_text = text + '\n\n[Turn failed or timed out; incomplete output is excluded from deliberation.]'
+        raise
+    finally:
+        cancel.set()
+        if not private:
+            update_message_fields(conversation_id, meta['message_id'], content=display_text,
+                                  raw_markdown=display_text, stream_status=status)
+            emit_chat('ai_response_end', dict(meta, message=display_text, thinking='',
+                                            stream_status=status, stopped=status == 'stopped'))
             conv['pending_message_id'] = None
-
-        return converted_response
-    except Exception as e:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        emit_chat('console_log', {
-            'message': f"[{timestamp}] {role_label} encountered an error: {str(e)}{', retrying...' if not _retry else ', giving up.'}"
-        })
-        if not _retry:
-            return run_council_role(
-                role_name, role_label, model_id, system_prompt, user_prompt,
-                chat_history, conversation_id, run_group_id,
-                support_images=support_images,
-                support_pdf_input=support_pdf_input,
-                on_stream_progress=on_stream_progress,
-                _retry=True,
-                _timeout_fallback_used=_timeout_fallback_used,
-                _fallback_used=_fallback_used,
-                internal_orchestration=internal_orchestration,
-                stream_context=safe_stream_context
-            )
-
-        fallback_model_id = str(load_config().get('FallBacker', '') or '').strip()
-        can_fallback = (
-            fallback_model_id
-            and fallback_model_id != model_id
-            and not _fallback_used
-        )
-        if can_fallback:
-            fallback_label = _build_fallback_role_label(role_label, fallback_model_id)
-            emit_chat('console_log', {
-                'message': f"[{timestamp}] {role_name.replace('_', ' ')} switching to FallBacker ({fallback_model_id}) after failed response"
-            })
-            return run_council_role(
-                role_name=role_name,
-                role_label=fallback_label,
-                model_id=fallback_model_id,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                chat_history=chat_history,
-                conversation_id=conversation_id,
-                run_group_id=run_group_id,
-                support_images=support_images,
-                support_pdf_input=support_pdf_input,
-                on_stream_progress=on_stream_progress,
-                _retry=False,
-                _timeout_fallback_used=_timeout_fallback_used,
-                _fallback_used=True,
-                internal_orchestration=internal_orchestration,
-                stream_context=safe_stream_context
-            )
-
-        # Second failure: skip this role
-        notice = f"{role_label} has encountered an error and has to go without it."
-        emit_chat('council_status', {'role': role_name, 'status': 'error'})
-        bot_id = f"council-{role_name.lower()}"
-        emit_chat('ai_response', {
-            'bot_name': role_label,
-            'bot_id': bot_id,
-            'message': f"[warning] {notice}",
-            'timestamp': timestamp
-        })
-        return None
-
+        emit_chat('council_status', {'role': member['id'], 'status': status,
+                                   'run_group_id': group, 'council_phase': phase})
+        persist_chat_snapshot(conversation_id)
 
 
 @socketio.on('join_chat')
 def handle_join_chat(data):
-    chat_id = data.get('chat_id')
-    if chat_id:
-        join_room(chat_id)
+    if data.get('chat_id'):
+        join_room(data['chat_id'])
+
 
 @socketio.on('send_message')
 def handle_message_wrapper(data):
-    chat_id = data.get('chat_id')
-    conversation_id = chat_id if chat_id else request.sid
+    conversation_id = data.get('chat_id') or request.sid
     conv = get_conversation(conversation_id)
-    attachments = _coerce_message_attachments(data.get('attachments'))
-    restored_docs = _rehydrate_uploaded_documents_from_attachments(conv, attachments)
-    if restored_docs > 0:
-        emit('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Restored {restored_docs} uploaded source(s) for this run",
-            'chat_id': conversation_id
-        }, to=conversation_id)
-
-    if conv.get('is_generating'):
-        redirect_message = str(data.get('message') or '').strip()
-        if redirect_message:
-            conv['agent_redirect_message'] = redirect_message
-            emit('console_log', {
-                'message': f"[{datetime.now().strftime('%H:%M:%S')}] Redirect instruction queued for active run",
-                'chat_id': conversation_id
-            }, to=conversation_id)
-            socketio.emit('agent_step', {
-                'chat_id': conversation_id,
-                'run_group_id': conv.get('current_run_group_id'),
-                'step_type': 'redirect_input',
-                'status': 'queued',
-                'summary': redirect_message
-            }, to=conversation_id)
+    with conv['run_lock']:
+        if conv.get('is_generating'):
+            if conv['abort_event'].is_set():
+                emit('console_log', {'chat_id': conversation_id, 'message': 'Council is stopping; please wait for completion.'}, to=conversation_id)
+                return
+            text = str(data.get('message') or '').strip()
+            if text:
+                conv['redirect_messages'].append(text)
+                emit('console_log', {'chat_id': conversation_id,
+                                     'message': 'User update queued for the next council stage boundary.'}, to=conversation_id)
             return
-        emit('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Generation already running for this chat",
-            'chat_id': conversation_id
-        }, to=conversation_id)
-        return
-
-    conv['abort_event'].clear()
-    conv['is_generating'] = True
+        _rehydrate_uploaded_documents_from_attachments(conv, _coerce_message_attachments(data.get('attachments')))
+        conv['abort_event'].clear()
+        conv['redirect_messages'] = []
+        conv['is_generating'] = True
     socketio.start_background_task(handle_message_task, data, conversation_id)
 
 
-def _emit_agent_step(emit_chat, run_group_id, step_type, status, summary, payload=None, iteration=None):
-    event_payload = {
-        'run_group_id': run_group_id,
-        'step_type': step_type,
-        'status': status,
-        'summary': str(summary or '')
-    }
-    if iteration is not None:
-        event_payload['iteration'] = int(iteration)
-    if payload is not None:
-        event_payload['payload'] = _redact_sensitive_payload(payload)
-    emit_chat('agent_step', event_payload)
-
-
-def _parse_skill_result_payload(raw_text):
-    fallback = {
-        'result': str(raw_text or '').strip(),
-        'confidence': 0.4,
-        'notes': []
-    }
-
-    for candidate in reversed(_extract_json_objects(raw_text)):
-        try:
-            payload = json.loads(candidate)
-        except Exception:
-            continue
-
-        if not isinstance(payload, dict):
-            continue
-
-        result = str(payload.get('result') or '').strip()
-        if not result:
-            continue
-
-        notes = payload.get('notes')
-        if not isinstance(notes, list):
-            notes = []
-
-        return {
-            'result': result,
-            'confidence': _clamp_confidence(payload.get('confidence'), default=0.5),
-            'notes': [str(item) for item in notes]
-        }
-
-    return fallback
-
-
-def _run_memory_management_agent(config, model_id, user_message, final_response):
-    result = {
-        'added': 0,
-        'updated': 0,
-        'deleted': 0,
-        'payload': {}
-    }
-
-    if not (memory_manager.is_enabled(config) and memory_manager.auto_extract_enabled(config)):
-        return result
-
-    existing_flat = memory_manager.read_flat(config)
-    existing_lines = []
-    for entry in existing_flat:
-        existing_lines.append(f"[ID {entry['id']}] ({entry['section']}) {entry['content']}")
-    existing_text = '\n'.join(existing_lines) if existing_lines else '(none yet)'
-
-    extract_sys = MEMORY_EXTRACT_PROMPT.replace('{existing_memories}', existing_text)
-    extract_user = f"User: {user_message}\nLeader: {str(final_response or '')}"
-
-    extract_raw = completion_response(
-        model=model_id,
-        system_prompt=extract_sys,
-        user_prompt=extract_user,
-        temperature=0.2
-    )
-    extracted_json = extract_json_from_text(extract_raw)
-    payload = json.loads(extracted_json) if extracted_json else {}
-    result['payload'] = payload
-
-    updated_items = payload.get('updated_memories', [])
-    deleted_ids = payload.get('deleted_memory_ids', [])
-    new_memories = payload.get('new_memories', [])
-
-    if isinstance(updated_items, list):
-        for item in updated_items:
-            if not isinstance(item, dict):
-                continue
-            mem_id = item.get('id')
-            content = str(item.get('content') or '').strip()
-            if mem_id is None or not content:
-                continue
-            try:
-                memory_manager.update_memory(int(mem_id), content, config)
-                result['updated'] += 1
-            except Exception:
-                continue
-
-    if isinstance(deleted_ids, list):
-        for mem_id in sorted(deleted_ids, reverse=True):
-            try:
-                memory_manager.delete_memory(int(mem_id), config)
-                result['deleted'] += 1
-            except Exception:
-                continue
-
-    if isinstance(new_memories, list) and new_memories:
-        before = len(memory_manager.read_flat(config))
-        memory_manager.add_memories_bulk(new_memories, config)
-        after = len(memory_manager.read_flat(config))
-        result['added'] += max(0, after - before)
-
-    return result
-
-
-def _build_model_document_inputs(
-    conversation_id,
-    model_id,
-    system_prompt,
-    user_query='',
-    selected_pdf_filenames=None,
-    attach_pdf_binary=False,
-):
-    """Attach uploaded document context and optional scoped PDF binary inputs."""
-    model_info = get_model_info(model_id)
-    support_images = bool(model_info.get('support_images', False))
-    support_pdf_input = bool(model_info.get('support_pdf_input', False))
-    return build_document_context(
-        conversation_id,
-        system_prompt,
-        support_images=support_images,
-        support_pdf_input=support_pdf_input,
-        user_query=user_query,
-        selected_pdf_filenames=selected_pdf_filenames,
-        attach_pdf_binary=bool(attach_pdf_binary and support_pdf_input)
-    )
-
-
-def _completion_response_with_doc_fallback(
-    *,
-    model,
-    system_prompt,
-    user_prompt,
-    chat_history=None,
-    temperature=0.2,
-    image_urls=None,
-    pdf_inputs=None
-):
-    """Run model completion with graceful retries when multimodal payloads are rejected."""
-    try:
-        return completion_response(
-            model=model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            chat_history=chat_history,
-            temperature=temperature,
-            image_urls=image_urls,
-            pdf_inputs=pdf_inputs
-        )
-    except Exception as first_exc:
-        logger.warning(
-            "Agent completion failed with document inputs (model=%s, image_inputs=%s, pdf_inputs=%s): %s",
-            model,
-            bool(image_urls),
-            bool(pdf_inputs),
-            str(first_exc)
-        )
-        if pdf_inputs:
-            try:
-                logger.warning("Retrying agent completion without PDF binary inputs (model=%s)", model)
-                return completion_response(
-                    model=model,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    chat_history=chat_history,
-                    temperature=temperature,
-                    image_urls=image_urls,
-                    pdf_inputs=None
-                )
-            except Exception:
-                pass
-
-        if image_urls:
-            try:
-                logger.warning("Retrying agent completion without image/PDF binary inputs (model=%s)", model)
-                return completion_response(
-                    model=model,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    chat_history=chat_history,
-                    temperature=temperature,
-                    image_urls=None,
-                    pdf_inputs=None
-                )
-            except Exception:
-                pass
-
-        raise first_exc
-
-
-def _run_agent_single_leader_workflow(
-    *,
-    conv,
-    config,
-    user_message,
-    user_system_prompt,
-    chat_history,
-    conversation_id,
-    run_group_id,
-    emit_chat,
-    auto_save_chat,
-    stop_if_aborted
-):
-    leader_model_id = str(config.get('Leader') or '').strip()
-    skills_cfg = config.get('skills', {}) if isinstance(config.get('skills', {}), dict) else {}
-    skills_root = str(skills_cfg.get('folder') or 'skills').strip() or 'skills'
-    allow_legacy_flat = bool(skills_cfg.get('allow_legacy_flat', True))
-    discovered_skills = skill_registry.discover_skills(skills_root, allow_legacy_flat=allow_legacy_flat)
-
-    skill_catalog = skill_registry.build_skill_catalog(discovered_skills)
-
-    _emit_agent_step(
-        emit_chat,
-        run_group_id,
-        'skills_catalog',
-        'ready',
-        f'Discovered {len(discovered_skills)} skills',
-        payload={'skills': skill_catalog}
-    )
-
-    if not discovered_skills:
-        return "No skills were discovered. Please add skills/<name>/SKILL.md files."
-
-    memory_context = memory_manager.build_memory_context(config)
-    _emit_agent_step(
-        emit_chat,
-        run_group_id,
-        'memory_read',
-        'done',
-        'Loaded persistent memory context',
-        payload={'memory_context': memory_context}
-    )
-
-    model_map = skills_cfg.get('model_map', {}) if isinstance(skills_cfg.get('model_map', {}), dict) else {}
-    warning_interval = int((config.get('agent_loop', {}) or {}).get('warning_interval', 10) or 10)
-    warning_interval = max(1, warning_interval)
-
-    loop_observations = []
-    iteration = 0
-
-    while True:
-        if stop_if_aborted():
-            return ''
-
-        redirect_message = str(conv.get('agent_redirect_message') or '').strip()
-        if redirect_message:
-            conv['agent_redirect_message'] = ''
-            loop_observations.append(f"[redirect] {redirect_message}")
-            _emit_agent_step(
-                emit_chat,
-                run_group_id,
-                'redirect_input',
-                'applied',
-                redirect_message,
-                iteration=iteration
-            )
-
-        if iteration > 0 and (iteration % warning_interval) == 0:
-            _emit_agent_step(
-                emit_chat,
-                run_group_id,
-                'iteration_warning',
-                'notice',
-                f'Iteration {iteration} reached configured warning interval ({warning_interval})',
-                iteration=iteration
-            )
-
-        skill_inventory_text = _build_skill_inventory_text(discovered_skills)
-        context_lines = [
-            'User request:',
-            user_message,
-            '',
-            'Available skills:',
-            skill_inventory_text,
-            '',
-            'Observed results so far:'
-        ]
-        context_lines.extend(loop_observations[-12:] if loop_observations else ['(none yet)'])
-        context_text = '\n'.join(context_lines)
-
-        planner_system = LEADER_AGENT_ACTION_PROMPT
-        if memory_context:
-            planner_system += f"\n\n{memory_context}"
-        if user_system_prompt:
-            planner_system = f"{user_system_prompt}\n\n{planner_system}"
-
-        planner_system, planner_image_urls, planner_pdf_inputs = _build_model_document_inputs(
-            conversation_id,
-            leader_model_id,
-            planner_system,
-            user_query=user_message
-        )
-
-        planner_raw = _completion_response_with_doc_fallback(
-            model=leader_model_id,
-            system_prompt=planner_system,
-            user_prompt=context_text,
-            chat_history=chat_history,
-            temperature=0.2,
-            image_urls=planner_image_urls or None,
-            pdf_inputs=planner_pdf_inputs or None
-        )
-        action_payload = _parse_agent_action_payload(planner_raw)
-
-        _emit_agent_step(
-            emit_chat,
-            run_group_id,
-            'leader_plan',
-            'done',
-            action_payload.get('thought') or 'Plan generated',
-            payload=action_payload,
-            iteration=iteration
-        )
-
-        action = action_payload.get('action', {})
-        action_type = str(action.get('type') or '').strip().lower()
-
-        if action_type == 'final_response':
-            final_text = str(action.get('text') or '').strip()
-            if not final_text:
-                final_text = 'I could not generate a complete answer yet.'
-
-            try:
-                memory_model_id = _resolve_lite_model_id(config, leader_model_id)
-                memory_result = _run_memory_management_agent(
-                    config,
-                    memory_model_id,
-                    user_message,
-                    final_text
-                )
-                _emit_agent_step(
-                    emit_chat,
-                    run_group_id,
-                    'memory_write',
-                    'done',
-                    f"Memory updated (+{memory_result['added']} ~{memory_result['updated']} -{memory_result['deleted']})",
-                    payload=memory_result
-                )
-            except Exception as exc:
-                _emit_agent_step(
-                    emit_chat,
-                    run_group_id,
-                    'memory_write',
-                    'error',
-                    f'Memory update failed: {str(exc)}',
-                    payload={'error': str(exc)}
-                )
-
-            return final_text
-
-        if action_type != 'skill_call':
-            loop_observations.append('[planner] Invalid action type returned; retrying.')
-            iteration += 1
-            continue
-
-        skill_id = str(action.get('skill') or '').strip()
-        skill_args = action.get('args') if isinstance(action.get('args'), dict) else {}
-        reason = str(action.get('reason') or '').strip()
-        local_tool = action.get('local_tool') if isinstance(action.get('local_tool'), dict) else None
-
-        selected_pdf_filenames = []
-        if str(skill_id).strip().lower() == PDF_READER_SKILL_ID:
-            requested_pdf_filenames = _extract_skill_pdf_filenames(skill_args)
-            selected_pdf_filenames = _resolve_selected_uploaded_pdf_filenames(
-                conv,
-                requested_filenames=requested_pdf_filenames,
-                default_to_all=False
-            )
-            if not selected_pdf_filenames:
-                loop_observations.append(
-                    '[skill-error] pdfer-skill requires valid args.filenames matching uploaded PDFs.'
-                )
-                _emit_agent_step(
-                    emit_chat,
-                    run_group_id,
-                    'skill_call',
-                    'error',
-                    'pdfer-skill requires valid filenames from uploaded PDFs',
-                    payload={'skill': skill_id, 'args': skill_args},
-                    iteration=iteration
-                )
-                iteration += 1
-                continue
-
-            skill_args = dict(skill_args)
-            skill_args['filenames'] = selected_pdf_filenames
-
-        skill_def = skill_registry.get_skill_by_id(discovered_skills, skill_id)
-        if not skill_def:
-            loop_observations.append(f"[skill-error] Skill not found: {skill_id}")
-            _emit_agent_step(
-                emit_chat,
-                run_group_id,
-                'skill_call',
-                'error',
-                f'Skill not found: {skill_id}',
-                payload={'skill': skill_id, 'args': skill_args},
-                iteration=iteration
-            )
-            iteration += 1
-            continue
-
-        skill_model_id = str(model_map.get(skill_def.skill_id) or leader_model_id).strip() or leader_model_id
-        tool_result = None
-
-        _emit_agent_step(
-            emit_chat,
-            run_group_id,
-            'skill_call',
-            'running',
-            f"Calling {skill_def.skill_id}",
-            payload={
-                'skill': skill_def.skill_id,
-                'reason': reason,
-                'args': skill_args,
-                'model': skill_model_id,
-                'local_tool': local_tool
-            },
-            iteration=iteration
-        )
-
-        if local_tool:
-            _emit_agent_step(
-                emit_chat,
-                run_group_id,
-                'skill_tool',
-                'running',
-                f"Running {skill_def.skill_id}/{local_tool.get('script')}",
-                payload={'skill': skill_def.skill_id, 'local_tool': local_tool},
-                iteration=iteration
-            )
-            tool_result = skill_tool_runner.run_skill_script(
-                skill_file_path=skill_def.path,
-                script_name=local_tool.get('script'),
-                args=local_tool.get('args', [])
-            )
-            tool_status = 'done' if tool_result.get('ok') else 'error'
-            _emit_agent_step(
-                emit_chat,
-                run_group_id,
-                'skill_tool',
-                tool_status,
-                f"{skill_def.skill_id} tool {tool_status}",
-                payload=tool_result,
-                iteration=iteration
-            )
-            if tool_result.get('ok'):
-                loop_observations.append(
-                    f"[tool:{skill_def.skill_id}] {local_tool.get('script')} succeeded"
-                )
-            else:
-                loop_observations.append(
-                    f"[tool-error:{skill_def.skill_id}] {tool_result.get('error', 'tool failed')}"
-                )
-
-        skill_system_prompt = SKILL_EXECUTION_PROMPT_TEMPLATE.format(
-            skill_id=skill_def.skill_id,
-            skill_description=skill_def.description,
-            skill_content=skill_def.content
-        )
-        attach_pdf_binary = bool(skill_def.skill_id == PDF_READER_SKILL_ID)
-        skill_system_prompt, skill_image_urls, skill_pdf_inputs = _build_model_document_inputs(
-            conversation_id,
-            skill_model_id,
-            skill_system_prompt,
-            user_query=str(skill_args.get('task') or user_message),
-            selected_pdf_filenames=selected_pdf_filenames,
-            attach_pdf_binary=attach_pdf_binary
-        )
-        skill_user_prompt = json.dumps({
-            'task': skill_args.get('task') or user_message,
-            'args': skill_args,
-            'reason': reason,
-            'local_tool_result': tool_result
-        }, ensure_ascii=False, indent=2)
-
-        skill_result_raw = _completion_response_with_doc_fallback(
-            model=skill_model_id,
-            system_prompt=skill_system_prompt,
-            user_prompt=skill_user_prompt,
-            chat_history=None,
-            temperature=0.2,
-            image_urls=skill_image_urls or None,
-            pdf_inputs=skill_pdf_inputs or None
-        )
-        parsed_skill_result = _parse_skill_result_payload(skill_result_raw)
-
-        _emit_agent_step(
-            emit_chat,
-            run_group_id,
-            'skill_call',
-            'done',
-            f"{skill_def.skill_id} completed",
-            payload={
-                'skill': skill_def.skill_id,
-                'args': skill_args,
-                'result': parsed_skill_result,
-                'model': skill_model_id
-            },
-            iteration=iteration
-        )
-
-        loop_observations.append(
-            f"[skill:{skill_def.skill_id}] {parsed_skill_result.get('result', '')[:800]}"
-        )
-
-        iteration += 1
-
-
 def handle_message_task(data, conversation_id):
-    """Handle user message and run the council workflow"""
-    user_message = data.get('message', '')
-    user_system_prompt = data.get('system_prompt', '')
-    existing_user_message_id = str(data.get('existing_user_message_id') or '').strip()
+    conv = get_conversation(conversation_id)
+    group = _build_run_group_id(conversation_id)
+    conv['current_run_group_id'] = group
+    user_message = str(data.get('message') or '')
+    user_system = str(data.get('system_prompt') or '')
 
     def emit_chat(event, payload=None):
-        enriched = dict(payload or {})
-        enriched['chat_id'] = conversation_id
-        socketio.emit(event, enriched, to=conversation_id)
-            
-    def auto_save_chat():
-        persist_chat_snapshot(conversation_id, user_system_prompt)
+        socketio.emit(event, dict(payload or {}, chat_id=conversation_id), to=conversation_id)
 
-    def finalize_generation():
-        conv['is_generating'] = False
-        conv['pending_message_id'] = None
-
-    def complete_workflow(include_run_group_end=True):
-        emit_chat('all_done')
-        if include_run_group_end:
-            emit_chat('run_group_end', {
-                'run_group_id': run_group_id,
-                'timestamp': datetime.now().strftime("%H:%M:%S")
-            })
-        conv['current_run_group_id'] = None
-        finalize_generation()
-
-    def stop_if_aborted():
+    def publish(phase, number, member, text, payload):
         if conv['abort_event'].is_set():
-            complete_workflow(include_run_group_end=False)
-            return True
-        return False
+            raise CouncilStopped()
+        _publish_council_message(conversation_id, emit_chat, member, phase, number, group, text, payload)
+        persist_chat_snapshot(conversation_id, user_system)
 
-    conv = get_conversation(conversation_id)
-    run_group_id = _build_run_group_id(conversation_id)
-    conv['current_run_group_id'] = run_group_id
-    current_user_index = None
-
-    if existing_user_message_id:
-        for idx, msg in enumerate(conv.get('messages', [])):
-            if msg.get('id') == existing_user_message_id and msg.get('role') == 'user':
-                current_user_index = idx
-                existing_raw = msg.get('raw_markdown')
-                user_message = existing_raw if isinstance(existing_raw, str) and existing_raw else msg.get('content', '')
-                msg['run_group_id'] = run_group_id
-                break
-
-    if current_user_index is None:
-        appended_user = append_conversation_message(
-            conversation_id,
-            "user",
-            user_message,
-            raw_markdown=user_message,
-            run_group_id=run_group_id
-        )
-        current_user_index = len(conv.get('messages', [])) - 1
-        existing_user_message_id = appended_user.get('id', '')
-
-    auto_save_chat()
-
-    emit_chat('run_group_start', {
-        'run_group_id': run_group_id,
-        'timestamp': datetime.now().strftime("%H:%M:%S")
-    })
-
-    # Load council config
-    config = load_config()
-    history_context_mode = _normalize_history_context_mode(config.get('history_context_mode', 'final_only'))
-
-    # Build chat history (exclude current user message) using configured prompt policy.
-    chat_history = _build_prompt_chat_history(
-        conv.get('messages', []),
-        current_user_index,
-        history_context_mode
-    )
-
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    emit_chat('console_log', {
-        'message': (
-            f"[{timestamp}] Leader-agent workflow started "
-            f"(history: {history_context_mode})"
-        )
-    })
+    def take_redirects():
+        with conv['run_lock']:
+            updates = conv['redirect_messages'][:]
+            conv['redirect_messages'].clear()
+        return updates
 
     try:
-        final_response = _run_agent_single_leader_workflow(
-            conv=conv,
-            config=config,
-            user_message=user_message,
-            user_system_prompt=user_system_prompt,
-            chat_history=chat_history,
-            conversation_id=conversation_id,
-            run_group_id=run_group_id,
-            emit_chat=emit_chat,
-            auto_save_chat=auto_save_chat,
-            stop_if_aborted=stop_if_aborted
-        )
+        existing = str(data.get('existing_user_message_id') or '')
+        index = next((i for i, msg in enumerate(conv['messages'])
+                      if existing and msg.get('id') == existing and msg.get('role') == 'user'), None)
+        if index is None:
+            append_conversation_message(conversation_id, 'user', user_message,
+                                        raw_markdown=user_message, run_group_id=group)
+            index = len(conv['messages']) - 1
+        else:
+            msg = conv['messages'][index]
+            user_message = msg.get('raw_markdown') or msg.get('content', '')
+            msg['run_group_id'] = group
+        config = load_config()
+        settings = config['council']
+        history = _build_prompt_chat_history(conv['messages'], index, _normalize_history_context_mode(config.get('history_context_mode', 'final_only')))
+        documents = {name: dict(doc) for name, doc in conv.get('uploaded_documents', {}).items()}
+        memory = memory_manager.build_memory_context(config)
+        emit_chat('run_group_start', {'run_group_id': group, 'timestamp': datetime.now().strftime('%H:%M:%S')})
+        publish('agenda', 0, None, '**Speaking order:** ' + ' → '.join(member['name'] for member in settings['members'])
+                + f"\n\nUp to {settings['discussion_rounds']} discussion rounds; "
+                + f"{settings['max_revisions']} draft revisions. Ballots are revealed together.", settings)
+
+        def request_turn(member, system, prompt, phase, number, private):
+            if user_system:
+                system += '\n\nUser preferences:\n' + user_system
+            if memory:
+                system += '\n\n' + memory
+            return _request_council_turn(
+                conversation_id=conversation_id, emit_chat=emit_chat, member=member,
+                system=system, prompt=prompt, phase=phase, number=number, group=group,
+                history=history, documents=documents, timeout=settings['turn_timeout_seconds'],
+                aborted=conv['abort_event'].is_set,
+            )
+
+        result = run_council(settings=settings, user_message=user_message, request_turn=request_turn,
+                             publish=publish, stopped=conv['abort_event'].is_set, take_redirects=take_redirects)
+        if conv['abort_event'].is_set():
+            raise CouncilStopped()
+        chair = next(member for member in settings['members'] if member['id'] == settings['chair'])
+        _publish_council_message(conversation_id, emit_chat, chair, 'final', result.draft_number,
+                                 group, result.markdown(), {'approved': result.approved, 'ballots': result.ballots,
+                                                           'draft_number': result.draft_number}, final=True)
+    except CouncilStopped:
+        emit_chat('console_log', {'message': 'Council stopped. No further turns or final approval will be issued.'})
     except Exception as exc:
-        _log_internal_error('leader agent workflow failed', exc)
-        final_response = 'I encountered an internal error while running the agent workflow.'
+        _log_internal_error('Council workflow failed', exc)
+        _publish_council_message(conversation_id, emit_chat, None, 'final', 0, group,
+                                 f'Council could not complete: {exc}', {'approved': False}, final=True)
+    finally:
+        persist_chat_snapshot(conversation_id, user_system)
+        conv['pending_message_id'] = None
+        conv['current_run_group_id'] = None
+        # Emit completion before accepting the next sitting, so stale completion
+        # events cannot mark a newer sitting as finished.
+        with conv['run_lock']:
+            emit_chat('run_group_end', {'run_group_id': group, 'stopped': conv['abort_event'].is_set()})
+            emit_chat('all_done', {'run_group_id': group})
+            conv['is_generating'] = False
 
-    if stop_if_aborted():
-        return
-
-    final_response = str(final_response or '').strip()
-    if not final_response:
-        final_response = 'I could not generate a final answer this time.'
-
-    final_message_id = uuid.uuid4().hex
-    final_bot_id = f"agent-leader-final-{uuid.uuid4().hex[:8]}"
-    final_model_id = str(config.get('Leader') or '')
-    final_label = f"Leader - Final Response ({final_model_id.strip()})"
-    final_ts = datetime.now().strftime("%H:%M:%S")
-
-    try:
-        append_conversation_message(
-            conversation_id,
-            role='assistant',
-            content=f"[{final_label}] {final_response}",
-            raw_markdown=final_response,
-            id=final_message_id,
-            bot_name=final_label,
-            bot_id=final_bot_id,
-            run_group_id=run_group_id,
-            run_id=final_message_id,
-            role_name='Leader',
-            model_id=final_model_id,
-            thinking='',
-            stream_status='done',
-            is_final_response=True
-        )
-
-        emit_chat('ai_response_start', {
-            'bot_name': final_label,
-            'bot_id': final_bot_id,
-            'timestamp': final_ts,
-            'message_id': final_message_id,
-            'run_id': final_message_id,
-            'run_group_id': run_group_id,
-            'role_name': 'Leader',
-            'model_id': final_model_id,
-            'is_final_response': True
-        })
-        emit_chat('ai_response_end', {
-            'bot_name': final_label,
-            'bot_id': final_bot_id,
-            'message': final_response,
-            'thinking': '',
-            'timestamp': final_ts,
-            'message_id': final_message_id,
-            'run_id': final_message_id,
-            'run_group_id': run_group_id,
-            'role_name': 'Leader',
-            'model_id': final_model_id,
-            'is_final_response': True
-        })
-    except Exception as exc:
-        _log_internal_error('leader final response emit failed', exc)
-        emit_chat('console_log', {
-            'message': f"[{datetime.now().strftime('%H:%M:%S')}] Final response emit fallback engaged"
-        })
-        emit_chat('ai_response_end', {
-            'bot_name': final_label,
-            'bot_id': final_bot_id,
-            'message': final_response,
-            'thinking': '',
-            'timestamp': final_ts,
-            'message_id': final_message_id,
-            'run_id': final_message_id,
-            'run_group_id': run_group_id,
-            'role_name': 'Leader',
-            'model_id': final_model_id,
-            'is_final_response': True
-        })
-
-    emit_chat('council_status', {
-        'role': 'Leader',
-        'status': 'done',
-        'run_group_id': run_group_id
-    })
-
-    auto_save_chat()
-    complete_workflow(include_run_group_end=True)
-    return
 
 @socketio.on('stop_generation')
 def handle_stop(data):
@@ -3479,10 +1506,9 @@ def handle_stop(data):
     conversation_id = data.get('chat_id') if data and data.get('chat_id') else request.sid
     conv = get_conversation(conversation_id)
     conv['abort_event'].set()
-    conv['is_generating'] = False
     timestamp = datetime.now().strftime("%H:%M:%S")
     emit('console_log', {
-        'message': f"[{timestamp}] Stop requested - will stop after current AI finishes",
+        'message': f"[{timestamp}] Stop requested - cancelling this council sitting",
         'chat_id': conversation_id
     }, to=conversation_id)
 
@@ -3495,7 +1521,6 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle client disconnection"""
-    session_id = request.sid
     # Keep per-chat state alive after UI switches/disconnects.
     # Conversation lifecycle is tied to chat IDs and persisted history, not socket IDs.
     print('Client disconnected')
@@ -3506,6 +1531,9 @@ def handle_clear_history(data=None):
     chat_id = data.get('chat_id') if data else None
     conversation_id = chat_id if chat_id else request.sid
     conv = get_conversation(conversation_id)
+    if conv.get('is_generating'):
+        conv['abort_event'].set()
+        return
     conv['messages'] = []
     conv['uploaded_documents'] = {}
     conv['pending_message_id'] = None

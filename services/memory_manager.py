@@ -88,7 +88,7 @@ def _blank_template():
     lines = [
         '# Cross-Chat Memory',
         '',
-        '> This file is automatically managed by the memory system.',
+        '> Memories are managed manually; no model extracts or changes them automatically.',
         '> Memories persist across all conversations and are injected into every chat.',
         '> You can also edit this file manually.',
         '',
@@ -128,7 +128,7 @@ def _serialize_sections(sections):
     lines = [
         '# Cross-Chat Memory',
         '',
-        '> This file is automatically managed by the memory system.',
+        '> Memories are managed manually; no model extracts or changes them automatically.',
         '> Memories persist across all conversations and are injected into every chat.',
         '> You can also edit this file manually.',
         '',
@@ -172,16 +172,8 @@ def max_memories(config=None):
 
 
 def auto_extract_enabled(config=None):
-    """Check if auto-extraction is turned on."""
-    if config and isinstance(config, dict):
-        mem_cfg = config.get('memory', {})
-        if isinstance(mem_cfg, dict):
-            val = mem_cfg.get('auto_extract', True)
-            if isinstance(val, bool):
-                return val
-            if isinstance(val, str):
-                return val.strip().lower() in ('1', 'true', 'yes', 'on')
-    return True
+    """Automatic model-based memory extraction has been removed."""
+    return False
 
 
 def read_all(config=None):
