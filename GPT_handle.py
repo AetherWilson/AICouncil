@@ -7,6 +7,7 @@ import opencc
 import base64
 import logging
 import json
+import re
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -58,6 +59,7 @@ def log_info(folder, file_name, file_content):
         os.remove(oldest_file)
     
     # Create full file path
+    file_name = re.sub(r'[<>:"/\\|?*]', "_", str(file_name))
     file_path = os.path.join(folder, file_name)
     
     # Write content to file
@@ -297,7 +299,7 @@ OUTPUT
     log_info("gpt_responses", f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{model}.txt", log_content)
     return f"{prefix or ''}{content}"
 
-def completion_response_stream(model, system_prompt, user_prompt, chat_history=None, prefix=None, temperature=1.0, image_urls=None, pdf_inputs=None, timeout_seconds=None, cancel_event=None):
+def completion_response_stream(model, system_prompt, user_prompt, chat_history=None, prefix=None, temperature=1.0, image_urls=None, pdf_inputs=None, timeout_seconds=None, cancel_event=None, max_output_tokens=None):
     """
     使用OpenAI API以串流模式生成聊天回應，逐塊產出文字。
     :param model: 使用的模型名稱。
@@ -322,11 +324,13 @@ def completion_response_stream(model, system_prompt, user_prompt, chat_history=N
         request_client = client.with_options(timeout=timeout_seconds, max_retries=0) if timeout_seconds is not None else client
         if cancel_event is not None and cancel_event.is_set():
             return
+        output_limit = {'max_tokens': max_output_tokens} if max_output_tokens is not None else {}
         response = request_client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
-            stream=True
+            stream=True,
+            **output_limit
         )
     except httpx.TimeoutException as exc:
         logger.exception("Stream start timed out for %s", model)
@@ -342,13 +346,19 @@ def completion_response_stream(model, system_prompt, user_prompt, chat_history=N
     full_thinking = ''
     in_think_tag = False  # state for parsing inline <think>...</think>
     completed = False
+    finish_reason = None
+    observed_usage = None
 
     try:
         for chunk in response:
             if cancel_event is not None and cancel_event.is_set():
                 return
+            usage = getattr(chunk, 'usage', None)
+            if usage is not None:
+                observed_usage = usage.model_dump() if hasattr(usage, 'model_dump') else usage
             if not chunk.choices:
                 continue
+            finish_reason = getattr(chunk.choices[0], 'finish_reason', None) or finish_reason
             delta = chunk.choices[0].delta
 
             # ── Source 1: DeepSeek-R1 / many proxy gateways ──────────────────────
@@ -395,6 +405,10 @@ def completion_response_stream(model, system_prompt, user_prompt, chat_history=N
                         raw = raw[start + 7:]  # skip <think>
                         in_think_tag = True
 
+        if finish_reason:
+            yield ('finish', finish_reason)
+        if isinstance(observed_usage, dict):
+            yield ('usage', observed_usage)
         completed = True
 
     finally:

@@ -7,3 +7,4 @@ python-dotenv
 Pillow
 python-docx
 opencc
+tiktoken>=0.7,<1

@@ -11,13 +11,13 @@ from datetime import datetime
 import re
 from GPT_handle import completion_response_stream, client
 import os
-from werkzeug.utils import secure_filename
 from PIL import Image, UnidentifiedImageError
 import base64
 import logging
 from services.config_store import ConfigStore, get_model_info as resolve_model_info
 from services import memory_manager
 from services.council_workflow import run_council, CouncilStopped, parse_object
+from services.context_manager import ContextManager, IncompleteResponseError, is_context_overflow
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -60,6 +60,9 @@ def _new_conversation_state():
         'run_group_counter': 0,
         'current_run_group_id': None,
         'redirect_messages': [],
+        'context_state': {},
+        'context_usage': {},
+        'force_compact': False,
         'run_lock': threading.Lock()
     }
 
@@ -171,7 +174,8 @@ def _replace_conversation_messages_from_ui(conversation_id, messages):
                 content=raw_user,
                 raw_markdown=raw_user,
                 id=(msg.get('id') if isinstance(msg, dict) else None) or uuid.uuid4().hex,
-                run_group_id=(msg.get('run_group_id') if isinstance(msg, dict) else None)
+                run_group_id=(msg.get('run_group_id') if isinstance(msg, dict) else None),
+                attachments=_coerce_message_attachments(msg.get('attachments'))
             )
         elif msg_type == 'ai':
             bot_name = (msg.get('botName') if isinstance(msg, dict) else None) or (msg.get('sender') if isinstance(msg, dict) else None) or 'AI'
@@ -203,6 +207,18 @@ def _replace_conversation_messages_from_ui(conversation_id, messages):
 
     _sync_run_group_counter(conversation_id, normalized_messages)
     return len(conv['messages'])
+
+
+def _write_chat_file(filepath, payload):
+    """Publish a complete JSON snapshot atomically, retaining the last good file."""
+    temporary = filepath + '.' + uuid.uuid4().hex + '.tmp'
+    try:
+        with open(temporary, 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        os.replace(temporary, filepath)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def _get_last_preview(messages):
@@ -274,8 +290,7 @@ def _migrate_chat_file(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             chat_data = json.load(f)
         if migrate_chat_payload(chat_data):
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(chat_data, f, ensure_ascii=False, indent=2)
+            _write_chat_file(filepath, chat_data)
             return True
     except Exception as e:
         print(f"Chat migration error for {filepath}: {e}")
@@ -474,6 +489,7 @@ def _build_document_response(doc_payload):
     """Return the UI-safe document payload without internal-only fields."""
     return {
         'filename': doc_payload.get('filename'),
+        'storage_key': doc_payload.get('storage_key') or os.path.basename(doc_payload.get('filepath') or ''),
         'type': doc_payload.get('type'),
         'size': doc_payload.get('size'),
         'pages': doc_payload.get('pages'),
@@ -496,9 +512,17 @@ def _coerce_message_attachments(raw_attachments):
         normalized.append({
             'filename': filename,
             'type': str(item.get('type') or '').strip().lower(),
+            'storage_key': item.get('storage_key'),
             'pages': item.get('pages'),
         })
     return normalized
+
+
+def _stored_document_path(metadata):
+    key = str(metadata.get('storage_key') or metadata.get('filename') or '')
+    if not key or key != os.path.basename(key) or '\\' in key or '\x00' in key:
+        return None
+    return os.path.join(app.config['UPLOAD_FOLDER'], key)
 
 
 def _rehydrate_uploaded_documents_from_attachments(conv, attachments):
@@ -513,11 +537,14 @@ def _rehydrate_uploaded_documents_from_attachments(conv, attachments):
     restored_count = 0
     for doc_meta in attachments:
         filename = str(doc_meta.get('filename') or '').strip()
-        if not filename or filename in uploaded_docs:
+        if not filename:
+            continue
+        existing = uploaded_docs.get(filename)
+        if existing and (not doc_meta.get('storage_key') or existing.get('storage_key') == doc_meta.get('storage_key')):
             continue
 
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        if not os.path.isfile(filepath):
+        filepath = _stored_document_path(doc_meta)
+        if not filepath or not os.path.isfile(filepath):
             continue
 
         try:
@@ -530,6 +557,7 @@ def _rehydrate_uploaded_documents_from_attachments(conv, attachments):
             _log_internal_error(f'rehydrate_documents skipped {filename}', exc)
             continue
 
+        doc_payload['storage_key'] = os.path.basename(filepath)
         uploaded_docs[filename] = doc_payload
         restored_count += 1
 
@@ -725,7 +753,7 @@ def upload_document():
     if file.filename == '':
         return jsonify({'success': False, 'error': 'No file selected'})
 
-    filename = secure_filename(file.filename)
+    filename = re.sub(r'[\x00-\x1f\x7f]', '', os.path.basename(file.filename.replace('\\', '/'))).strip()[:240]
     if not filename:
         return jsonify({'success': False, 'error': 'Invalid file name'})
 
@@ -733,7 +761,8 @@ def upload_document():
     if file_ext not in SUPPORTED_UPLOAD_EXTENSIONS:
         return jsonify({'success': False, 'error': 'Only PDF, JPG, JPEG, PNG, DOCX, DOCM, DOTX, and DOTM files are allowed'})
 
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    storage_key = uuid.uuid4().hex + '.' + file_ext
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], storage_key)
     try:
         file.save(filepath)
         doc_payload = _extract_document_payload(filepath, filename)
@@ -744,6 +773,7 @@ def upload_document():
         _log_internal_error('upload_document unexpected failure', exc)
         return jsonify({'success': False, 'error': 'Failed to process uploaded file'})
 
+    doc_payload['storage_key'] = storage_key
     conv['uploaded_documents'][filename] = doc_payload
     return jsonify({
         'success': True,
@@ -765,8 +795,8 @@ def restore_documents():
         filename = doc_meta.get('filename')
         if not filename:
             continue
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        if not os.path.exists(filepath):
+        filepath = _stored_document_path(doc_meta)
+        if not filepath or not os.path.isfile(filepath):
             continue
 
         try:
@@ -779,6 +809,7 @@ def restore_documents():
             _log_internal_error(f'restore_documents skipped {filename}', exc)
             continue
 
+        doc_payload['storage_key'] = os.path.basename(filepath)
         conv['uploaded_documents'][filename] = doc_payload
         restored.append(_build_document_response(doc_payload))
 
@@ -795,14 +826,9 @@ def remove_document():
     filename = data.get('filename')
 
     if filename in conv['uploaded_documents']:
+        # Detach from future requests, retaining immutable source files referenced
+        # by earlier user messages so editing/regeneration can restore them.
         del conv['uploaded_documents'][filename]
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        if os.path.exists(filepath):
-            try:
-                os.remove(filepath)
-            except OSError as exc:
-                _log_internal_error(f'remove_document failed to delete {filename}', exc)
-                return jsonify({'success': False, 'error': 'Failed to remove file'})
         return jsonify({'success': True})
 
     return jsonify({'success': False, 'error': 'File not found'})
@@ -824,12 +850,15 @@ def save_chat():
         'selectedBots': data.get('selectedBots', []),
         'systemPrompt': data.get('systemPrompt', ''),
         'timestamp': data.get('timestamp', datetime.now().isoformat()),
-        'uploadedDocuments': data.get('uploadedDocuments', [])
+        'uploadedDocuments': data.get('uploadedDocuments', []),
+        'context_state': get_conversation(chat_id).get('context_state', {}),
+        'context_usage': get_conversation(chat_id).get('context_usage', {})
     }
 
+    if get_conversation(chat_id).get('is_generating'):
+        chat_data['messages'] = _history_to_ui_messages(chat_id)
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(chat_data, f, ensure_ascii=False, indent=2)
+        _write_chat_file(filepath, chat_data)
     except (OSError, TypeError, ValueError) as exc:
         _log_internal_error('save_chat failed', exc)
         return jsonify({'success': False, 'error': 'Failed to save chat'})
@@ -895,8 +924,7 @@ def load_chat(chat_id):
 
     if migrate_chat_payload(chat_data):
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(chat_data, f, ensure_ascii=False, indent=2)
+            _write_chat_file(filepath, chat_data)
         except OSError as exc:
             _log_internal_error(f'load_chat migration write failed for {normalized_chat_id}', exc)
 
@@ -906,6 +934,8 @@ def load_chat(chat_id):
 
     target_conv = get_conversation(normalized_chat_id)
     if not target_conv.get('is_generating'):
+        target_conv['context_state'] = chat_data.get('context_state', {})
+        target_conv['context_usage'] = chat_data.get('context_usage', {})
         hydrated_count = _replace_conversation_messages_from_ui(
             normalized_chat_id,
             chat_data.get('messages', [])
@@ -915,6 +945,10 @@ def load_chat(chat_id):
 
     _sync_run_group_counter(normalized_chat_id, chat_data.get('messages', []))
     chat_data['isGenerating'] = get_conversation(normalized_chat_id).get('is_generating', False)
+    if chat_data['isGenerating']:
+        chat_data['messages'] = _history_to_ui_messages(normalized_chat_id)
+        chat_data['context_usage'] = target_conv.get('context_usage', {})
+        chat_data['context_state'] = target_conv.get('context_state', {})
     return jsonify({'success': True, 'chat': chat_data})
 
 @app.route('/api/delete_chat', methods=['POST'])
@@ -954,12 +988,15 @@ def save_temp_chat():
         'systemPrompt': data.get('systemPrompt', ''),
         'timestamp': datetime.now().isoformat(),
         'isTemporary': True,
-        'uploadedDocuments': data.get('uploadedDocuments', [])
+        'uploadedDocuments': data.get('uploadedDocuments', []),
+        'context_state': get_conversation(chat_id).get('context_state', {}),
+        'context_usage': get_conversation(chat_id).get('context_usage', {})
     }
 
+    if get_conversation(chat_id).get('is_generating'):
+        chat_data['messages'] = _history_to_ui_messages(chat_id)
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(chat_data, f, ensure_ascii=False, indent=2)
+        _write_chat_file(filepath, chat_data)
     except (OSError, TypeError, ValueError) as exc:
         _log_internal_error('save_temp_chat failed', exc)
         return jsonify({'success': False, 'error': 'Failed to save chat'})
@@ -1027,8 +1064,7 @@ def load_temp_chat(chat_id):
 
     if migrate_chat_payload(chat_data):
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(chat_data, f, ensure_ascii=False, indent=2)
+            _write_chat_file(filepath, chat_data)
         except OSError as exc:
             _log_internal_error(f'load_temp_chat migration write failed for {normalized_chat_id}', exc)
 
@@ -1038,6 +1074,8 @@ def load_temp_chat(chat_id):
 
     target_conv = get_conversation(normalized_chat_id)
     if not target_conv.get('is_generating'):
+        target_conv['context_state'] = chat_data.get('context_state', {})
+        target_conv['context_usage'] = chat_data.get('context_usage', {})
         hydrated_count = _replace_conversation_messages_from_ui(
             normalized_chat_id,
             chat_data.get('messages', [])
@@ -1047,6 +1085,10 @@ def load_temp_chat(chat_id):
 
     _sync_run_group_counter(normalized_chat_id, chat_data.get('messages', []))
     chat_data['isGenerating'] = get_conversation(normalized_chat_id).get('is_generating', False)
+    if chat_data['isGenerating']:
+        chat_data['messages'] = _history_to_ui_messages(normalized_chat_id)
+        chat_data['context_usage'] = target_conv.get('context_usage', {})
+        chat_data['context_state'] = target_conv.get('context_state', {})
     return jsonify({'success': True, 'chat': chat_data})
 
 @app.route('/api/delete_temp_chat', methods=['POST'])
@@ -1120,6 +1162,10 @@ def _build_prompt_chat_history(messages, end_index, history_context_mode):
         if role == 'user':
             raw = msg.get('raw_markdown')
             text = raw if isinstance(raw, str) and raw else msg.get('content', '')
+            attachments = _coerce_message_attachments(msg.get('attachments'))
+            if attachments:
+                source_labels = [doc['filename'] + (f" [{doc['storage_key']}]" if doc.get('storage_key') else '') for doc in attachments]
+                text = str(text) + '\n\n[Attached source versions: ' + '; '.join(source_labels) + ']'
             history.append({'role': 'user', 'content': text})
             continue
 
@@ -1178,7 +1224,8 @@ def _history_to_ui_messages(conversation_id):
                 'content': body,
                 'raw_markdown': body,
                 'id': msg.get('id'),
-                'run_group_id': msg.get('run_group_id')
+                'run_group_id': msg.get('run_group_id'),
+                'attachments': msg.get('attachments', [])
             })
             continue
 
@@ -1214,7 +1261,7 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
     try:
         with persistence_lock:
             conv = get_conversation(session_id)
-            is_saved = os.path.exists(
+            is_saved = session_id.startswith('chat_') or os.path.exists(
                 os.path.join(app.config['CHAT_HISTORY_FOLDER'], f'{session_id}.json')
             )
             folder = app.config['CHAT_HISTORY_FOLDER'] if is_saved else app.config['TEMP_CHAT_HISTORY_FOLDER']
@@ -1228,14 +1275,18 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
             chat_data['id'] = session_id
             chat_data['schema_version'] = CURRENT_CHAT_SCHEMA_VERSION
             if 'name' not in chat_data:
-                chat_data['name'] = 'Saved Chat' if is_saved else 'Temporary Chat'
+                first_user = next((msg.get('raw_markdown') or msg.get('content', '') for msg in conv['messages'] if msg.get('role') == 'user'), '')
+                chat_data['name'] = ' '.join(first_user.split())[:48] or 'New chat'
             chat_data['messages'] = _history_to_ui_messages(session_id)
+            chat_data['context_state'] = conv.get('context_state', {})
+            chat_data['context_usage'] = conv.get('context_usage', {})
             chat_data['selectedBots'] = chat_data.get('selectedBots', [])
             chat_data['systemPrompt'] = chat_data.get('systemPrompt', user_system_prompt)
             chat_data['timestamp'] = chat_data.get('timestamp', datetime.now().isoformat())
             chat_data['uploadedDocuments'] = [
                 {
                     'filename': doc.get('filename'),
+                    'storage_key': doc.get('storage_key'),
                     'type': doc.get('type'),
                     'size': doc.get('size'),
                     'pages': doc.get('pages'),
@@ -1247,8 +1298,7 @@ def persist_chat_snapshot(session_id, user_system_prompt=''):
             if not is_saved:
                 chat_data['isTemporary'] = True
 
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(chat_data, f, ensure_ascii=False, indent=2)
+            _write_chat_file(filepath, chat_data)
     except Exception as e:
         print(f"Snapshot save error for {session_id}: {e}")
 
@@ -1288,37 +1338,109 @@ def _publish_council_message(conversation_id, emit_chat, member, phase, number, 
     emit_chat('ai_response_end', dict(meta, message=text, thinking=''))
 
 
-def _request_council_turn(*, conversation_id, emit_chat, member, system, prompt,
-                          phase, number, group, history, documents, timeout, aborted):
-    """One bounded turn. Only this controller writes messages or emits UI events.
-
-    Timed-out worker output is discarded; it cannot append a late turn or vote.
-    Votes use the same direct-file transport, but have no public message until reveal.
-    """
-    private = phase == 'vote'
-    system, images, pdfs = build_document_context(conversation_id, system, documents)
-    meta = _council_message_meta(member, phase, number, group)
-    conv = get_conversation(conversation_id)
+def _read_model_segment(*, model, system, prompt, history, prefix, images, pdfs,
+                        output_tokens, deadline, aborted, on_content, on_usage=lambda usage: None):
+    """Consume one bounded provider stream. Worker threads never mutate chat state."""
     events = queue.Queue()
     cancel = threading.Event()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError('Council turn time limit exceeded')
 
     def worker():
-        stream = completion_response_stream(
-            model=member['model'], system_prompt=system, user_prompt=prompt,
-            chat_history=history, temperature=0.3 if private else 0.7,
-            image_urls=images or None, pdf_inputs=pdfs or None,
-            timeout_seconds=timeout, cancel_event=cancel,
-        )
+        stream = None
         try:
+            stream = completion_response_stream(
+                model=model, system_prompt=system, user_prompt=prompt, chat_history=history,
+                prefix=prefix or None, temperature=0.7, image_urls=images or None,
+                pdf_inputs=pdfs or None, timeout_seconds=remaining, cancel_event=cancel,
+                max_output_tokens=output_tokens,
+            )
             for kind, chunk in stream:
                 if cancel.is_set():
                     break
-                events.put(('chunk', kind, chunk))
-            events.put(('done', None, None))
+                events.put((kind, chunk))
+            events.put(('done', None))
         except Exception as exc:
-            events.put(('error', None, exc))
+            events.put(('error', exc))
         finally:
-            stream.close()
+            if stream is not None and hasattr(stream, 'close'):
+                stream.close()
+
+    threading.Thread(target=worker, daemon=True).start()
+    finish = 'stop'  # Older compatible gateways may omit finish_reason.
+    try:
+        while True:
+            if aborted():
+                raise CouncilStopped()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Council turn time limit exceeded')
+            try:
+                kind, value = events.get(timeout=min(0.1, remaining))
+            except queue.Empty:
+                continue
+            if kind == 'error':
+                raise value
+            if kind == 'done':
+                return finish
+            if kind == 'content':
+                on_content(str(value))
+            elif kind == 'finish':
+                finish = value
+            elif kind == 'usage':
+                on_usage(value)
+    finally:
+        cancel.set()
+
+
+def _request_council_turn(*, conversation_id, emit_chat, member, system, prompt,
+                          phase, number, group, history, documents, timeout, aborted,
+                          context_manager=None, force_compact=False):
+    """One seat keeps its turn through compaction, overflow recovery and continuation."""
+    private = phase == 'vote'
+    deadline = time.monotonic() + timeout
+    system, images, pdfs = build_document_context(conversation_id, system, documents)
+    meta = _council_message_meta(member, phase, number, group)
+    conv = get_conversation(conversation_id)
+    text, display_text, status = '', '', 'done'
+    last_save = time.monotonic()
+
+    def summarize(model, instructions, source, output_tokens):
+        pieces = []
+        finish = _read_model_segment(model=model, system=instructions, prompt=source,
+                    history=[], prefix='', images=[], pdfs=[], output_tokens=output_tokens,
+                    deadline=deadline, aborted=aborted, on_content=pieces.append)
+        if finish not in ('stop', None):
+            raise IncompleteResponseError('The context checkpoint was incomplete; original context was retained.')
+        return ''.join(pieces)
+
+    if context_manager is None:
+        context_manager = ContextManager(settings={}, history=history, summarize=summarize, stopped=aborted)
+    else:
+        context_manager.summarize = summarize
+    attachment_tokens = (len(pdfs) * context_manager.settings['pdf_token_reserve']
+                         + len(images) * context_manager.settings['image_token_reserve'])
+
+    def on_content(chunk):
+        nonlocal text, last_save
+        text += chunk
+        if not private:
+            update_message_fields(conversation_id, meta['message_id'], content=text, raw_markdown=text)
+            emit_chat('ai_response_chunk', dict(meta, chunk=chunk))
+            if time.monotonic() - last_save >= 1:
+                persist_chat_snapshot(conversation_id)
+                last_save = time.monotonic()
+
+    def on_usage(usage):
+        if isinstance(usage, dict):
+            safe = {key: usage[key] for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')
+                    if isinstance(usage.get(key), int)}
+            usage_event = {'status': 'usage', 'model': member['model'], 'usage': safe, 'run_group_id': group}
+            if isinstance(safe.get('prompt_tokens'), int):
+                usage_event.update(input_tokens=safe['prompt_tokens'], estimated=False)
+            conv['context_usage'].update(usage_event)
+            emit_chat('context_status', usage_event)
 
     emit_chat('council_status', {'role': member['id'], 'status': 'running',
                                'run_group_id': group, 'council_phase': phase, 'council_round': number})
@@ -1326,59 +1448,56 @@ def _request_council_turn(*, conversation_id, emit_chat, member, system, prompt,
         _store_council_message(conversation_id, meta, '', 'running')
         conv['pending_message_id'] = meta['message_id']
         emit_chat('ai_response_start', meta)
-    deadline = time.monotonic() + timeout
-    threading.Thread(target=worker, daemon=True).start()
-    text = ''
-    status = 'done'
-    last_save = time.monotonic()
     try:
+        continuations, overflow_retries = 0, 0
+        force = force_compact
         while True:
             if aborted():
                 raise CouncilStopped()
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f'{member["name"]} exceeded {timeout}s turn limit')
+            request_system = system
+            if text:
+                request_system += ('\n\nThe preceding assistant prefix is the end of your answer already shown. '
+                                   'Continue exactly from its last character, without repeating or restarting. '
+                                   'Complete the original required format, including any unfinished JSON or code block.')
+            prepared = context_manager.prepare(model=member['model'], system=request_system, prompt=prompt,
+                phase=phase, partial_output=text, attachment_tokens=attachment_tokens, force=force)
+            force = False
             try:
-                event, kind, value = events.get(timeout=min(0.1, remaining))
-            except queue.Empty:
+                finish = _read_model_segment(model=member['model'], system=request_system,
+                    prompt=prepared['prompt'], history=prepared['history'], prefix=prepared['prefix'],
+                    images=images, pdfs=pdfs, output_tokens=prepared['max_tokens'], deadline=deadline,
+                    aborted=aborted, on_content=on_content, on_usage=on_usage)
+            except Exception as exc:
+                if not isinstance(exc, CouncilStopped) and is_context_overflow(exc) and overflow_retries < 1 and context_manager.settings['enabled']:
+                    overflow_retries += 1
+                    force = True
+                    emit_chat('context_status', {'status': 'recovering', 'run_group_id': group})
+                    continue
+                raise
+            if finish == 'length':
+                if continuations >= context_manager.settings['max_continuations']:
+                    raise IncompleteResponseError('Output limit reached after the configured continuations; this incomplete answer was not accepted.')
+                continuations += 1
+                emit_chat('context_status', {'status': 'continuing', 'continuation': continuations,
+                                             'run_group_id': group, 'model': member['model']})
                 continue
-            if event == 'error':
-                raise value
-            if event == 'done':
-                break
-            # The council discusses submitted answers, never model reasoning traces.
-            if kind != 'content':
-                continue
-            text += str(value)
-            if not private:
-                update_message_fields(conversation_id, meta['message_id'], content=text, raw_markdown=text)
-                emit_chat('ai_response_chunk', dict(meta, chunk=str(value)))
-                if time.monotonic() - last_save >= 1:
-                    persist_chat_snapshot(conversation_id)
-                    last_save = time.monotonic()
+            if finish not in ('stop', None):
+                raise IncompleteResponseError(f'Provider ended the answer with {finish}; the answer is incomplete.')
+            break
         if aborted():
             raise CouncilStopped()
         if not text.strip():
             raise RuntimeError('Model returned an empty answer')
-        if phase == 'discussion':
-            parsed = parse_object(text)
-            if isinstance(parsed.get('contribution'), str) and parsed['contribution'].strip():
-                display_text = parsed['contribution']
-            else:
-                display_text = text
-        else:
-            display_text = text
+        parsed = parse_object(text) if phase == 'discussion' else {}
+        display_text = parsed['contribution'] if isinstance(parsed.get('contribution'), str) and parsed['contribution'].strip() else text
         return text
     except CouncilStopped:
-        status = 'stopped'
-        display_text = text + '\n\n[Stopped; incomplete turn.]'
+        status, display_text = 'stopped', text + '\n\n[Stopped; incomplete turn.]'
         raise
-    except Exception:
-        status = 'error'
-        display_text = text + '\n\n[Turn failed or timed out; incomplete output is excluded from deliberation.]'
+    except Exception as exc:
+        status, display_text = 'error', text + f'\n\n[Incomplete turn: {exc}]'
         raise
     finally:
-        cancel.set()
         if not private:
             update_message_fields(conversation_id, meta['message_id'], content=display_text,
                                   raw_markdown=display_text, stream_status=status)
@@ -1411,8 +1530,11 @@ def handle_message_wrapper(data):
                 emit('console_log', {'chat_id': conversation_id,
                                      'message': 'User update queued for the next council stage boundary.'}, to=conversation_id)
             return
+        if data.get('reset_documents'):
+            conv['uploaded_documents'] = {}
         _rehydrate_uploaded_documents_from_attachments(conv, _coerce_message_attachments(data.get('attachments')))
         conv['abort_event'].clear()
+        conv['force_compact'] = bool(conv.get('force_compact') or data.get('compact_context'))
         conv['redirect_messages'] = []
         conv['is_generating'] = True
     socketio.start_background_task(handle_message_task, data, conversation_id)
@@ -1446,17 +1568,38 @@ def handle_message_task(data, conversation_id):
                       if existing and msg.get('id') == existing and msg.get('role') == 'user'), None)
         if index is None:
             append_conversation_message(conversation_id, 'user', user_message,
-                                        raw_markdown=user_message, run_group_id=group)
+                                        raw_markdown=user_message, run_group_id=group, attachments=_coerce_message_attachments(data.get('attachments')))
             index = len(conv['messages']) - 1
         else:
             msg = conv['messages'][index]
             user_message = msg.get('raw_markdown') or msg.get('content', '')
             msg['run_group_id'] = group
+        requested_documents = _coerce_message_attachments(data.get('attachments'))
+        missing = [doc['filename'] for doc in requested_documents if doc['filename'] not in conv.get('uploaded_documents', {})]
+        if missing:
+            raise ValueError('Original attachments are unavailable: ' + ', '.join(missing))
         config = load_config()
         settings = config['council']
         history = _build_prompt_chat_history(conv['messages'], index, _normalize_history_context_mode(config.get('history_context_mode', 'final_only')))
         documents = {name: dict(doc) for name, doc in conv.get('uploaded_documents', {}).items()}
         memory = memory_manager.build_memory_context(config)
+
+        def context_event(event):
+            if conv['abort_event'].is_set():
+                raise CouncilStopped()
+            event = dict(event)
+            checkpoint = event.pop('checkpoint', None)
+            if checkpoint is not None:
+                conv['context_state'] = checkpoint
+                persist_chat_snapshot(conversation_id, user_system)
+            conv['context_usage'].update(event)
+            emit_chat('context_status', dict(event, run_group_id=group))
+
+        model_metadata = {member['model']: get_model_info(member['model']) for member in settings['members']}
+        shared_window = min(int(info.get('context_window_tokens') or config['context']['context_window_tokens']) for info in model_metadata.values())
+        context_manager = ContextManager(settings=config['context'], history=history,
+            state=conv['context_state'], model_info=lambda model: model_metadata.get(model, {}), shared_window=shared_window,
+            summarize=lambda *args: '', notify=context_event, stopped=conv['abort_event'].is_set)
         emit_chat('run_group_start', {'run_group_id': group, 'timestamp': datetime.now().strftime('%H:%M:%S')})
         publish('agenda', 0, None, '**Speaking order:** ' + ' → '.join(member['name'] for member in settings['members'])
                 + f"\n\nUp to {settings['discussion_rounds']} discussion rounds; "
@@ -1472,12 +1615,19 @@ def handle_message_task(data, conversation_id):
                 system=system, prompt=prompt, phase=phase, number=number, group=group,
                 history=history, documents=documents, timeout=settings['turn_timeout_seconds'],
                 aborted=conv['abort_event'].is_set,
+                context_manager=context_manager, force_compact=conv.pop('force_compact', False),
             )
 
         result = run_council(settings=settings, user_message=user_message, request_turn=request_turn,
                              publish=publish, stopped=conv['abort_event'].is_set, take_redirects=take_redirects)
         if conv['abort_event'].is_set():
             raise CouncilStopped()
+        late_updates = take_redirects()
+        if late_updates:
+            result.approved = False
+            result.error = 'New user instructions arrived after voting; this draft requires another review.'
+            for update in late_updates:
+                publish('direction', 0, None, str(update), {})
         chair = next(member for member in settings['members'] if member['id'] == settings['chair'])
         _publish_council_message(conversation_id, emit_chat, chair, 'final', result.draft_number,
                                  group, result.markdown(), {'approved': result.approved, 'ballots': result.ballots,
@@ -1498,6 +1648,13 @@ def handle_message_task(data, conversation_id):
             emit_chat('run_group_end', {'run_group_id': group, 'stopped': conv['abort_event'].is_set()})
             emit_chat('all_done', {'run_group_id': group})
             conv['is_generating'] = False
+
+
+@socketio.on('compact_context')
+def handle_compact_context(data):
+    conversation_id = data.get('chat_id') or request.sid
+    get_conversation(conversation_id)['force_compact'] = True
+    emit('context_status', {'chat_id': conversation_id, 'status': 'queued'}, to=conversation_id)
 
 
 @socketio.on('stop_generation')
@@ -1536,6 +1693,8 @@ def handle_clear_history(data=None):
         return
     conv['messages'] = []
     conv['uploaded_documents'] = {}
+    conv['context_state'] = {}
+    conv['context_usage'] = {}
     conv['pending_message_id'] = None
     timestamp = datetime.now().strftime("%H:%M:%S")
     emit('console_log', {'message': f"[{timestamp}] Conversation history cleared", 'chat_id': conversation_id}, to=conversation_id)

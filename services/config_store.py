@@ -4,11 +4,13 @@ import time
 import logging
 import re
 from typing import Any, Dict, List
+from services.context_manager import DEFAULT_CONTEXT, normalize_context
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_COUNCIL_CONFIG = {
     'history_context_mode': 'final_only',
+    'context': dict(DEFAULT_CONTEXT),
     'council': {
         'chair': 'chair',
         'members': [
@@ -152,6 +154,7 @@ class ConfigStore:
         if not isinstance(merged.get('memory'), dict):
             raise ValueError('memory must be an object')
         merged['memory']['auto_extract'] = False
+        merged['context'] = normalize_context(merged.get('context'))
         for key in ('Leader', 'lite_model', 'skills', 'agent_loop', 'MarkReader', 'MD_Reader',
                     'Researcher', 'Creator', 'Creative_Writer', 'Analyzer', 'Verifier'):
             merged.pop(key, None)

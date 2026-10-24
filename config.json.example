@@ -1,5 +1,17 @@
 {
   "history_context_mode": "final_only",
+  "context": {
+    "enabled": true,
+    "context_window_tokens": 128000,
+    "auto_compact_ratio": 0.8,
+    "reserve_output_tokens": 8192,
+    "summary_tokens": 2048,
+    "recent_history_tokens": 6000,
+    "recent_council_records": 3,
+    "pdf_token_reserve": 16000,
+    "image_token_reserve": 2048,
+    "max_continuations": 4
+  },
   "council": {
     "chair": "chair",
     "members": [

@@ -22,6 +22,21 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(chunks, [('content', 'answer')])
         response.close.assert_called_once()
 
+    def test_finish_reason_and_usage_are_forwarded_for_continuation(self):
+        response = MagicMock()
+        response.__iter__.return_value = iter([
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(delta=SimpleNamespace(content='partial'), finish_reason=None)]),
+            SimpleNamespace(usage=None, choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason='length')]),
+            SimpleNamespace(usage=SimpleNamespace(model_dump=lambda: {'prompt_tokens': 12, 'completion_tokens': 4}), choices=[]),
+        ])
+        request_client = MagicMock()
+        request_client.chat.completions.create.return_value = response
+        with patch.object(GPT_handle.client, 'with_options', return_value=request_client), patch.object(GPT_handle, 'log_info'):
+            chunks = list(GPT_handle.completion_response_stream('m', 'S', 'Q', timeout_seconds=2, max_output_tokens=4))
+        self.assertEqual(chunks, [('content', 'partial'), ('finish', 'length'), ('usage', {'prompt_tokens': 12, 'completion_tokens': 4})])
+        self.assertEqual(request_client.chat.completions.create.call_args.kwargs['max_tokens'], 4)
+        response.close.assert_called_once()
+
     def test_cancelled_transport_makes_no_request(self):
         cancelled = threading.Event(); cancelled.set()
         with patch.object(GPT_handle.client, 'with_options') as options:

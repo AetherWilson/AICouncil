@@ -78,6 +78,38 @@ class CouncilAppTests(unittest.TestCase):
         self.assertEqual(blocks[-1]['file']['filename'], 'source.pdf')
         self.assertTrue(blocks[-1]['file']['file_data'].startswith('data:application/pdf;base64,'))
 
+    def test_same_named_unicode_uploads_are_isolated_and_restore_original_bytes(self):
+        first = self.client.post('/api/upload_document', data={
+            'chat_id': 'first', 'file': (io.BytesIO(b'%PDF first original'), '研究報告.pdf')}).get_json()['document']
+        second = self.client.post('/api/upload_document', data={
+            'chat_id': 'second', 'file': (io.BytesIO(b'%PDF second original'), '研究報告.pdf')}).get_json()['document']
+        self.assertEqual(first['filename'], '研究報告.pdf')
+        self.assertNotEqual(first['storage_key'], second['storage_key'])
+        self.client.post('/api/restore_documents', json={'chat_id': 'restored', 'documents': [first]})
+        restored = main.get_conversation('restored')['uploaded_documents']['研究報告.pdf']
+        self.assertEqual(Path(restored['filepath']).read_bytes(), b'%PDF first original')
+        self.assertEqual(self.calls, [])
+
+    def test_detaching_file_retains_source_for_history_regeneration(self):
+        doc = self.client.post('/api/upload_document', data={
+            'chat_id': 'first', 'file': (io.BytesIO(b'%PDF original'), 'source.pdf')}).get_json()['document']
+        path = Path(main.get_conversation('first')['uploaded_documents']['source.pdf']['filepath'])
+        self.client.post('/api/remove_document', json={'chat_id': 'first', 'filename': 'source.pdf'})
+        self.assertTrue(path.exists())
+        self.assertNotIn('source.pdf', main.get_conversation('first')['uploaded_documents'])
+        self.client.post('/api/restore_documents', json={'chat_id': 'first', 'documents': [doc]})
+        self.assertIn('source.pdf', main.get_conversation('first')['uploaded_documents'])
+
+    def test_attachment_snapshot_roundtrips_with_user_message(self):
+        doc = {'filename': 'source.pdf', 'type': 'pdf', 'storage_key': 'immutable.pdf'}
+        main._replace_conversation_messages_from_ui('attachment-history', [
+            {'id': 'user-1', 'type': 'user', 'content': 'Question', 'attachments': [doc]}])
+        restored = main._history_to_ui_messages('attachment-history')
+        self.assertEqual(restored[0]['attachments'][0]['storage_key'], 'immutable.pdf')
+        self.assertEqual(restored[0]['attachments'][0]['filename'], 'source.pdf')
+        history = main._build_prompt_chat_history(main.get_conversation('attachment-history')['messages'], 1, 'final_only')
+        self.assertIn('immutable.pdf', history[0]['content'])
+
     def test_full_socket_workflow_direct_files_and_persistent_ballot_metadata(self):
         self.client.post('/api/upload_document', data={
             'chat_id': 'sitting', 'file': (io.BytesIO(b'%PDF-1.4 test source'), 'source.pdf')})
@@ -98,7 +130,7 @@ class CouncilAppTests(unittest.TestCase):
             self.assertTrue(any(event['name'] == 'all_done' for event in events))
             self.assertEqual(len(self.calls), 9)  # 3 proposals + 3 discussion + draft + 2 ballots
             self.assertTrue(all(call['pdf_inputs'][0]['filename'] == 'source.pdf' for call in self.calls))
-            self.assertTrue(all(call['timeout_seconds'] == 120 for call in self.calls))
+            self.assertTrue(all(0 < call['timeout_seconds'] <= 120 for call in self.calls))
             chunks = [event['args'][0] for event in events if event['name'] == 'ai_response_chunk']
             self.assertFalse(any(chunk.get('council_phase') == 'vote' for chunk in chunks))
             finals = [event['args'][0] for event in events if event['name'] == 'ai_response_end' and event['args'][0].get('is_final_response')]
@@ -158,6 +190,17 @@ class CouncilAppTests(unittest.TestCase):
                     aborted=conv['abort_event'].is_set)
         self.assertEqual(conv['messages'][0]['stream_status'], 'stopped')
         self.assertFalse(any(msg.get('is_final_response') for msg in conv['messages']))
+
+    def test_missing_attachment_fails_explicitly_without_model_request(self):
+        main.get_conversation('chat_missing')['is_generating'] = True
+        with patch.object(main, '_log_internal_error'):
+            main.handle_message_task({'message': 'Read this file', 'attachments': [
+                {'filename': 'missing.pdf', 'type': 'pdf', 'storage_key': 'not-present.pdf'}]}, 'chat_missing')
+        messages = main.get_conversation('chat_missing')['messages']
+        self.assertTrue(messages[-1]['is_final_response'])
+        self.assertIn('attachments are unavailable', messages[-1]['raw_markdown'])
+        self.assertFalse(messages[-1]['council_payload']['approved'])
+        self.assertEqual(self.calls, [])
 
     def test_council_api_and_manual_memory(self):
         roster = self.client.get('/api/council').get_json()
